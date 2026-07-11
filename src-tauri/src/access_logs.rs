@@ -1,10 +1,14 @@
-use std::{collections::HashMap, process::Command};
+use std::collections::HashMap;
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::{mihomo::controller_secret, storage::AppState};
+use crate::{
+    mihomo::controller_secret,
+    platform,
+    storage::AppState,
+};
 
 const CONTROLLER_CONNECTIONS: &str = "http://127.0.0.1:19090/connections";
 
@@ -85,7 +89,7 @@ pub async fn sync_access_logs(state: State<'_, AppState>) -> Result<usize, Strin
             .map_err(error)?,
         _ => return Ok(0),
     };
-    let os = os_description();
+    let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let categories = rule_categories(&state)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
@@ -253,15 +257,6 @@ fn rule_categories(state: &AppState) -> Result<HashMap<String, String>, String> 
         .collect::<rusqlite::Result<_>>()
         .map_err(error)?;
     Ok(rows)
-}
-fn os_description() -> String {
-    Command::new("sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .and_then(|value| String::from_utf8(value.stdout).ok())
-        .map(|value| format!("macOS {}", value.trim()))
-        .unwrap_or_else(|| std::env::consts::OS.into())
 }
 fn csv(value: String) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))

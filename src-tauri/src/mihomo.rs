@@ -15,7 +15,11 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
-use crate::{proxy_crypto::decrypt_proxy_payload, storage::AppState};
+use crate::{
+    platform::{self, NetworkConflicts},
+    proxy_crypto::decrypt_proxy_payload,
+    storage::AppState,
+};
 
 const ARM_GZ: &str = "mihomo-darwin-arm64-v1.19.28.gz";
 const X64_GZ: &str = "mihomo-darwin-amd64-compatible-v1.19.28.gz";
@@ -38,17 +42,9 @@ pub struct DelayResult {
     pub delay: u64,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NetworkConflicts {
-    pub has_conflict: bool,
-    pub interfaces: Vec<String>,
-    pub vpn_services: Vec<String>,
-}
-
 #[tauri::command]
 pub fn get_network_conflicts() -> NetworkConflicts {
-    detect_network_conflicts()
+    platform::detect_network_conflicts()
 }
 
 #[tauri::command]
@@ -67,7 +63,7 @@ pub fn get_core_status(state: State<'_, AppState>) -> Result<CoreStatus, String>
     let mut pid = process.as_ref().map(|child| child.id());
     if !running {
         if let Some(saved) = read_pid(&state.data_dir.join("mihomo/mihomo.pid")) {
-            if pid_running(saved) {
+            if platform::pid_running(saved) {
                 running = true;
                 pid = Some(saved);
             }
@@ -113,7 +109,7 @@ pub fn auto_start_protection(
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
     stop_child(&state)?;
     std::thread::sleep(Duration::from_millis(250));
-    let conflicts = detect_network_conflicts();
+    let conflicts = platform::detect_network_conflicts();
     if conflicts.has_conflict {
         return Err(format!(
             "检测到其他 VPN/TUN，CleanWeb 未启动：{}",
@@ -213,20 +209,16 @@ fn stop_child(state: &AppState) -> Result<(), String> {
         let _ = child.wait();
     }
     if let Some(pid) = read_pid(&pid_path) {
-        if pid_running(pid) {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
+        if platform::pid_running(pid) {
+            platform::terminate_process(pid);
             for _ in 0..20 {
-                if !pid_running(pid) {
+                if !platform::pid_running(pid) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            if pid_running(pid) {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
+            if platform::pid_running(pid) {
+                platform::kill_process(pid);
             }
         }
     }
@@ -235,7 +227,8 @@ fn stop_child(state: &AppState) -> Result<(), String> {
 }
 
 fn core_status(state: &AppState) -> Result<CoreStatus, String> {
-    let pid = read_pid(&state.data_dir.join("mihomo/mihomo.pid")).filter(|pid| pid_running(*pid));
+    let pid = read_pid(&state.data_dir.join("mihomo/mihomo.pid"))
+        .filter(|pid| platform::pid_running(*pid));
     Ok(CoreStatus {
         running: pid.is_some(),
         pid,
@@ -249,46 +242,6 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
 }
 fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-fn pid_running(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-fn detect_network_conflicts() -> NetworkConflicts {
-    let interfaces: Vec<String> = Command::new("route")
-        .args(["-n", "get", "default"])
-        .output()
-        .ok()
-        .and_then(|value| String::from_utf8(value.stdout).ok())
-        .map(|value| {
-            value
-                .lines()
-                .filter_map(|line| line.trim().strip_prefix("interface:").map(str::trim))
-                .filter(|name| {
-                    name.starts_with("utun") || name.starts_with("ppp") || name.starts_with("ipsec")
-                })
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let vpn_services: Vec<String> = Command::new("scutil")
-        .args(["--nc", "list"])
-        .output()
-        .ok()
-        .and_then(|value| String::from_utf8(value.stdout).ok())
-        .map(|value| {
-            value
-                .lines()
-                .filter(|line| line.contains("(Connected)"))
-                .map(|line| line.trim().to_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    NetworkConflicts {
-        has_conflict: !interfaces.is_empty() || !vpn_services.is_empty(),
-        interfaces,
-        vpn_services,
-    }
 }
 
 fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<String, String> {
@@ -676,7 +629,7 @@ mod tests {
     }
     #[test]
     fn network_conflict_shape_is_consistent() {
-        let value = detect_network_conflicts();
+        let value = platform::detect_network_conflicts();
         assert_eq!(
             value.has_conflict,
             !value.interfaces.is_empty() || !value.vpn_services.is_empty()

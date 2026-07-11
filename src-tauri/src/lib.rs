@@ -1,5 +1,6 @@
 pub mod access_logs;
 pub mod mihomo;
+pub mod platform;
 pub mod proxy_crypto;
 pub mod rules;
 pub mod storage;
