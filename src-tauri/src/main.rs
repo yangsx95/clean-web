@@ -1,1 +1,3 @@
-fn main() { cleanweb_lib::run(); }
+fn main() {
+    cleanweb_lib::run();
+}

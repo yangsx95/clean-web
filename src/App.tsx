@@ -5,24 +5,34 @@ import * as backend from "./backend";
 export function App() {
   const [page, setPage] = useState<"overview" | "rules" | "proxy">("overview");
   const [locked, setLocked] = useState(true);
-  const [dialog, setDialog] = useState<"unlock" | "rules" | "proxy" | null>(null);
+  const [dialog, setDialog] = useState<"unlock" | "rules" | "proxy" | "custom" | null>(null);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [settings, setSettings] = useState<backend.Settings | null>(null);
   const [subscriptions, setSubscriptions] = useState<backend.Subscription[]>([]);
   const [refreshingId,setRefreshingId]=useState<string|null>(null);
+  const [coreStatus,setCoreStatus]=useState<backend.CoreStatus|null>(null);
+  const [runtimeError,setRuntimeError]=useState("");
+  const [accessLogs,setAccessLogs]=useState<backend.AccessLog[]>([]);
+  const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const titles = { overview: "网络环境安全", rules: "规则管理", proxy: "代理节点" };
   const requestAction = (action: "rules" | "proxy") => setDialog(locked ? "unlock" : action);
-  useEffect(() => { Promise.all([backend.getBootstrapState(), backend.getSettings(), backend.listSubscriptions()]).then(([bootstrap, current, saved]) => {
-    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current); setSubscriptions(saved); setReady(true);
+  useEffect(() => { Promise.all([backend.getBootstrapState(), backend.getSettings(), backend.listSubscriptions(),backend.getCoreStatus(),backend.listParentRules()]).then(([bootstrap, current, saved,core,rules]) => {
+    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current); setSubscriptions(saved);setCoreStatus(core);setParentRules(rules); setReady(true);
+    if(current.protectionEnabled&&!core.running)void backend.autoStartProtection().then(setCoreStatus).catch(reason=>setRuntimeError(String(reason)));
   }); }, []);
+  useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{void backend.refreshDueSubscriptions().then(()=>backend.listSubscriptions()).then(setSubscriptions);const timer=window.setInterval(()=>{void backend.refreshDueSubscriptions().then(()=>backend.listSubscriptions()).then(setSubscriptions);},15*60*1000);return()=>window.clearInterval(timer);},[]);
-  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken); setLocked(false); setDialog(null); };
+  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);setAccessLogs(await backend.listAccessLogs(result.sessionToken,undefined,undefined,100)); setLocked(false); setDialog(null); };
   const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null); setLocked(true); };
   const setValue = async (key: string, value: string) => {
     if (!sessionToken) { setDialog("unlock"); return; }
-    setSettings(await backend.updateSetting(sessionToken, key, value));
+    setRuntimeError("");
+    try {
+      if(key==="protection_enabled"){const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);}
+      setSettings(await backend.updateSetting(sessionToken, key, value));
+    } catch(reason) { setRuntimeError(String(reason)); }
   };
   const toggle = (key: string, enabled: boolean) => setValue(key, String(enabled));
   const createSubscription = async (input: backend.NewSubscription) => {
@@ -34,6 +44,12 @@ export function App() {
   const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions()); };
   const removeSubscription = async (id: string) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.deleteSubscription(sessionToken,id); setSubscriptions(await backend.listSubscriptions()); };
   const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}setRefreshingId(id);try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions());}finally{setRefreshingId(null);}};
+  const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await backend.clearAccessLogs(sessionToken);setAccessLogs([]);};
+  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}const csv=await backend.exportAccessLogsCsv(sessionToken);const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="cleanweb-access-logs.csv";link.click();URL.revokeObjectURL(url);};
+  const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules());setDialog(null);};
+  const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules());};
+  const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules());};
+  useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.syncAccessLogs().then(()=>backend.listAccessLogs(sessionToken,undefined,undefined,100)).then(setAccessLogs);refresh();const timer=window.setInterval(refresh,3000);return()=>window.clearInterval(timer);},[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
   return <div className="shell">
     <aside>
@@ -47,22 +63,25 @@ export function App() {
     </aside>
     <main>
       <header><div><span className="eyebrow">家庭网络保护</span><h1>{titles[page]}</h1></div><button className="unlock" onClick={() => locked ? setDialog("unlock") : void handleLock()}><LockKeyhole size={16}/>{locked ? "解锁管理台" : "锁定管理台"}</button></header>
-      {page === "overview" && <Overview settings={settings} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
-      {page === "rules" && <Rules settings={settings} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggle={toggle} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("rules")} />}
+      {runtimeError&&<div className="runtime-error" role="alert">{runtimeError}</div>}
+      {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} locked={locked} logs={accessLogs} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
+      {page === "rules" && <Rules settings={settings} parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggle={toggle} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={()=>locked?setDialog("unlock"):setDialog("custom")} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("rules")} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("proxy")} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
     {dialog === "rules" && <SubscriptionDialog kind="规则" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
     {dialog === "proxy" && <SubscriptionDialog kind="代理" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
+    {dialog === "custom" && <ParentRuleDialog onClose={()=>setDialog(null)} onSubmit={createParentRule}/>} 
   </div>;
 }
 
-function Overview({ settings, onToggle, onRetention }: { settings: backend.Settings; onToggle: (key: string, enabled: boolean) => Promise<void>; onRetention: (value: string) => Promise<void> }) {
+function Overview({ settings, coreStatus, locked, logs, onClear, onExport, onToggle, onRetention }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;locked:boolean;logs:backend.AccessLog[];onClear:()=>Promise<void>;onExport:()=>Promise<void>; onToggle: (key: string, enabled: boolean) => Promise<void>; onRetention: (value: string) => Promise<void> }) {
+  const running=coreStatus?.running===true;
   return <>
       <section className="hero">
         <div className="pulse"><ShieldCheck size={34}/></div>
-        <div className="hero-copy"><span className={settings.protectionEnabled ? "status" : "status off"}>{settings.protectionEnabled ? "保护已启用" : "保护未开启"}</span><h2>{settings.protectionEnabled ? "CleanWeb 正在执行网络策略" : "开启后才会接管网络并执行规则"}</h2><p>当前阶段仅持久化开关；Mihomo 与 TUN 将在后续里程碑接入。</p></div>
+        <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Mihomo TUN 正在执行网络策略" : "开启后将启动内核并接管网络"}</h2><p>{running?`内核 PID ${coreStatus?.pid} · fake-IP DNS 已配置`:settings.protectionEnabled?"配置要求保护开启，但内核当前未运行":"当前网络未被 CleanWeb 接管"}</p></div>
         <Switch checked={settings.protectionEnabled} label="总保护" onChange={(value) => onToggle("protection_enabled", value)} />
       </section>
       <section className="setting-grid">
@@ -70,16 +89,18 @@ function Overview({ settings, onToggle, onRetention }: { settings: backend.Setti
         <SettingCard title="自动选择节点" note="根据延迟与可用性自动选择"><Switch checked={settings.automaticNodeSelection} label="自动选点" onChange={(value) => onToggle("automatic_node_selection", value)} /></SettingCard>
         <SettingCard title="访问日志" note="本地存储"><div className="inline-control"><select aria-label="日志保留时间" value={settings.logRetention} onChange={(event) => void onRetention(event.target.value)}><option value="7d">7天</option><option value="30d">30天</option><option value="90d">90天</option><option value="forever">永久</option></select><Switch checked={settings.accessLoggingEnabled} label="日志" onChange={(value) => onToggle("access_logging_enabled", value)} /></div></SettingCard>
       </section>
-      <section className="panel"><div><span className="eyebrow">最近事件</span><h3>访问记录</h3></div><div className="empty">暂无真实网络事件</div></section>
+      <section className="panel log-panel"><div className="panel-heading"><div><span className="eyebrow">最近事件</span><h3>访问记录</h3></div><div><button className="secondary" onClick={()=>void onExport()}>导出 CSV</button><button className="secondary danger" onClick={()=>void onClear()}>清空</button></div></div>{locked?<div className="empty">解锁管理台后查看访问详情</div>:logs.length===0?<div className="empty">暂无真实网络事件</div>:<div className="log-table">{logs.map(log=><div className="log-row" key={log.id}><span className={`decision ${log.decision}`}>{log.decision==="block"?"已阻止":log.decision==="warning"?"警告":"允许"}</span><div><b>{log.domain??log.targetIp??"未知目标"}</b><small>{log.processName??"未知进程"} · {log.rule??"未命中规则"}</small></div><span>{log.targetIp}{log.targetPort?`:${log.targetPort}`:""}</span><time>{new Date(log.observedAt).toLocaleString()}</time></div>)}</div>}</section>
   </>;
 }
 
 function SettingCard({ title, note, children }: { title: string; note: string; children: React.ReactNode }) { return <article className="setting-card"><div><b>{title}</b><span>{note}</span></div>{children}</article>; }
 function Switch({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) { return <button type="button" role="switch" aria-label={label} aria-checked={checked} className={`switch ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span/></button>; }
 
-function Rules({ settings, subscriptions, refreshingId, onRefresh, onToggle, onToggleSubscription, onDelete, onAdd }: { settings: backend.Settings; subscriptions: backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggle: (key: string, enabled: boolean) => Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void }) {
+function Rules({ settings,parentRules, subscriptions, refreshingId, onRefresh, onToggle,onToggleParentRule,onDeleteParentRule,onAddParentRule, onToggleSubscription, onDelete, onAdd }: { settings: backend.Settings;parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggle: (key: string, enabled: boolean) => Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:()=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void }) {
   const categoryLabels: Record<string, string> = { pornography:"色情与擦边", gambling:"赌博", drugs:"毒品", violence:"暴力血腥", self_harm:"自残自杀", hate_extremism:"仇恨与极端主义", fraud:"诈骗", phishing:"钓鱼网站", malware:"恶意软件", ads:"广告", tracking:"追踪器" };
   return <>
+    <section className="toolbar"><div><h2>家庭自定义规则</h2><p>家长黑白名单优先于普通内容和第三方订阅规则。</p></div><button className="primary" onClick={onAddParentRule}><Plus size={16}/>添加规则</button></section>
+    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{parentRules.length===0&&<div className="table-empty">尚未添加家庭规则</div>}{parentRules.map(item=><div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{item.kind} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{item.action==="allow"?"白名单":"黑名单"}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} onChange={value=>void onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>)}</section>
     <section className="toolbar"><div><h2>规则来源</h2><p>标准化并合并多个来源，保留每条规则的出处。</p></div><button className="primary" onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
@@ -127,6 +148,11 @@ function SetupDialog({ onComplete }: { onComplete: () => void }) {
       {error && <span className="form-error">{error}</span>}<button className="primary full" type="submit">保存管理密码</button>
     </form>
   </section></div>;
+}
+
+function ParentRuleDialog({onClose,onSubmit}:{onClose:()=>void;onSubmit:(input:backend.NewParentRule)=>Promise<void>}){
+  const[error,setError]=useState("");
+  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="parent-rule-title"><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button><h2 id="parent-rule-title">添加家庭规则</h2><p>白名单覆盖普通内容规则；诈骗、钓鱼和恶意软件仍保持最高优先级。</p><form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{await onSubmit({action:String(data.get("action")) as "allow"|"block",kind:String(data.get("kind")),pattern:String(data.get("pattern")),category:String(data.get("category")||"custom")});}catch(reason){setError(String(reason));}}}><label htmlFor="parent-action">动作</label><select id="parent-action" name="action"><option value="block">阻止（黑名单）</option><option value="allow">允许（白名单）</option></select><label htmlFor="parent-kind">匹配方式</label><select id="parent-kind" name="kind"><option value="exact">精确域名</option><option value="suffix">域名及子域名</option><option value="contains">关键词包含</option><option value="wildcard">通配符</option><option value="regex">正则表达式</option><option value="ip">IP地址</option><option value="cidr">IP网段</option></select><label htmlFor="parent-pattern">规则内容</label><input id="parent-pattern" name="pattern" placeholder="example.com 或 *.example.com" required/><input type="hidden" name="category" value="custom"/>{error&&<span className="form-error">{error}</span>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并保存</button></div></form></section></div>;
 }
 
 function SubscriptionDialog({ kind, onClose, onSubmit }: { kind: "规则" | "代理"; onClose: () => void; onSubmit:(input:backend.NewSubscription)=>Promise<void> }) {

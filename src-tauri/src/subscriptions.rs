@@ -109,7 +109,11 @@ fn parse_clash_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>,
         }
         other => return Err(format!("unsupported Clash rule type: {other}")),
     };
-    Ok(Some((parsed.0, parsed.1, action_from_policy(fields.get(2).copied()))))
+    Ok(Some((
+        parsed.0,
+        parsed.1,
+        action_from_policy(fields.get(2).copied()),
+    )))
 }
 
 fn parse_hosts_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>, String> {
@@ -118,8 +122,14 @@ fn parse_hosts_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>,
     if fields.len() < 2 {
         return Err("hosts entry must contain an address and domain".into());
     }
-    fields[0].parse::<IpAddr>().map_err(|_| "invalid hosts address".to_string())?;
-    Ok(Some((MatcherKind::Exact, fields[1].to_owned(), Action::Block)))
+    fields[0]
+        .parse::<IpAddr>()
+        .map_err(|_| "invalid hosts address".to_string())?;
+    Ok(Some((
+        MatcherKind::Exact,
+        fields[1].to_owned(),
+        Action::Block,
+    )))
 }
 
 fn parse_domain_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>, String> {
@@ -153,8 +163,15 @@ fn parse_adblock_line(line: &str) -> Result<Option<(MatcherKind, String, Action)
     Err("only Adblock domain rules are supported".into())
 }
 
-fn adblock_domain(value: &str, action: Action) -> Result<Option<(MatcherKind, String, Action)>, String> {
-    let domain = value.split(['^', '$', '/']).next().unwrap_or_default().trim();
+fn adblock_domain(
+    value: &str,
+    action: Action,
+) -> Result<Option<(MatcherKind, String, Action)>, String> {
+    let domain = value
+        .split(['^', '$', '/'])
+        .next()
+        .unwrap_or_default()
+        .trim();
     if domain.is_empty() || domain.contains('*') {
         return Err("complex Adblock patterns are unsupported".into());
     }
@@ -169,9 +186,9 @@ fn action_from_policy(policy: Option<&str>) -> Action {
 }
 
 pub fn is_sinkhole_address(value: &str) -> bool {
-    value.parse::<IpAddr>().is_ok_and(|ip| {
-        ip.is_unspecified() || ip == IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
-    })
+    value
+        .parse::<IpAddr>()
+        .is_ok_and(|ip| ip.is_unspecified() || ip == IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
 }
 
 #[cfg(test)]
@@ -179,7 +196,13 @@ mod tests {
     use super::*;
 
     fn import(format: SubscriptionFormat, text: &str) -> ImportReport {
-        import_text(format, text, "source-a", "https://rules.example/list", "ads")
+        import_text(
+            format,
+            text,
+            "source-a",
+            "https://rules.example/list",
+            "ads",
+        )
     }
 
     #[test]
@@ -192,7 +215,10 @@ mod tests {
 
     #[test]
     fn imports_hosts_and_preserves_line_provenance() {
-        let report = import(SubscriptionFormat::Hosts, "# comment\n0.0.0.0 ads.example\n127.0.0.1 tracker.example");
+        let report = import(
+            SubscriptionFormat::Hosts,
+            "# comment\n0.0.0.0 ads.example\n127.0.0.1 tracker.example",
+        );
         assert_eq!(report.rules.len(), 2);
         assert_eq!(report.rules[0].source.source_line, 2);
         assert!(is_sinkhole_address("0.0.0.0"));
@@ -200,7 +226,10 @@ mod tests {
 
     #[test]
     fn adblock_allow_rule_is_preserved() {
-        let report = import(SubscriptionFormat::Adblock, "||ads.example^\n@@||safe.ads.example^\nexample.com##.banner");
+        let report = import(
+            SubscriptionFormat::Adblock,
+            "||ads.example^\n@@||safe.ads.example^\nexample.com##.banner",
+        );
         assert_eq!(report.rules.len(), 2);
         assert_eq!(report.rules[1].rule.action, Action::Allow);
         assert_eq!(report.ignored.len(), 1);
@@ -208,7 +237,10 @@ mod tests {
 
     #[test]
     fn imports_ipv4_ipv6_and_cidr() {
-        let report = import(SubscriptionFormat::IpList, "203.0.113.8\n2001:db8::1\n198.51.100.0/24");
+        let report = import(
+            SubscriptionFormat::IpList,
+            "203.0.113.8\n2001:db8::1\n198.51.100.0/24",
+        );
         assert_eq!(report.rules.len(), 3);
         assert_eq!(report.rules[2].rule.kind, MatcherKind::Cidr);
     }

@@ -8,19 +8,29 @@ name = "cleanweb_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+aes-gcm = "0.11"
 argon2 = "0.5"
 base64 = "0.22"
+flate2 = "1"
 idna = "1"
 ipnet = { version = "2", features = ["serde"] }
+keyring = "4.1"
+libc = "0.2"
 regex = "1"
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 thiserror = "2"
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,725 @@
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Duration,
+};
+
+use flate2::read::GzDecoder;
+use reqwest::Url;
+use rusqlite::{params, OptionalExtension};
+use serde::Serialize;
+use serde_yaml::{Mapping, Value};
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Manager, State};
+use uuid::Uuid;
+
+use crate::{proxy_crypto::decrypt_proxy_payload, storage::AppState};
+
+const ARM_GZ: &str = "mihomo-darwin-arm64-v1.19.28.gz";
+const X64_GZ: &str = "mihomo-darwin-amd64-compatible-v1.19.28.gz";
+const ARM_SHA256: &str = "40cdae2fab4b18df15f40eaa9dc3af70ab3d8be7f77164ae1e5f1af3a2a4fb44";
+const X64_SHA256: &str = "a469cc2f6800e71b50eca3f74bc72a8f6f7e990a5d4aaecb81a68cf331516d9d";
+const CONTROLLER: &str = "127.0.0.1:19090";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreStatus {
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub controller: String,
+    pub config_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelayResult {
+    pub delay: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkConflicts {
+    pub has_conflict: bool,
+    pub interfaces: Vec<String>,
+    pub vpn_services: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_network_conflicts() -> NetworkConflicts {
+    detect_network_conflicts()
+}
+
+#[tauri::command]
+pub fn get_core_status(state: State<'_, AppState>) -> Result<CoreStatus, String> {
+    let mut process = state.core_process.lock().map_err(|_| "内核状态不可用")?;
+    let mut running = match process.as_mut() {
+        Some(child) => match child.try_wait().map_err(error)? {
+            None => true,
+            Some(_) => {
+                *process = None;
+                false
+            }
+        },
+        None => false,
+    };
+    let mut pid = process.as_ref().map(|child| child.id());
+    if !running {
+        if let Some(saved) = read_pid(&state.data_dir.join("mihomo/mihomo.pid")) {
+            if pid_running(saved) {
+                running = true;
+                pid = Some(saved);
+            }
+        }
+    }
+    Ok(CoreStatus {
+        running,
+        pid,
+        controller: CONTROLLER.into(),
+        config_path: state
+            .data_dir
+            .join("mihomo/config.yaml")
+            .display()
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn start_protection(
+    session_token: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CoreStatus, String> {
+    state.require_session(&session_token)?;
+    start_inner(&app, &state)
+}
+
+#[tauri::command]
+pub fn auto_start_protection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CoreStatus, String> {
+    let protection_enabled = {
+        let db = state.db.lock().map_err(|_| "数据库不可用")?;
+        setting_bool(&db, "protection_enabled")?
+    };
+    if !protection_enabled {
+        return get_core_status(state);
+    }
+    start_inner(&app, &state)
+}
+
+fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
+    stop_child(&state)?;
+    std::thread::sleep(Duration::from_millis(250));
+    let conflicts = detect_network_conflicts();
+    if conflicts.has_conflict {
+        return Err(format!(
+            "检测到其他 VPN/TUN，CleanWeb 未启动：{}",
+            conflicts
+                .interfaces
+                .into_iter()
+                .chain(conflicts.vpn_services)
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
+    }
+    let runtime = state.data_dir.join("mihomo");
+    fs::create_dir_all(&runtime).map_err(error)?;
+    let binary = ensure_binary(app, &runtime)?;
+    let secret = controller_secret(&state)?;
+    let config = build_config(&state, &secret, true)?;
+    atomic_write(&runtime.join("config.yaml"), config.as_bytes()).map_err(error)?;
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime.join("mihomo.log"))
+        .map_err(error)?;
+    let stderr = stdout.try_clone().map_err(error)?;
+    let child = Command::new(binary)
+        .arg("-d")
+        .arg(&runtime)
+        .arg("-f")
+        .arg(runtime.join("config.yaml"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|value| format!("无法启动 Mihomo：{value}"))?;
+    let pid = child.id();
+    fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error)?;
+    *state.core_process.lock().map_err(|_| "内核状态不可用")? = Some(child);
+    std::thread::sleep(Duration::from_millis(650));
+    let status = core_status(state)?;
+    if !status.running {
+        return Err(last_log_lines(&runtime.join("mihomo.log"), 12)
+            .unwrap_or_else(|_| "Mihomo 启动后立即退出".into()));
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn stop_protection(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<CoreStatus, String> {
+    state.require_session(&session_token)?;
+    stop_child(&state)?;
+    core_status(&state)
+}
+
+#[tauri::command]
+pub async fn test_proxy_group(
+    group: String,
+    state: State<'_, AppState>,
+) -> Result<DelayResult, String> {
+    let secret = controller_secret(&state)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/group/")).map_err(error)?;
+    url.path_segments_mut()
+        .map_err(|_| "控制器地址无效")?
+        .push(&group)
+        .push("delay");
+    url.query_pairs_mut()
+        .append_pair("url", "https://www.gstatic.com/generate_204")
+        .append_pair("timeout", "5000");
+    let value = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(secret)
+        .send()
+        .await
+        .map_err(error)?
+        .error_for_status()
+        .map_err(error)?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(error)?;
+    let delay = value
+        .get("delay")
+        .and_then(|value| value.as_u64())
+        .ok_or("测速响应无效")?;
+    Ok(DelayResult { delay })
+}
+
+fn stop_child(state: &AppState) -> Result<(), String> {
+    let pid_path = state.data_dir.join("mihomo/mihomo.pid");
+    if let Some(mut child) = state
+        .core_process
+        .lock()
+        .map_err(|_| "内核状态不可用")?
+        .take()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if let Some(pid) = read_pid(&pid_path) {
+        if pid_running(pid) {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            for _ in 0..20 {
+                if !pid_running(pid) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if pid_running(pid) {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let _ = fs::remove_file(pid_path);
+    Ok(())
+}
+
+fn core_status(state: &AppState) -> Result<CoreStatus, String> {
+    let pid = read_pid(&state.data_dir.join("mihomo/mihomo.pid")).filter(|pid| pid_running(*pid));
+    Ok(CoreStatus {
+        running: pid.is_some(),
+        pid,
+        controller: CONTROLLER.into(),
+        config_path: state
+            .data_dir
+            .join("mihomo/config.yaml")
+            .display()
+            .to_string(),
+    })
+}
+fn read_pid(path: &Path) -> Option<u32> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+fn pid_running(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+fn detect_network_conflicts() -> NetworkConflicts {
+    let interfaces: Vec<String> = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()
+        .and_then(|value| String::from_utf8(value.stdout).ok())
+        .map(|value| {
+            value
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("interface:").map(str::trim))
+                .filter(|name| {
+                    name.starts_with("utun") || name.starts_with("ppp") || name.starts_with("ipsec")
+                })
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let vpn_services: Vec<String> = Command::new("scutil")
+        .args(["--nc", "list"])
+        .output()
+        .ok()
+        .and_then(|value| String::from_utf8(value.stdout).ok())
+        .map(|value| {
+            value
+                .lines()
+                .filter(|line| line.contains("(Connected)"))
+                .map(|line| line.trim().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    NetworkConflicts {
+        has_conflict: !interfaces.is_empty() || !vpn_services.is_empty(),
+        interfaces,
+        vpn_services,
+    }
+}
+
+fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<String, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let proxy_enabled = setting_bool(&db, "proxy_enabled")?;
+    let mut proxies = Vec::new();
+    let mut imported_groups = Vec::new();
+    let mut statement = db.prepare("SELECT pp.format,pp.payload FROM proxy_payloads pp JOIN subscriptions s ON s.id=pp.subscription_id WHERE s.enabled=1 AND s.kind='proxy' ORDER BY s.created_at").map_err(error)?;
+    let payloads = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    for (format, envelope) in payloads {
+        let plaintext = decrypt_proxy_payload(&envelope)?;
+        if format != "clash" {
+            continue;
+        }
+        let value: Value = serde_yaml::from_str(&plaintext).map_err(error)?;
+        if let Some(values) = value.get("proxies").and_then(Value::as_sequence) {
+            proxies.extend(values.iter().cloned());
+        }
+        if let Some(values) = value.get("proxy-groups").and_then(Value::as_sequence) {
+            imported_groups.extend(values.iter().cloned());
+        }
+    }
+    deduplicate_named(&mut proxies);
+    deduplicate_named(&mut imported_groups);
+    let proxy_names: Vec<Value> = proxies
+        .iter()
+        .filter_map(|value| {
+            value
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|name| Value::String(name.into()))
+        })
+        .collect();
+
+    let mut root = Mapping::new();
+    insert(&mut root, "mixed-port", Value::Number(7890.into()));
+    insert(&mut root, "allow-lan", Value::Bool(false));
+    insert(&mut root, "mode", Value::String("rule".into()));
+    insert(&mut root, "log-level", Value::String("info".into()));
+    insert(&mut root, "ipv6", Value::Bool(true));
+    insert(
+        &mut root,
+        "external-controller",
+        Value::String(CONTROLLER.into()),
+    );
+    insert(&mut root, "secret", Value::String(secret.into()));
+
+    let mut tun = Mapping::new();
+    insert(&mut tun, "enable", Value::Bool(tun_enabled));
+    insert(&mut tun, "stack", Value::String("mixed".into()));
+    insert(&mut tun, "auto-route", Value::Bool(true));
+    insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+    insert(
+        &mut tun,
+        "dns-hijack",
+        Value::Sequence(vec![
+            Value::String("any:53".into()),
+            Value::String("tcp://any:53".into()),
+        ]),
+    );
+    insert(&mut root, "tun", Value::Mapping(tun));
+
+    let mut dns = Mapping::new();
+    insert(&mut dns, "enable", Value::Bool(true));
+    insert(&mut dns, "enhanced-mode", Value::String("fake-ip".into()));
+    insert(
+        &mut dns,
+        "fake-ip-range",
+        Value::String("198.18.0.1/16".into()),
+    );
+    insert(&mut dns, "use-hosts", Value::Bool(true));
+    insert(
+        &mut dns,
+        "nameserver",
+        Value::Sequence(vec![
+            Value::String("https://1.1.1.1/dns-query".into()),
+            Value::String("https://8.8.8.8/dns-query".into()),
+        ]),
+    );
+    insert(&mut root, "dns", Value::Mapping(dns));
+    insert(&mut root, "hosts", safe_search_hosts());
+
+    insert(&mut root, "proxies", Value::Sequence(proxies));
+    let mut groups = imported_groups;
+    let mut cleanweb_group = Mapping::new();
+    insert(
+        &mut cleanweb_group,
+        "name",
+        Value::String("CleanWeb".into()),
+    );
+    insert(
+        &mut cleanweb_group,
+        "type",
+        Value::String("url-test".into()),
+    );
+    insert(
+        &mut cleanweb_group,
+        "url",
+        Value::String("https://www.gstatic.com/generate_204".into()),
+    );
+    insert(&mut cleanweb_group, "interval", Value::Number(300.into()));
+    insert(
+        &mut cleanweb_group,
+        "proxies",
+        Value::Sequence(if proxy_names.is_empty() {
+            vec![Value::String("DIRECT".into())]
+        } else {
+            proxy_names
+        }),
+    );
+    groups.push(Value::Mapping(cleanweb_group));
+    insert(&mut root, "proxy-groups", Value::Sequence(groups));
+
+    let mut rules = load_filter_rules(&db)?;
+    rules.push(Value::String(format!(
+        "MATCH,{}",
+        if proxy_enabled { "CleanWeb" } else { "DIRECT" }
+    )));
+    insert(&mut root, "rules", Value::Sequence(rules));
+    serde_yaml::to_string(&root).map_err(error)
+}
+
+fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
+    let enabled_categories = settings_map(db)?;
+    let mut result = Vec::new();
+    append_imported_rules(db, &enabled_categories, true, &mut result)?;
+    let mut statement=db.prepare("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 ORDER BY CASE action WHEN 'block' THEN 0 ELSE 1 END,created_at").map_err(error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    for (kind, pattern, action) in rows {
+        if let Some(rule) = mihomo_rule(
+            &kind,
+            &pattern,
+            if action == "allow" {
+                "DIRECT"
+            } else {
+                "REJECT"
+            },
+        ) {
+            result.push(Value::String(rule));
+        }
+    }
+    append_imported_rules(db, &enabled_categories, false, &mut result)?;
+    Ok(result)
+}
+
+fn append_imported_rules(
+    db: &rusqlite::Connection,
+    settings: &std::collections::HashMap<String, String>,
+    security_only: bool,
+    result: &mut Vec<Value>,
+) -> Result<(), String> {
+    let comparator = if security_only {
+        "IN ('fraud','phishing','malware')"
+    } else {
+        "NOT IN ('fraud','phishing','malware')"
+    };
+    let sql=format!("SELECT r.matcher_kind,r.pattern,r.action,r.category FROM imported_rules r JOIN subscriptions s ON s.id=r.subscription_id WHERE s.enabled=1 AND r.category {comparator} ORDER BY s.created_at,r.source_line");
+    let mut statement = db.prepare(&sql).map_err(error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    for (kind, pattern, action, category) in rows {
+        if settings
+            .get(&format!("category.{category}"))
+            .is_some_and(|value| value == "false")
+        {
+            continue;
+        }
+        if let Some(rule) = mihomo_rule(
+            &kind,
+            &pattern,
+            if action == "Allow" {
+                "DIRECT"
+            } else {
+                "REJECT"
+            },
+        ) {
+            result.push(Value::String(rule));
+        }
+    }
+    Ok(())
+}
+
+fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
+    Some(match kind {
+        "Exact" => format!("DOMAIN,{pattern},{target}"),
+        "Suffix" => format!("DOMAIN-SUFFIX,{pattern},{target}"),
+        "Contains" => format!("DOMAIN-KEYWORD,{pattern},{target}"),
+        "Wildcard" => format!("DOMAIN-WILDCARD,{pattern},{target}"),
+        "Regex" => format!("DOMAIN-REGEX,{pattern},{target}"),
+        "Ip" | "Cidr" if pattern.contains(':') => format!("IP-CIDR6,{pattern},{target},no-resolve"),
+        "Ip" | "Cidr" => format!("IP-CIDR,{pattern},{target},no-resolve"),
+        _ => return None,
+    })
+}
+
+fn safe_search_hosts() -> Value {
+    let mut hosts = Mapping::new();
+    for (domain, target) in [
+        ("www.google.com", "forcesafesearch.google.com"),
+        ("www.google.com.hk", "forcesafesearch.google.com"),
+        ("www.bing.com", "strict.bing.com"),
+        ("duckduckgo.com", "safe.duckduckgo.com"),
+        ("www.youtube.com", "restrictmoderate.youtube.com"),
+        ("m.youtube.com", "restrictmoderate.youtube.com"),
+        ("youtubei.googleapis.com", "restrictmoderate.youtube.com"),
+        ("youtube.googleapis.com", "restrictmoderate.youtube.com"),
+    ] {
+        hosts.insert(Value::String(domain.into()), Value::String(target.into()));
+    }
+    Value::Mapping(hosts)
+}
+
+pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    if let Some(value) = db
+        .query_row(
+            "SELECT value FROM app_secrets WHERE key='controller_secret'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(error)?
+    {
+        return Ok(value);
+    }
+    let value = Uuid::new_v4().to_string();
+    db.execute(
+        "INSERT INTO app_secrets(key,value) VALUES('controller_secret',?1)",
+        params![value],
+    )
+    .map_err(error)?;
+    Ok(value)
+}
+
+fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
+    let (asset, expected) = if cfg!(target_arch = "aarch64") {
+        (ARM_GZ, ARM_SHA256)
+    } else {
+        (X64_GZ, X64_SHA256)
+    };
+    let output = runtime.join("mihomo");
+    if output.is_file() {
+        return Ok(output);
+    }
+    let resource = app
+        .path()
+        .resource_dir()
+        .map_err(error)?
+        .join("resources/mihomo")
+        .join(asset);
+    if !resource.is_file() {
+        return Err(format!("缺少官方 Mihomo 内核资源：{}", resource.display()));
+    }
+    let bytes = fs::read(&resource).map_err(error)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != expected {
+        return Err("Mihomo 内核校验失败".into());
+    }
+    let mut decoder = GzDecoder::new(bytes.as_slice());
+    let mut file = File::create(&output).map_err(error)?;
+    io::copy(&mut decoder, &mut file).map_err(error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o700)).map_err(error)?;
+    }
+    Ok(output)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp = path.with_extension("tmp");
+    let mut file = File::create(&temp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::rename(temp, path)
+}
+
+fn deduplicate_named(values: &mut Vec<Value>) {
+    let mut names = std::collections::HashSet::new();
+    values.retain(|value| {
+        value
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| names.insert(name.to_owned()))
+    });
+}
+fn insert(map: &mut Mapping, key: &str, value: Value) {
+    map.insert(Value::String(key.into()), value);
+}
+fn setting_bool(db: &rusqlite::Connection, key: &str) -> Result<bool, String> {
+    Ok(db
+        .query_row(
+            "SELECT value FROM settings WHERE key=?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(error)?
+        == "true")
+}
+fn settings_map(
+    db: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut statement = db
+        .prepare("SELECT key,value FROM settings")
+        .map_err(error)?;
+    let values = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(error)?;
+    Ok(values)
+}
+fn last_log_lines(path: &Path, count: usize) -> io::Result<String> {
+    let text = fs::read_to_string(path)?;
+    Ok(text
+        .lines()
+        .rev()
+        .take(count)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+fn error(value: impl std::fmt::Display) -> String {
+    value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        proxy_crypto::{encrypt_proxy_payload, test_key_env_lock},
+        storage::AppState,
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    #[test]
+    fn generates_locked_fake_ip_config_and_filter_rules() {
+        let _guard = test_key_env_lock();
+        std::env::set_var("CLEANWEB_TEST_PROXY_KEY_B64", STANDARD.encode([4_u8; 32]));
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('r','rule','r','https://x',1)",[]).unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r','1','Suffix','bad.example','Block','pornography',1)",[]).unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('p','proxy','p','https://x',1)",[]).unwrap();
+            let payload=encrypt_proxy_payload("proxies:\n- name: node-a\n  type: ss\n  server: 127.0.0.1\n  port: 8388\n  cipher: aes-128-gcm\n  password: test\n").unwrap();
+            db.execute(
+                "INSERT INTO proxy_payloads(subscription_id,format,payload) VALUES('p','clash',?1)",
+                params![payload],
+            )
+            .unwrap();
+        }
+        let config = build_config(&state, "secret", true).unwrap();
+        assert!(config.contains("enhanced-mode: fake-ip"));
+        assert!(config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
+        assert!(config.contains("name: node-a"));
+        assert!(!config.contains("controller_secret"));
+        std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
+    }
+    #[test]
+    fn network_conflict_shape_is_consistent() {
+        let value = detect_network_conflicts();
+        assert_eq!(
+            value.has_conflict,
+            !value.interfaces.is_empty() || !value.vpn_services.is_empty()
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn official_arm_core_accepts_generated_config() {
+        let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/mihomo")
+            .join(ARM_GZ);
+        assert!(asset.is_file(), "official Mihomo ARM resource is missing");
+        let bytes = fs::read(&asset).unwrap();
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), ARM_SHA256);
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("mihomo");
+        let mut decoder = GzDecoder::new(bytes.as_slice());
+        let mut file = File::create(&binary).unwrap();
+        io::copy(&mut decoder, &mut file).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let _guard = test_key_env_lock();
+        std::env::set_var("CLEANWEB_TEST_PROXY_KEY_B64", STANDARD.encode([5_u8; 32]));
+        let state = AppState::open(directory.path().join("cleanweb.db")).unwrap();
+        let config = build_config(&state, "test-secret", true).unwrap();
+        let config_path = directory.path().join("config.yaml");
+        fs::write(&config_path, config).unwrap();
+        let output = Command::new(binary)
+            .args(["-t", "-f"])
+            .arg(&config_path)
+            .arg("-d")
+            .arg(directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
+    }
+}
