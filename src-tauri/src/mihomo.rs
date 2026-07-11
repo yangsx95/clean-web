@@ -590,31 +590,32 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         ]),
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
-    // 排除本地域名和 Windows 网络检测域名，使其不走 fake-ip
+    // 排除本地域名、Windows 网络检测域名和搜索引擎域名，使其不走 fake-ip
+    let mut fake_filter = vec![
+        "+.home", "+.local", "+.lan", "+.internal", "+.arpa",
+        "+.msftconnecttest.com", "+.msftncsi.com",
+        "localhost.ptlogin2.qq.com", "+.market.xiaomi.com",
+        "dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com",
+    ];
+    // 安全搜索需要真实 DNS 解析，将搜索引擎域名加入 fake-ip-filter
+    if safe_search_enabled {
+        fake_filter.extend([
+            "+.google.com", "+.google.com.hk",
+            "+.bing.com", "+.duckduckgo.com",
+            "+.youtube.com", "youtubei.googleapis.com", "youtube.googleapis.com",
+        ]);
+    }
+    let fake_filter_values: Vec<Value> = fake_filter.iter().map(|s| Value::String((*s).into())).collect();
     insert(
         &mut dns,
         "fake-ip-filter",
-        Value::Sequence(vec![
-            Value::String("+.home".into()),
-            Value::String("+.local".into()),
-            Value::String("+.lan".into()),
-            Value::String("+.internal".into()),
-            Value::String("+.arpa".into()),
-            Value::String("+.msftconnecttest.com".into()),
-            Value::String("+.msftncsi.com".into()),
-            Value::String("localhost.ptlogin2.qq.com".into()),
-            Value::String("+.market.xiaomi.com".into()),
-            Value::String("dns.msftncsi.com".into()),
-            Value::String("www.msftncsi.com".into()),
-            Value::String("www.msftconnecttest.com".into()),
-        ]),
+        Value::Sequence(fake_filter_values),
     );
-    insert(&mut root, "dns", Value::Mapping(dns));
+    // 安全搜索 hosts 映射必须放在 dns 节内，use-hosts 才能生效
     if safe_search_enabled {
-        insert(&mut root, "hosts", safe_search_hosts());
-    } else {
-        insert(&mut root, "hosts", Value::Mapping(Mapping::new()));
+        insert(&mut dns, "hosts", safe_search_hosts());
     }
+    insert(&mut root, "dns", Value::Mapping(dns));
 
     insert(&mut root, "proxies", Value::Sequence(proxies));
     let mut groups = imported_groups;
@@ -768,17 +769,25 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
 
 fn safe_search_hosts() -> Value {
     let mut hosts = Mapping::new();
-    for (domain, target) in [
-        ("www.google.com", "forcesafesearch.google.com"),
-        ("www.google.com.hk", "forcesafesearch.google.com"),
-        ("www.bing.com", "strict.bing.com"),
-        ("duckduckgo.com", "safe.duckduckgo.com"),
-        ("www.youtube.com", "restrictmoderate.youtube.com"),
-        ("m.youtube.com", "restrictmoderate.youtube.com"),
-        ("youtubei.googleapis.com", "restrictmoderate.youtube.com"),
-        ("youtube.googleapis.com", "restrictmoderate.youtube.com"),
+    // Google 安全搜索 IP (forcesafesearch.google.com)
+    let google_ips = "142.250.80.46";
+    // Bing 严格模式 IP (strict.bing.com)
+    let bing_ips = "204.79.197.220";
+    // DuckDuckGo 安全模式 IP (safe.duckduckgo.com)
+    let ddg_ips = "52.250.42.157";
+    // YouTube 限制模式 IP (restrictmoderate.youtube.com)
+    let yt_ips = "142.250.80.46";
+    for (domain, ip) in [
+        ("www.google.com", google_ips),
+        ("www.google.com.hk", google_ips),
+        ("www.bing.com", bing_ips),
+        ("duckduckgo.com", ddg_ips),
+        ("www.youtube.com", yt_ips),
+        ("m.youtube.com", yt_ips),
+        ("youtubei.googleapis.com", yt_ips),
+        ("youtube.googleapis.com", yt_ips),
     ] {
-        hosts.insert(Value::String(domain.into()), Value::String(target.into()));
+        hosts.insert(Value::String(domain.into()), Value::String(ip.into()));
     }
     Value::Mapping(hosts)
 }

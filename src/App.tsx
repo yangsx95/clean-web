@@ -254,16 +254,16 @@ function SubscriptionDialog({ kind, onClose, onSubmit }: { kind: "规则" | "代
   const [selectedFormat,setSelectedFormat]=useState("auto");
   const formRef=useRef<HTMLFormElement>(null);
   useEffect(()=>{ if(kind==="规则"){ backend.getRecommendedSources().then(setAllSources).catch(()=>setAllSources([])); } },[kind]);
-  const filteredSources = selectedFormat==="auto" || selectedFormat==="safe-search" ? allSources : allSources.filter(s=>s.format===selectedFormat);
-  const handleFormatChange=(fmt:string)=>{ setSelectedFormat(fmt); if(fmt==="safe-search" && formRef.current){ const f=formRef.current; (f.elements.namedItem("name")as HTMLInputElement).value="安全搜索"; (f.elements.namedItem("url")as HTMLInputElement).value="builtin://safe-search"; (f.elements.namedItem("category")as HTMLSelectElement).value="custom"; } };
+  const filteredSources = selectedFormat==="auto" ? allSources : allSources.filter(s=>s.format===selectedFormat);
+  const handleFormatChange=(fmt:string)=>{ setSelectedFormat(fmt); };
   const applySource=(src:backend.RecommendedSource)=>{ const form=formRef.current; if(!form)return; (form.elements.namedItem("name")as HTMLInputElement).value=src.name; (form.elements.namedItem("url")as HTMLInputElement).value=src.url; (form.elements.namedItem("format")as HTMLSelectElement).value=src.format; (form.elements.namedItem("category")as HTMLSelectElement).value=src.category; };
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="subscription-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
       <h2 id="subscription-title">添加{kind}订阅</h2>
-      <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR、Adblock 和安全搜索。" : "只会提取代理节点和代理组。"}</p>
+      <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR 和 Adblock 列表。" : "只会提取代理节点和代理组。"}</p>
       <form ref={formRef} onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
-        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" value={selectedFormat} onChange={e=>handleFormatChange(e.target.value)}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索</option></select></>}
+        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" value={selectedFormat} onChange={e=>handleFormatChange(e.target.value)}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option></select></>}
         <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
         <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
         {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category"><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select>
