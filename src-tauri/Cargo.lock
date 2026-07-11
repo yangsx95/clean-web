@@ -638,6 +638,7 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "url",
  "uuid",
 ]

@@ -5,6 +5,7 @@ export type Settings = {
   proxyEnabled: boolean;
   automaticNodeSelection: boolean;
   accessLoggingEnabled: boolean;
+  safeSearchEnabled: boolean;
   logRetention: string;
   categories: Record<string, boolean>;
 };
@@ -23,6 +24,7 @@ const defaults: Settings = {
   proxyEnabled: false,
   automaticNodeSelection: true,
   accessLoggingEnabled: true,
+  safeSearchEnabled: true,
   logRetention: "30d",
   categories: { pornography: true, gambling: true, drugs: true, violence: true, self_harm: true, hate_extremism: true, fraud: true, phishing: true, malware: true, ads: true, tracking: true },
 };
@@ -76,6 +78,33 @@ export async function deleteSubscription(sessionToken:string,id:string) {
   if (isTauri()) return invoke("delete_subscription", { sessionToken,id });
   const index=previewSubscriptions.findIndex((value)=>value.id===id); if(index>=0)previewSubscriptions.splice(index,1);
 }
+export type RecommendedSource={name:string;url:string;format:string;category:string;description:string};
+const previewRecommendedSources:RecommendedSource[]=[
+  // hosts
+  {name:"综合广告与恶意软件",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",format:"hosts",category:"ads",description:"Steven Black 维护的合并去重 hosts 列表，覆盖广告、恶意软件与跟踪域名"},
+  {name:"AdAway 广告拦截",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",description:"AdAway 官方 hosts 列表，专注移动广告拦截"},
+  {name:"Dan Pollock hosts",url:"https://someonewhocares.org/hosts/zero/hosts",format:"hosts",category:"ads",description:"Dan Pollock 维护的经典 hosts 列表，拦截广告与跟踪域名"},
+  {name:"赌博网站拦截",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts",format:"hosts",category:"gambling",description:"Steven Black 赌博分类 hosts 列表"},
+  {name:"色情内容拦截",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts",format:"hosts",category:"pornography",description:"Steven Black 色情分类 hosts 列表"},
+  {name:"恶意软件域名",url:"https://urlhaus.abuse.ch/downloads/hostfile/",format:"hosts",category:"malware",description:"URLhaus 实时恶意软件分发域名列表"},
+  // adblock
+  {name:"EasyList 广告过滤",url:"https://easylist.to/easylist/easylist.txt",format:"adblock",category:"ads",description:"Adblock 生态中最广泛使用的英文广告过滤列表"},
+  {name:"EasyList China",url:"https://easylist-downloads.adblockplus.org/easylistchina.txt",format:"adblock",category:"ads",description:"EasyList 中文补充规则，覆盖国内网站广告"},
+  {name:"AdGuard 中文过滤",url:"https://filters.adtidy.org/extension/chromium/filters/224.txt",format:"adblock",category:"ads",description:"AdGuard 维护的中文广告过滤规则"},
+  {name:"uBlock 隐私保护",url:"https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt",format:"adblock",category:"ads",description:"uBlock Origin 隐私保护规则，拦截跟踪器和指纹收集"},
+  // domain-list
+  {name:"Loyalsoldier 直连域名",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt",format:"domain-list",category:"custom",description:"国内常用域名直连列表，避免不必要的代理"},
+  {name:"GFW 域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt",format:"domain-list",category:"custom",description:"常见被封锁域名列表，用于精确代理"},
+  {name:"广告域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt",format:"domain-list",category:"ads",description:"广告与跟踪域名列表，纯域名格式"},
+  // ip-list
+  {name:"中国 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/cncidr.txt",format:"ip-list",category:"custom",description:"中国大陆 IP 地址段，用于直连或分流策略"},
+  {name:"恶意 IP 地址段",url:"https://www.spamhaus.org/drop/drop.txt",format:"ip-list",category:"malware",description:"Spamhaus DROP 列表，已知恶意网络地址段"},
+  {name:"私有 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/private.txt",format:"ip-list",category:"custom",description:"私有与保留 IP 地址段，确保内网流量直连"},
+  // clash
+  {name:"Loyalsoldier Clash 规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt",format:"clash",category:"ads",description:"Loyalsoldier 维护的 Clash 广告拦截规则集"},
+  {name:"Clash 域名直连规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt",format:"clash",category:"custom",description:"Clash 格式的国内直连域名规则"},
+];
+export async function getRecommendedSources():Promise<RecommendedSource[]>{return isTauri()?invoke<RecommendedSource[]>("get_recommended_sources"):previewRecommendedSources;}
 export async function refreshSubscription(sessionToken:string,id:string):Promise<RefreshReport>{
   if(isTauri())return invoke("refresh_subscription",{sessionToken,id});
   return {detectedFormat:"preview",importedCount:0,ignoredCount:0,proxyCount:0,groupCount:0};
@@ -86,6 +115,16 @@ export async function startProtection(sessionToken:string):Promise<CoreStatus>{r
 export async function autoStartProtection():Promise<CoreStatus>{return isTauri()?invoke("auto_start_protection"):getCoreStatus();}
 export async function stopProtection(sessionToken:string):Promise<CoreStatus>{return isTauri()?invoke("stop_protection",{sessionToken}):{running:false,controller:"127.0.0.1:19090",configPath:"preview"};}
 export async function testProxyGroup(group="CleanWeb"):Promise<number>{const value=await invoke<{delay:number}>("test_proxy_group",{group});return value.delay;}
+export type ProxyNode={name:string;nodeType:string;delay?:number|null};
+export type ProxyGroup={name:string;groupType:string;now:string;nodes:ProxyNode[]};
+export type SubscriptionProxyNode={name:string;nodeType:string};
+export type SubscriptionProxyGroup={name:string;groupType:string;members:string[]};
+export type SubscriptionProxyInfo={proxies:SubscriptionProxyNode[];groups:SubscriptionProxyGroup[]};
+export type ProxyDelayResult={delays:Record<string,number>};
+export async function getProxies():Promise<ProxyGroup[]>{return isTauri()?invoke<ProxyGroup[]>("get_proxies"):[];}
+export async function getSubscriptionProxies(subscriptionId:string):Promise<SubscriptionProxyInfo>{if(isTauri())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{subscriptionId});return{proxies:[],groups:[]};}
+export async function selectProxy(group:string,name:string):Promise<void>{if(isTauri())return invoke("select_proxy",{group,name});}
+export async function testAllProxyDelays(group="CleanWeb"):Promise<ProxyDelayResult>{if(isTauri())return invoke<ProxyDelayResult>("test_all_proxy_delays",{group});return{delays:{}};}
 export async function syncAccessLogs():Promise<number>{return isTauri()?invoke("sync_access_logs"):0;}
 export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return isTauri()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}

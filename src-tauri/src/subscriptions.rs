@@ -125,11 +125,21 @@ fn parse_hosts_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>,
     fields[0]
         .parse::<IpAddr>()
         .map_err(|_| "invalid hosts address".to_string())?;
-    Ok(Some((
-        MatcherKind::Exact,
-        fields[1].to_owned(),
-        Action::Block,
-    )))
+    let domain = fields[1].to_lowercase();
+    // 跳过系统/本地域名条目，避免生成无效规则
+    if domain == "localhost"
+        || domain == "broadcasthost"
+        || domain == "local"
+        || domain.starts_with("localhost.")
+    {
+        return Ok(None);
+    }
+    // 去除 www. 前缀后使用 Suffix 匹配，确保主域名及其所有子域名均被拦截
+    let base = domain
+        .strip_prefix("www.")
+        .unwrap_or(&domain)
+        .to_owned();
+    Ok(Some((MatcherKind::Suffix, base, Action::Block)))
 }
 
 fn parse_domain_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>, String> {
@@ -222,6 +232,21 @@ mod tests {
         assert_eq!(report.rules.len(), 2);
         assert_eq!(report.rules[0].source.source_line, 2);
         assert!(is_sinkhole_address("0.0.0.0"));
+        // 修复后 hosts 应使用 Suffix 匹配而非 Exact
+        assert_eq!(report.rules[0].rule.kind, MatcherKind::Suffix);
+        assert_eq!(report.rules[0].rule.pattern, "ads.example");
+    }
+
+    #[test]
+    fn hosts_strips_www_and_uses_suffix_matcher() {
+        let report = import(
+            SubscriptionFormat::Hosts,
+            "0.0.0.0 www.pornhub.com\n0.0.0.0 www.xvideos.com\n0.0.0.0 localhost\n0.0.0.0 broadcasthost",
+        );
+        assert_eq!(report.rules.len(), 2, "localhost 和 broadcasthost 应被跳过");
+        assert_eq!(report.rules[0].rule.kind, MatcherKind::Suffix);
+        assert_eq!(report.rules[0].rule.pattern, "pornhub.com", "www. 前缀应被去除");
+        assert_eq!(report.rules[1].rule.pattern, "xvideos.com", "www. 前缀应被去除");
     }
 
     #[test]

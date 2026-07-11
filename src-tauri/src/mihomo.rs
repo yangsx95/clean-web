@@ -21,10 +21,23 @@ use crate::{
     storage::AppState,
 };
 
+#[cfg(target_os = "macos")]
 const ARM_GZ: &str = "mihomo-darwin-arm64-v1.19.28.gz";
+#[cfg(target_os = "macos")]
 const X64_GZ: &str = "mihomo-darwin-amd64-compatible-v1.19.28.gz";
+#[cfg(target_os = "macos")]
 const ARM_SHA256: &str = "40cdae2fab4b18df15f40eaa9dc3af70ab3d8be7f77164ae1e5f1af3a2a4fb44";
+#[cfg(target_os = "macos")]
 const X64_SHA256: &str = "a469cc2f6800e71b50eca3f74bc72a8f6f7e990a5d4aaecb81a68cf331516d9d";
+
+#[cfg(target_os = "windows")]
+const X64_GZ: &str = "mihomo-windows-amd64-v1.19.28.gz";
+#[cfg(target_os = "windows")]
+const X64_SHA256: &str = "16c476b5b80f3b6b120d2bb49f8b79626a5ad7f79c2898dac848f2730bc24944";
+#[cfg(target_os = "windows")]
+const ARM_GZ: &str = "";
+#[cfg(target_os = "windows")]
+const ARM_SHA256: &str = "";
 const CONTROLLER: &str = "127.0.0.1:19090";
 
 #[derive(Debug, Serialize)]
@@ -40,6 +53,51 @@ pub struct CoreStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DelayResult {
     pub delay: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyNode {
+    pub name: String,
+    pub node_type: String,
+    pub delay: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyGroup {
+    pub name: String,
+    pub group_type: String,
+    pub now: String,
+    pub nodes: Vec<ProxyNode>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionProxyNode {
+    pub name: String,
+    pub node_type: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionProxyGroup {
+    pub name: String,
+    pub group_type: String,
+    pub members: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionProxyInfo {
+    pub proxies: Vec<SubscriptionProxyNode>,
+    pub groups: Vec<SubscriptionProxyGroup>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyDelayResult {
+    pub delays: std::collections::HashMap<String, u64>,
 }
 
 #[tauri::command]
@@ -197,6 +255,196 @@ pub async fn test_proxy_group(
     Ok(DelayResult { delay })
 }
 
+#[tauri::command]
+pub async fn get_proxies(state: State<'_, AppState>) -> Result<Vec<ProxyGroup>, String> {
+    let secret = controller_secret(&state)?;
+    let url = format!("http://{CONTROLLER}/proxies");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .map_err(error)?
+        .error_for_status()
+        .map_err(error)?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(error)?;
+    let proxies = resp
+        .get("proxies")
+        .and_then(|v| v.as_object())
+        .ok_or("代理响应无效")?;
+    let mut groups = Vec::new();
+    for (name, info) in proxies {
+        let ptype = info.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        // 只显示代理组（Selector、URLTest、Fallback、LoadBalance 等）
+        if !matches!(ptype, "Selector" | "URLTest" | "Fallback" | "LoadBalance") {
+            continue;
+        }
+        let now = info.get("now").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let all = info.get("all").and_then(|v| v.as_array());
+        let mut nodes = Vec::new();
+        if let Some(all) = all {
+            for item in all {
+                let node_name = item.as_str().unwrap_or("");
+                if node_name.is_empty() {
+                    continue;
+                }
+                let node_info = proxies.get(node_name);
+                let node_type = node_info
+                    .and_then(|v| v.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let delay = node_info
+                    .and_then(|v| v.get("history"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.last())
+                    .and_then(|v| v.get("delay"))
+                    .and_then(|v| v.as_u64());
+                nodes.push(ProxyNode {
+                    name: node_name.to_string(),
+                    node_type,
+                    delay,
+                });
+            }
+        }
+        groups.push(ProxyGroup {
+            name: name.clone(),
+            group_type: ptype.to_string(),
+            now,
+            nodes,
+        });
+    }
+    Ok(groups)
+}
+
+#[tauri::command]
+pub fn get_subscription_proxies(
+    subscription_id: String,
+    state: State<'_, AppState>,
+) -> Result<SubscriptionProxyInfo, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let envelope = db
+        .query_row(
+            "SELECT payload FROM proxy_payloads WHERE subscription_id=?1",
+            params![subscription_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| "该订阅尚未导入代理数据".to_string())?;
+    drop(db);
+    let plaintext = decrypt_proxy_payload(&envelope)?;
+    let value: Value = serde_yaml::from_str(&plaintext).map_err(error)?;
+    let mut proxies = Vec::new();
+    if let Some(list) = value.get("proxies").and_then(Value::as_sequence) {
+        for item in list {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let node_type = item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            proxies.push(SubscriptionProxyNode { name, node_type });
+        }
+    }
+    let mut groups = Vec::new();
+    if let Some(list) = value.get("proxy-groups").and_then(Value::as_sequence) {
+        for item in list {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let group_type = item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let members = item
+                .get("proxies")
+                .and_then(Value::as_sequence)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            groups.push(SubscriptionProxyGroup {
+                name,
+                group_type,
+                members,
+            });
+        }
+    }
+    Ok(SubscriptionProxyInfo { proxies, groups })
+}
+
+#[tauri::command]
+pub async fn select_proxy(
+    group: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let secret = controller_secret(&state)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies/")).map_err(error)?;
+    url.path_segments_mut()
+        .map_err(|_| "代理组名称无效")?
+        .push(&group);
+    reqwest::Client::new()
+        .put(url)
+        .bearer_auth(&secret)
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .map_err(error)?
+        .error_for_status()
+        .map_err(error)?;
+    Ok(())
+}
+
+/// 测试指定代理组中所有节点的延迟，返回每个节点的延迟值
+#[tauri::command]
+pub async fn test_all_proxy_delays(
+    group: String,
+    state: State<'_, AppState>,
+) -> Result<ProxyDelayResult, String> {
+    let secret = controller_secret(&state)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/group/")).map_err(error)?;
+    url.path_segments_mut()
+        .map_err(|_| "控制器地址无效")?
+        .push(&group)
+        .push("delay");
+    url.query_pairs_mut()
+        .append_pair("url", "https://www.gstatic.com/generate_204")
+        .append_pair("timeout", "5000");
+    let resp = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(secret)
+        .send()
+        .await
+        .map_err(error)?
+        .error_for_status()
+        .map_err(error)?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(error)?;
+    let mut delays = std::collections::HashMap::new();
+    if let Some(obj) = resp.as_object() {
+        for (name, value) in obj {
+            if let Some(delay) = value.as_u64() {
+                delays.insert(name.clone(), delay);
+            }
+        }
+    }
+    Ok(ProxyDelayResult { delays })
+}
+
 fn stop_child(state: &AppState) -> Result<(), String> {
     let pid_path = state.data_dir.join("mihomo/mihomo.pid");
     if let Some(mut child) = state
@@ -247,6 +495,7 @@ fn read_pid(path: &Path) -> Option<u32> {
 fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<String, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let proxy_enabled = setting_bool(&db, "proxy_enabled")?;
+    let safe_search_enabled = setting_bool(&db, "safe_search_enabled")?;
     let mut proxies = Vec::new();
     let mut imported_groups = Vec::new();
     let mut statement = db.prepare("SELECT pp.format,pp.payload FROM proxy_payloads pp JOIN subscriptions s ON s.id=pp.subscription_id WHERE s.enabled=1 AND s.kind='proxy' ORDER BY s.created_at").map_err(error)?;
@@ -298,6 +547,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let mut tun = Mapping::new();
     insert(&mut tun, "enable", Value::Bool(tun_enabled));
     insert(&mut tun, "stack", Value::String("mixed".into()));
+    insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
     insert(
@@ -319,16 +569,52 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::String("198.18.0.1/16".into()),
     );
     insert(&mut dns, "use-hosts", Value::Bool(true));
+    insert(&mut dns, "use-system-hosts", Value::Bool(true));
     insert(
         &mut dns,
         "nameserver",
         Value::Sequence(vec![
             Value::String("https://1.1.1.1/dns-query".into()),
             Value::String("https://8.8.8.8/dns-query".into()),
+            Value::String("system://".into()),
+        ]),
+    );
+    // 本地域名使用系统 DNS 解析，避免 fake-ip 导致无法访问路由器等内网设备
+    let mut ns_policy = Mapping::new();
+    insert(
+        &mut ns_policy,
+        "+.home,+.local,+.lan,+.internal,+.arpa",
+        Value::Sequence(vec![
+            Value::String("system://".into()),
+            Value::String("223.5.5.5".into()),
+        ]),
+    );
+    insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
+    // 排除本地域名和 Windows 网络检测域名，使其不走 fake-ip
+    insert(
+        &mut dns,
+        "fake-ip-filter",
+        Value::Sequence(vec![
+            Value::String("+.home".into()),
+            Value::String("+.local".into()),
+            Value::String("+.lan".into()),
+            Value::String("+.internal".into()),
+            Value::String("+.arpa".into()),
+            Value::String("+.msftconnecttest.com".into()),
+            Value::String("+.msftncsi.com".into()),
+            Value::String("localhost.ptlogin2.qq.com".into()),
+            Value::String("+.market.xiaomi.com".into()),
+            Value::String("dns.msftncsi.com".into()),
+            Value::String("www.msftncsi.com".into()),
+            Value::String("www.msftconnecttest.com".into()),
         ]),
     );
     insert(&mut root, "dns", Value::Mapping(dns));
-    insert(&mut root, "hosts", safe_search_hosts());
+    if safe_search_enabled {
+        insert(&mut root, "hosts", safe_search_hosts());
+    } else {
+        insert(&mut root, "hosts", Value::Mapping(Mapping::new()));
+    }
 
     insert(&mut root, "proxies", Value::Sequence(proxies));
     let mut groups = imported_groups;
@@ -362,11 +648,31 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut root, "proxy-groups", Value::Sequence(groups));
 
     let mut rules = load_filter_rules(&db)?;
-    rules.push(Value::String(format!(
+    // 局域网/私有地址直连，确保内网设备（路由器等）可正常访问
+    // 注意：不包含 198.18.0.0/16（fake-ip 范围），否则会拦截所有域名规则
+    let lan_rules = [
+        "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+        "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+        "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+        "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+        "IP-CIDR6,fd00::/8,DIRECT,no-resolve",
+        "DOMAIN-SUFFIX,home,DIRECT",
+        "DOMAIN-SUFFIX,local,DIRECT",
+        "DOMAIN-SUFFIX,lan,DIRECT",
+        "DOMAIN-SUFFIX,internal,DIRECT",
+    ];
+    let mut all_rules: Vec<Value> = lan_rules
+        .iter()
+        .map(|r| Value::String((*r).into()))
+        .collect();
+    all_rules.append(&mut rules);
+    all_rules.push(Value::String(format!(
         "MATCH,{}",
         if proxy_enabled { "CleanWeb" } else { "DIRECT" }
     )));
-    insert(&mut root, "rules", Value::Sequence(rules));
+    insert(&mut root, "rules", Value::Sequence(all_rules));
     serde_yaml::to_string(&root).map_err(error)
 }
 
@@ -480,6 +786,47 @@ fn safe_search_hosts() -> Value {
     Value::Mapping(hosts)
 }
 
+/// 重新生成配置并通过 Mihomo API 热重载，无需重启进程。
+pub fn reload_config(state: &AppState) -> Result<(), String> {
+    let runtime = state.data_dir.join("mihomo");
+    let secret = controller_secret(state)?;
+    let config = build_config(state, &secret, true)?;
+    let config_path = runtime.join("config.yaml");
+    atomic_write(&config_path, config.as_bytes()).map_err(error)?;
+    // 通过 Mihomo RESTful API 热重载配置
+    let url = format!("http://{CONTROLLER}/configs?force=true");
+    let body = serde_json::json!({
+        "path": config_path.display().to_string()
+    });
+    let rt = tokio::runtime::Runtime::new().map_err(error)?;
+    rt.block_on(async {
+        reqwest::Client::new()
+            .put(&url)
+            .bearer_auth(&secret)
+            .json(&body)
+            .send()
+            .await
+            .map_err(error)?
+            .error_for_status()
+            .map_err(error)
+    })?;
+    Ok(())
+}
+
+/// 若保护正在运行则热重载配置，否则静默跳过。
+pub fn try_reload_config(state: &AppState) {
+    let running = match state.core_process.lock() {
+        Ok(mut guard) => match guard.as_mut() {
+            Some(child) => child.try_wait().ok().flatten().is_none(),
+            None => false,
+        },
+        Err(_) => false,
+    };
+    if running {
+        let _ = reload_config(state);
+    }
+}
+
 pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     if let Some(value) = db
@@ -503,11 +850,18 @@ pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
 }
 
 fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    if cfg!(target_arch = "aarch64") {
+        return Err("Windows ARM64 is not supported".into());
+    }
     let (asset, expected) = if cfg!(target_arch = "aarch64") {
         (ARM_GZ, ARM_SHA256)
     } else {
         (X64_GZ, X64_SHA256)
     };
+    #[cfg(target_os = "windows")]
+    let output = runtime.join("mihomo.exe");
+    #[cfg(not(target_os = "windows"))]
     let output = runtime.join("mihomo");
     if output.is_file() {
         return Ok(output);

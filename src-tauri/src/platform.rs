@@ -75,11 +75,12 @@ pub fn pid_running(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        // TODO(Windows): reliable PID liveness needs OpenProcess; deferred.
-        // The in-process child handle covers the normal lifecycle; returning
-        // false disables only cross-session crash recovery on Windows.
-        let _ = pid;
-        false
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .is_some_and(|s| s.contains(&pid.to_string()))
     }
 }
 
@@ -91,8 +92,10 @@ pub fn terminate_process(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _ = pid;
-        false
+        Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T"])
+            .status()
+            .is_ok_and(|s| s.success())
     }
 }
 
@@ -104,8 +107,10 @@ pub fn kill_process(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _ = pid;
-        false
+        Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .is_ok_and(|s| s.success())
     }
 }
 
