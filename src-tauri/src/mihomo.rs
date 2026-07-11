@@ -680,7 +680,7 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
     append_imported_rules(db, &enabled_categories, true, &mut result)?;
-    let mut statement=db.prepare("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 ORDER BY CASE action WHEN 'block' THEN 0 ELSE 1 END,created_at").map_err(error)?;
+    let mut statement=db.prepare("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'proxy' THEN 1 ELSE 2 END,created_at").map_err(error)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
@@ -693,15 +693,12 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
     for (kind, pattern, action) in rows {
-        if let Some(rule) = mihomo_rule(
-            &kind,
-            &pattern,
-            if action == "allow" {
-                "DIRECT"
-            } else {
-                "REJECT"
-            },
-        ) {
+        let target = match action.as_str() {
+            "allow" => "DIRECT",
+            "proxy" => "CleanWeb",
+            _ => "REJECT",
+        };
+        if let Some(rule) = mihomo_rule(&kind, &pattern, target) {
             result.push(Value::String(rule));
         }
     }

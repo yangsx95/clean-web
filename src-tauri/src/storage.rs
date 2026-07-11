@@ -623,6 +623,7 @@ pub fn create_parent_rule(
     let action = match input.action.as_str() {
         "allow" => Action::Allow,
         "block" => Action::Block,
+        "proxy" => Action::Proxy,
         _ => return Err("规则动作无效".into()),
     };
     let kind = match input.kind.as_str() {

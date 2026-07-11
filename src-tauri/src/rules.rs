@@ -8,6 +8,7 @@ use thiserror::Error;
 pub enum Action {
     Allow,
     Block,
+    Proxy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
