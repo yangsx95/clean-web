@@ -63,8 +63,8 @@ export async function updateSetting(sessionToken: string, key: string, value: st
   return structuredClone(defaults);
 }
 
-export async function listSubscriptions(kind?: "rule"|"proxy"): Promise<Subscription[]> {
-  return isTauri() ? invoke("list_subscriptions", { kind }) : previewSubscriptions.filter((item) => !kind || item.kind === kind);
+export async function listSubscriptions(sessionToken:string,kind?: "rule"|"proxy"): Promise<Subscription[]> {
+  return isTauri() ? invoke("list_subscriptions", { sessionToken,kind }) : previewSubscriptions.filter((item) => !kind || item.kind === kind);
 }
 export async function createSubscription(sessionToken: string, input: NewSubscription): Promise<Subscription> {
   if (isTauri()) return invoke("create_subscription", { sessionToken, input });
@@ -114,22 +114,23 @@ export async function getCoreStatus():Promise<CoreStatus>{return isTauri()?invok
 export async function startProtection(sessionToken:string):Promise<CoreStatus>{return isTauri()?invoke("start_protection",{sessionToken}):{running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview"};}
 export async function autoStartProtection():Promise<CoreStatus>{return isTauri()?invoke("auto_start_protection"):getCoreStatus();}
 export async function stopProtection(sessionToken:string):Promise<CoreStatus>{return isTauri()?invoke("stop_protection",{sessionToken}):{running:false,controller:"127.0.0.1:19090",configPath:"preview"};}
-export async function testProxyGroup(group="CleanWeb"):Promise<number>{const value=await invoke<{delay:number}>("test_proxy_group",{group});return value.delay;}
+export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{return isTauri()?invoke("reload_protection",{sessionToken}):getCoreStatus();}
+export async function testProxyGroup(sessionToken:string,group="CleanWeb"):Promise<number>{const value=await invoke<{delay:number}>("test_proxy_group",{sessionToken,group});return value.delay;}
 export type ProxyNode={name:string;nodeType:string;delay?:number|null};
 export type ProxyGroup={name:string;groupType:string;now:string;nodes:ProxyNode[]};
 export type SubscriptionProxyNode={name:string;nodeType:string};
 export type SubscriptionProxyGroup={name:string;groupType:string;members:string[]};
 export type SubscriptionProxyInfo={proxies:SubscriptionProxyNode[];groups:SubscriptionProxyGroup[]};
 export type ProxyDelayResult={delays:Record<string,number>};
-export async function getProxies():Promise<ProxyGroup[]>{return isTauri()?invoke<ProxyGroup[]>("get_proxies"):[];}
-export async function getSubscriptionProxies(subscriptionId:string):Promise<SubscriptionProxyInfo>{if(isTauri())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{subscriptionId});return{proxies:[],groups:[]};}
-export async function selectProxy(group:string,name:string):Promise<void>{if(isTauri())return invoke("select_proxy",{group,name});}
-export async function testAllProxyDelays(group="CleanWeb"):Promise<ProxyDelayResult>{if(isTauri())return invoke<ProxyDelayResult>("test_all_proxy_delays",{group});return{delays:{}};}
+export async function getProxies(sessionToken:string):Promise<ProxyGroup[]>{return isTauri()?invoke<ProxyGroup[]>("get_proxies",{sessionToken}):[];}
+export async function getSubscriptionProxies(sessionToken:string,subscriptionId:string):Promise<SubscriptionProxyInfo>{if(isTauri())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{sessionToken,subscriptionId});return{proxies:[],groups:[]};}
+export async function selectProxy(sessionToken:string,group:string,name:string):Promise<void>{if(isTauri())return invoke("select_proxy",{sessionToken,group,name});}
+export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(isTauri())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});return{delays:{}};}
 export async function syncAccessLogs():Promise<number>{return isTauri()?invoke("sync_access_logs"):0;}
 export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return isTauri()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}
 export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"time,domain\n";}
-export async function listParentRules():Promise<ParentRule[]>{return isTauri()?invoke("list_parent_rules"):structuredClone(previewParentRules);}
+export async function listParentRules(sessionToken:string):Promise<ParentRule[]>{return isTauri()?invoke("list_parent_rules",{sessionToken}):structuredClone(previewParentRules);}
 export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(isTauri())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:crypto.randomUUID(),enabled:true};previewParentRules.unshift(item);return item;}
 export async function setParentRuleEnabled(sessionToken:string,id:string,enabled:boolean):Promise<void>{if(isTauri())return invoke("set_parent_rule_enabled",{sessionToken,id,enabled});const item=previewParentRules.find(value=>value.id===id);if(item)item.enabled=enabled;}
 export async function deleteParentRule(sessionToken:string,id:string):Promise<void>{if(isTauri())return invoke("delete_parent_rule",{sessionToken,id});const index=previewParentRules.findIndex(value=>value.id===id);if(index>=0)previewParentRules.splice(index,1);}

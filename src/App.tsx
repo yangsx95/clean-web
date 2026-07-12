@@ -4,11 +4,11 @@ import * as backend from "./backend";
 
 export function App() {
   const [page, setPage] = useState<"overview" | "rules" | "proxy">("overview");
-  const [locked, setLocked] = useState(false); // TODO: 测试期间默认解锁，上线前恢复 true
+  const [locked, setLocked] = useState(true);
   const [dialog, setDialog] = useState<"unlock" | "rules" | "proxy" | "custom" | null>(null);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [ready, setReady] = useState(false);
-  const [sessionToken, setSessionToken] = useState<string | null>("dev"); // TODO: 测试期间使用虚拟 token，上线前恢复 null
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [settings, setSettings] = useState<backend.Settings | null>(null);
   const [subscriptions, setSubscriptions] = useState<backend.Subscription[]>([]);
   const [refreshingId,setRefreshingId]=useState<string|null>(null);
@@ -18,20 +18,21 @@ export function App() {
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const titles = { overview: "网络环境安全", rules: "规则管理", proxy: "代理节点" };
   const requestAction = (action: "rules" | "proxy") => setDialog(locked ? "unlock" : action);
-  useEffect(() => { Promise.all([backend.getBootstrapState(), backend.getSettings(), backend.listSubscriptions(),backend.getCoreStatus(),backend.listParentRules()]).then(([bootstrap, current, saved,core,rules]) => {
-    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current); setSubscriptions(saved);setCoreStatus(core);setParentRules(rules); setReady(true);
+  useEffect(() => { Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus()]).then(([bootstrap,current,core]) => {
+    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core); setReady(true);
     if(current.protectionEnabled&&!core.running)void backend.autoStartProtection().then(setCoreStatus).catch(reason=>setRuntimeError(String(reason)));
   }); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
-  useEffect(()=>{void backend.refreshDueSubscriptions().then(()=>backend.listSubscriptions()).then(setSubscriptions);const timer=window.setInterval(()=>{void backend.refreshDueSubscriptions().then(()=>backend.listSubscriptions()).then(setSubscriptions);},15*60*1000);return()=>window.clearInterval(timer);},[]);
-  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);setAccessLogs(await backend.listAccessLogs(result.sessionToken,undefined,undefined,100)); setLocked(false); setDialog(null); };
-  const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null); setLocked(true); };
+  useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.refreshDueSubscriptions().then(()=>backend.reloadProtection(sessionToken)).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken]);
+  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,100),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
+  const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]); setLocked(true); };
+  const reloadRuntime=async(token:string)=>{const core=await backend.reloadProtection(token);setCoreStatus(core);};
   const setValue = async (key: string, value: string) => {
     if (!sessionToken) { setDialog("unlock"); return; }
     setRuntimeError("");
     try {
-      if(key==="protection_enabled"){const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);}
-      setSettings(await backend.updateSetting(sessionToken, key, value));
+      if(key==="protection_enabled"){const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);setSettings(await backend.updateSetting(sessionToken,key,value));}
+      else {setSettings(await backend.updateSetting(sessionToken,key,value));await reloadRuntime(sessionToken);}
     } catch(reason) { setRuntimeError(String(reason)); }
   };
   const toggle = (key: string, enabled: boolean) => setValue(key, String(enabled));
@@ -39,17 +40,17 @@ export function App() {
     if (!sessionToken) throw new Error("请先解锁管理台");
     const item=await backend.createSubscription(sessionToken, input);
     try { await backend.refreshSubscription(sessionToken,item.id); } catch(reason) { await backend.deleteSubscription(sessionToken,item.id); throw reason; }
-    setSubscriptions(await backend.listSubscriptions()); setDialog(null);
+    setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); setDialog(null);
   };
-  const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions()); };
-  const removeSubscription = async (id: string) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.deleteSubscription(sessionToken,id); setSubscriptions(await backend.listSubscriptions()); };
-  const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}setRefreshingId(id);try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions());}finally{setRefreshingId(null);}};
+  const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); };
+  const removeSubscription = async (id: string) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.deleteSubscription(sessionToken,id); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); };
+  const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}setRefreshingId(id);try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}};
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await backend.clearAccessLogs(sessionToken);setAccessLogs([]);};
   const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}const csv=await backend.exportAccessLogsCsv(sessionToken);const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="cleanweb-access-logs.csv";link.click();URL.revokeObjectURL(url);};
-  const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules());setDialog(null);};
-  const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules());};
-  const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules());};
-  useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.syncAccessLogs().then(()=>backend.listAccessLogs(sessionToken,undefined,undefined,100)).then(setAccessLogs);refresh();const timer=window.setInterval(refresh,3000);return()=>window.clearInterval(timer);},[sessionToken]);
+  const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);setDialog(null);};
+  const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);};
+  const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);};
+  useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.listAccessLogs(sessionToken,undefined,undefined,100).then(setAccessLogs);refresh();const timer=window.setInterval(refresh,3000);return()=>window.clearInterval(timer);},[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
   return <div className="shell">
     <aside>
@@ -66,7 +67,7 @@ export function App() {
       {runtimeError&&<div className="runtime-error" role="alert">{runtimeError}</div>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} locked={locked} logs={accessLogs} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={()=>locked?setDialog("unlock"):setDialog("custom")} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("rules")} />}
-      {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("proxy")} coreStatus={coreStatus} locked={locked} />}
+      {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("proxy")} coreStatus={coreStatus} locked={locked} sessionToken={sessionToken} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
@@ -111,7 +112,7 @@ function Rules({ parentRules, subscriptions, refreshingId, onRefresh, onTogglePa
   </>;
 }
 
-function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, locked }: { subscriptions:backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void; coreStatus:backend.CoreStatus|null; locked:boolean }) {
+function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, locked, sessionToken }: { subscriptions:backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void; coreStatus:backend.CoreStatus|null; locked:boolean; sessionToken:string|null }) {
   const [groups, setGroups] = useState<backend.ProxyGroup[]>([]);
   const running = coreStatus?.running === true;
   const [expandedId, setExpandedId] = useState<string|null>(null);
@@ -119,23 +120,33 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
   const [selectedGroup, setSelectedGroup] = useState<string|null>(null);
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [testingSpeed, setTestingSpeed] = useState(false);
-  const refreshProxies = () => { if (running) void backend.getProxies().then(setGroups).catch(() => {}); };
-  useEffect(() => { refreshProxies(); const timer = running ? window.setInterval(refreshProxies, 10000) : 0; return () => { if (timer) window.clearInterval(timer); }; }, [running]);
+  const refreshProxies = () => { if (running && sessionToken) void backend.getProxies(sessionToken).then(setGroups).catch(() => {}); };
+  useEffect(() => { if(!sessionToken)setGroups([]);refreshProxies(); const timer = running&&sessionToken ? window.setInterval(refreshProxies, 10000) : 0; return () => { if (timer) window.clearInterval(timer); }; }, [running,sessionToken]);
   useEffect(() => { if (refreshingId) setSubProxies(prev => { const next = { ...prev }; delete next[refreshingId]; return next; }); }, [refreshingId]);
   useEffect(() => { const ids = new Set(subscriptions.map(s => s.id)); setSubProxies(prev => { const next: Record<string, backend.SubscriptionProxyInfo> = {}; for (const [k, v] of Object.entries(prev)) if (ids.has(k)) next[k] = v; return next; }); }, [subscriptions]);
-  const handleSelect = async (group: string, name: string) => { if (locked) return; try { await backend.selectProxy(group, name); refreshProxies(); } catch (reason) { console.error(reason); } };
+  useEffect(() => {
+    if (!sessionToken) return;
+    const missing = subscriptions.filter(item => item.enabled && !subProxies[item.id]);
+    for (const item of missing) {
+      void backend.getSubscriptionProxies(sessionToken,item.id)
+        .then(info=>setSubProxies(previous=>({...previous,[item.id]:info})))
+        .catch(()=>{});
+    }
+  }, [sessionToken,subscriptions,subProxies]);
+  const handleSelect = async (group: string, name: string) => { if (locked || !sessionToken) return; try { await backend.selectProxy(sessionToken, group, name); refreshProxies(); } catch (reason) { console.error(reason); } };
   const toggleExpand = async (id: string) => {
+    if (!sessionToken) return;
     if (expandedId === id) { setExpandedId(null); setSelectedGroup(null); return; }
     setExpandedId(id); setSelectedGroup(null);
     if (!subProxies[id]) {
-      try { const info = await backend.getSubscriptionProxies(id); setSubProxies(prev => ({ ...prev, [id]: info })); } catch (reason) { console.error(reason); }
+      try { const info = await backend.getSubscriptionProxies(sessionToken,id); setSubProxies(prev => ({ ...prev, [id]: info })); } catch (reason) { console.error(reason); }
     }
   };
   const handleSpeedTest = async () => {
-    if (!running || testingSpeed) return;
+    if (!running || testingSpeed || !sessionToken) return;
     setTestingSpeed(true);
     try {
-      const result = await backend.testAllProxyDelays();
+      const result = await backend.testAllProxyDelays(sessionToken);
       setDelays(result.delays);
       refreshProxies();
     } catch (reason) { console.error(reason); }
@@ -263,7 +274,7 @@ function SubscriptionDialog({ kind, onClose, onSubmit }: { kind: "规则" | "代
       <h2 id="subscription-title">添加{kind}订阅</h2>
       <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR 和 Adblock 列表。" : "只会提取代理节点和代理组。"}</p>
       <form ref={formRef} onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
-        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" value={selectedFormat} onChange={e=>handleFormatChange(e.target.value)}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option></select></>}
+        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" value={selectedFormat} onChange={e=>handleFormatChange(e.target.value)}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索映射</option></select></>}
         <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
         <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
         {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category"><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select>

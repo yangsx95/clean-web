@@ -73,10 +73,14 @@ pub struct AccessLog {
 
 #[tauri::command]
 pub async fn sync_access_logs(state: State<'_, AppState>) -> Result<usize, String> {
-    if !setting_bool(&state, "access_logging_enabled")? {
+    sync_access_logs_inner(&state).await
+}
+
+pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, String> {
+    if !setting_bool(state, "access_logging_enabled")? {
         return Ok(0);
     }
-    let secret = controller_secret(&state)?;
+    let secret = controller_secret(state)?;
     let response = match reqwest::Client::new()
         .get(CONTROLLER_CONNECTIONS)
         .bearer_auth(secret)
@@ -91,7 +95,7 @@ pub async fn sync_access_logs(state: State<'_, AppState>) -> Result<usize, Strin
     };
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-    let categories = rule_categories(&state)?;
+    let categories = rule_categories(state)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let mut inserted = 0;
     for connection in response.connections {

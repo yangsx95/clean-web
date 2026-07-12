@@ -7,7 +7,14 @@
 //! "fail-open" policy in docs/architecture.md).
 
 use serde::Serialize;
-use std::process::Command;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+#[cfg(target_os = "macos")]
+const SYSTEM_RUNTIME_DIR: &str = "/Library/Application Support/CleanWeb";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +78,8 @@ pub fn pid_running(pid: u32) -> bool {
     {
         // SAFETY: `kill` with signal 0 performs no signal delivery; it only
         // checks liveness and permissions.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
     {
@@ -84,11 +92,26 @@ pub fn pid_running(pid: u32) -> bool {
     }
 }
 
+/// Rejects stale PID files that now point at an unrelated process.
+pub fn cleanweb_mihomo_running(pid: u32) -> bool {
+    if !pid_running(pid) {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let expected = format!("{SYSTEM_RUNTIME_DIR}/mihomo");
+        return run_command("/bin/ps", &["-p", &pid.to_string(), "-o", "command="])
+            .is_some_and(|command| command.contains(&expected));
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 /// Politely requests a process to terminate (SIGTERM on Unix).
 pub fn terminate_process(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+        signal_process(pid, libc::SIGTERM)
     }
     #[cfg(not(unix))]
     {
@@ -103,7 +126,7 @@ pub fn terminate_process(pid: u32) -> bool {
 pub fn kill_process(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) == 0 }
+        signal_process(pid, libc::SIGKILL)
     }
     #[cfg(not(unix))]
     {
@@ -112,6 +135,103 @@ pub fn kill_process(pid: u32) -> bool {
             .status()
             .is_ok_and(|s| s.success())
     }
+}
+
+#[cfg(unix)]
+fn signal_process(pid: u32, signal: i32) -> bool {
+    if unsafe { libc::kill(pid as i32, signal) } == 0 {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    if std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
+        return run_admin_shell(&format!("/bin/kill -{signal} {pid}")).is_ok();
+    }
+    false
+}
+
+/// Installs a root-owned copy of the validated core and its generated config,
+/// then starts it with the privileges required to create a macOS TUN device.
+#[cfg(target_os = "macos")]
+pub fn start_mihomo_privileged(binary: &Path, config: &Path) -> Result<(u32, PathBuf), String> {
+    let system_dir = PathBuf::from(SYSTEM_RUNTIME_DIR);
+    let installed_binary = system_dir.join("mihomo");
+    let installed_config = system_dir.join("config.yaml");
+    let log = system_dir.join("mihomo.log");
+    let command = format!(
+        "/bin/mkdir -p {dir} && /usr/bin/install -o root -g wheel -m 700 {source_binary} {binary} && /usr/bin/install -o root -g wheel -m 600 {source_config} {config} && /usr/bin/touch {log} && /bin/chmod 644 {log} && : > {log} && {{ {binary} -d {dir} -f {config} >> {log} 2>&1 & echo $!; }}",
+        dir = shell_quote(&system_dir),
+        source_binary = shell_quote(binary),
+        binary = shell_quote(&installed_binary),
+        source_config = shell_quote(config),
+        config = shell_quote(&installed_config),
+        log = shell_quote(&log),
+    );
+    let output = run_admin_shell(&command)?;
+    let pid = output
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().parse::<u32>().ok())
+        .ok_or_else(|| format!("管理员启动未返回 Mihomo PID：{output}"))?;
+    Ok((pid, log))
+}
+
+#[cfg(target_os = "macos")]
+fn run_admin_shell(command: &str) -> Result<String, String> {
+    let output = Command::new("/usr/bin/osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "return do shell script (item 1 of argv) with administrator privileges",
+            "-e",
+            "end run",
+            "--",
+            command,
+        ])
+        .output()
+        .map_err(|value| format!("无法请求 macOS 管理员权限：{value}"))?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(
+            if message.contains("User canceled") || message.contains("-128") {
+                "已取消管理员授权，CleanWeb 未开启保护".into()
+            } else {
+                format!("macOS 管理员授权失败：{message}")
+            },
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+pub fn install_login_agent(executable: &Path) -> Result<(), String> {
+    let home = std::env::var_os("HOME").ok_or("无法定位用户目录")?;
+    let directory = PathBuf::from(home).join("Library/LaunchAgents");
+    fs::create_dir_all(&directory).map_err(|value| format!("无法创建登录启动目录：{value}"))?;
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>app.cleanweb.desktop</string><key>ProgramArguments</key><array><string>{}</string><string>--background</string></array><key>RunAtLoad</key><true/></dict></plist>\n",
+        xml_escape(&executable.to_string_lossy())
+    );
+    let path = directory.join("app.cleanweb.desktop.plist");
+    let temporary = path.with_extension("plist.tmp");
+    fs::write(&temporary, plist).map_err(|value| format!("无法写入登录启动项：{value}"))?;
+    fs::rename(temporary, path).map_err(|value| format!("无法安装登录启动项：{value}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(target_os = "macos")]

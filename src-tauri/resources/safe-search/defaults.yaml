@@ -1,0 +1,36 @@
+version: 1
+mappings:
+  - domain: www.google.com
+    target: forcesafesearch.google.com
+  - domain: www.google.com.hk
+    target: forcesafesearch.google.com
+  - domain: www.google.co.uk
+    target: forcesafesearch.google.com
+  - domain: www.google.co.jp
+    target: forcesafesearch.google.com
+  - domain: www.google.co.in
+    target: forcesafesearch.google.com
+  - domain: www.google.com.au
+    target: forcesafesearch.google.com
+  - domain: www.google.com.br
+    target: forcesafesearch.google.com
+  - domain: www.google.ca
+    target: forcesafesearch.google.com
+  - domain: www.google.de
+    target: forcesafesearch.google.com
+  - domain: www.google.fr
+    target: forcesafesearch.google.com
+  - domain: www.bing.com
+    target: strict.bing.com
+  - domain: cn.bing.com
+    target: strict.bing.com
+  - domain: duckduckgo.com
+    target: safe.duckduckgo.com
+  - domain: www.youtube.com
+    target: restrictmoderate.youtube.com
+  - domain: m.youtube.com
+    target: restrictmoderate.youtube.com
+  - domain: youtubei.googleapis.com
+    target: restrictmoderate.youtube.com
+  - domain: youtube.googleapis.com
+    target: restrictmoderate.youtube.com

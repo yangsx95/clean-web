@@ -7,13 +7,22 @@ import { App } from "./App";
 afterEach(cleanup);
 
 describe("management actions", () => {
-  it("starts unlocked and shows the lock button in sidebar", async () => {
+  async function unlockManagement() {
+    await userEvent.click(await screen.findByRole("button", { name: "点击解锁" }));
+    await userEvent.type(screen.getByLabelText("管理密码"), "parent123");
+    await userEvent.click(screen.getByRole("button", { name: "确认解锁" }));
+    await screen.findByRole("button", { name: "点击锁定" });
+  }
+
+  it("starts locked and unlocks with the parent password", async () => {
     render(<App />);
-    expect(await screen.findByRole("button", { name: "点击锁定" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "点击解锁" })).toBeTruthy();
+    await unlockManagement();
   });
 
-  it("navigates to rules and opens subscription form directly when unlocked", async () => {
+  it("navigates to rules and opens subscription form after unlocking", async () => {
     render(<App />);
+    await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
     expect(screen.getByRole("heading", { name: "规则来源" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "添加订阅" }));
@@ -22,8 +31,7 @@ describe("management actions", () => {
 
   it("opens both subscription forms when unlocked", async () => {
     render(<App />);
-    // 等待主界面加载完成
-    await screen.findByRole("button", { name: "规则管理" });
+    await unlockManagement();
 
     await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
     await userEvent.click(screen.getByRole("button", { name: "添加订阅" }));

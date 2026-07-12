@@ -262,10 +262,7 @@ impl AppState {
         })
     }
 
-    pub(crate) fn require_session(&self, _token: &str) -> Result<(), String> {
-        // TODO: 测试期间跳过会话验证，正式上线前恢复
-        Ok(())
-        /*
+    pub(crate) fn require_session(&self, token: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|_| "会话状态不可用")?;
         let now = Instant::now();
         sessions.retain(|_, expiry| *expiry > now);
@@ -276,7 +273,6 @@ impl AppState {
             }
             None => Err("管理会话已过期，请重新解锁".into()),
         }
-        */
     }
 }
 
@@ -342,6 +338,18 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
            enabled INTEGER NOT NULL DEFAULT 1,
            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
            UNIQUE(action,kind,pattern)
+         );
+         CREATE TABLE IF NOT EXISTS proxy_selections (
+           group_name TEXT PRIMARY KEY,
+           proxy_name TEXT NOT NULL,
+           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+         );
+         CREATE TABLE IF NOT EXISTS safe_search_mappings (
+           subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+           domain TEXT NOT NULL,
+           target TEXT NOT NULL,
+           source_line INTEGER NOT NULL,
+           PRIMARY KEY(subscription_id,domain)
          );",
     )?;
     let defaults = [
@@ -374,10 +382,18 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
 
 #[tauri::command]
 pub fn get_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapState, String> {
-    // TODO: 测试期间始终跳过密码设置，上线前恢复
-    let _ = state;
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let configured = db
+        .query_row(
+            "SELECT 1 FROM app_secrets WHERE key='password_hash'",
+            [],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(error)?
+        .unwrap_or(false);
     Ok(BootstrapState {
-        password_configured: true,
+        password_configured: configured,
     })
 }
 
@@ -467,6 +483,18 @@ pub fn update_setting(
         return Err("不支持的设置或设置值".into());
     }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    if key == "proxy_enabled" && value == "true" {
+        let usable_payloads: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM proxy_payloads pp JOIN subscriptions s ON s.id=pp.subscription_id WHERE s.enabled=1 AND s.kind='proxy' AND pp.format='clash'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(error)?;
+        if usable_payloads == 0 {
+            return Err("请先导入包含可用节点的 Clash/Mihomo 代理订阅".into());
+        }
+    }
     db.execute(
         "UPDATE settings SET value=?1 WHERE key=?2",
         params![value, key],
@@ -474,14 +502,22 @@ pub fn update_setting(
     .map_err(error)?;
     let result = read_settings(&db).map_err(error)?;
     drop(db);
-    crate::mihomo::try_reload_config(&state);
     Ok(result)
 }
 
 #[tauri::command]
 pub fn list_subscriptions(
+    session_token: String,
     kind: Option<String>,
     state: State<'_, AppState>,
+) -> Result<Vec<SubscriptionRecord>, String> {
+    state.require_session(&session_token)?;
+    list_subscriptions_inner(kind, &state)
+}
+
+fn list_subscriptions_inner(
+    kind: Option<String>,
+    state: &AppState,
 ) -> Result<Vec<SubscriptionRecord>, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let sql = "SELECT id, kind, name, url, format, category, update_interval_hours, enabled, last_updated_at, last_error FROM subscriptions WHERE (?1 IS NULL OR kind=?1) ORDER BY created_at DESC";
@@ -534,7 +570,7 @@ pub fn create_subscription(
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.execute("INSERT INTO subscriptions(id,kind,name,url,format,category,update_interval_hours) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, input.kind, input.name.trim(), input.url, input.format, input.category, input.update_interval_hours]).map_err(error)?;
     drop(db);
-    list_subscriptions(Some(input.kind), state)?
+    list_subscriptions_inner(Some(input.kind), &state)?
         .into_iter()
         .find(|item| item.id == id)
         .ok_or_else(|| "订阅保存失败".into())
@@ -560,7 +596,6 @@ pub fn set_subscription_enabled(
         return Err("订阅不存在".into());
     }
     drop(db);
-    crate::mihomo::try_reload_config(&state);
     Ok(())
 }
 
@@ -580,7 +615,6 @@ pub fn delete_subscription(
         return Err("订阅不存在".into());
     }
     drop(db);
-    crate::mihomo::try_reload_config(&state);
     Ok(())
 }
 
@@ -590,7 +624,15 @@ pub fn get_recommended_sources() -> Vec<RecommendedSource> {
 }
 
 #[tauri::command]
-pub fn list_parent_rules(state: State<'_, AppState>) -> Result<Vec<ParentRuleRecord>, String> {
+pub fn list_parent_rules(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ParentRuleRecord>, String> {
+    state.require_session(&session_token)?;
+    list_parent_rules_inner(&state)
+}
+
+fn list_parent_rules_inner(state: &AppState) -> Result<Vec<ParentRuleRecord>, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let mut statement=db.prepare("SELECT id,action,kind,pattern,category,enabled FROM parent_rules ORDER BY created_at DESC").map_err(error)?;
     let rows = statement
@@ -661,8 +703,7 @@ pub fn create_parent_rule(
     )
     .map_err(|value| format!("规则保存失败：{value}"))?;
     drop(db);
-    crate::mihomo::try_reload_config(&state);
-    list_parent_rules(state)?
+    list_parent_rules_inner(&state)?
         .into_iter()
         .find(|item| item.id == id)
         .ok_or_else(|| "规则保存失败".into())
@@ -689,7 +730,6 @@ pub fn set_parent_rule_enabled(
     {
         return Err("规则不存在".into());
     }
-    crate::mihomo::try_reload_config(&state);
     Ok(())
 }
 
@@ -710,7 +750,6 @@ pub fn delete_parent_rule(
     {
         return Err("规则不存在".into());
     }
-    crate::mihomo::try_reload_config(&state);
     Ok(())
 }
 
@@ -811,4 +850,3 @@ mod tests {
         }
     }
 }
-

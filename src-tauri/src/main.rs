@@ -89,9 +89,6 @@ fn ensure_admin() {
     exit(0);
 }
 
-#[cfg(not(target_os = "windows"))]
-fn ensure_admin() {}
-
 fn main() {
     // Release 构建自动请求管理员权限（TUN 需要）；
     // Debug/Dev 模式跳过，请用管理员终端运行 `npm run tauri dev`。

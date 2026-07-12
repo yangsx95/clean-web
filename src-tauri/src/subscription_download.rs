@@ -3,7 +3,7 @@ use std::time::Duration;
 use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine};
 use reqwest::header::CONTENT_LENGTH;
 use rusqlite::params;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use tauri::State;
 
@@ -23,6 +23,18 @@ pub struct RefreshReport {
     pub ignored_count: usize,
     pub proxy_count: usize,
     pub group_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SafeSearchManifest {
+    version: u32,
+    mappings: Vec<SafeSearchMapping>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SafeSearchMapping {
+    domain: String,
+    target: String,
 }
 
 #[tauri::command]
@@ -97,7 +109,6 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.execute("UPDATE subscriptions SET format=?1,last_updated_at=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?2",params![report.detected_format,id]).map_err(error)?;
     drop(db);
-    crate::mihomo::try_reload_config(state);
     Ok(report)
 }
 
@@ -146,6 +157,9 @@ fn refresh_rules(
         Some(value) => parse_format(value)?,
         None => detect_rule_format(text),
     };
+    if format == SubscriptionFormat::SafeSearch {
+        return refresh_safe_search(state, id, text);
+    }
     let imported = import_text(format, text, id, url, category);
     let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
     let tx = db.transaction().map_err(error)?;
@@ -162,6 +176,58 @@ fn refresh_rules(
         detected_format: format_name(format).into(),
         imported_count: imported.rules.len(),
         ignored_count: imported.ignored.len(),
+        proxy_count: 0,
+        group_count: 0,
+    })
+}
+
+fn refresh_safe_search(state: &AppState, id: &str, text: &str) -> Result<RefreshReport, String> {
+    let manifest: SafeSearchManifest = serde_yaml::from_str(text)
+        .map_err(|value| format!("安全搜索订阅不是有效 YAML：{value}"))?;
+    if manifest.version != 1 || manifest.mappings.is_empty() {
+        return Err("安全搜索订阅版本无效或没有映射".into());
+    }
+    let allowed_targets = [
+        "forcesafesearch.google.com",
+        "strict.bing.com",
+        "safe.duckduckgo.com",
+        "restrict.youtube.com",
+        "restrictmoderate.youtube.com",
+        "familysearch.yandex.ru",
+        "strict.search.yahoo.com",
+    ];
+    let mut normalized = Vec::new();
+    for (index, mapping) in manifest.mappings.into_iter().enumerate() {
+        let domain = mapping.domain.trim().trim_end_matches('.').to_ascii_lowercase();
+        let target = mapping.target.trim().trim_end_matches('.').to_ascii_lowercase();
+        if domain.is_empty()
+            || !domain.contains('.')
+            || domain.contains(['/', ':', ' '])
+            || !allowed_targets.contains(&target.as_str())
+        {
+            return Err(format!("安全搜索订阅第 {} 条映射无效", index + 1));
+        }
+        normalized.push((domain, target, index as i64 + 1));
+    }
+    let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let tx = db.transaction().map_err(error)?;
+    tx.execute(
+        "DELETE FROM safe_search_mappings WHERE subscription_id=?1",
+        params![id],
+    )
+    .map_err(error)?;
+    for (domain, target, source_line) in &normalized {
+        tx.execute(
+            "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES(?1,?2,?3,?4)",
+            params![id, domain, target, source_line],
+        )
+        .map_err(error)?;
+    }
+    tx.commit().map_err(error)?;
+    Ok(RefreshReport {
+        detected_format: "safe-search".into(),
+        imported_count: normalized.len(),
+        ignored_count: 0,
         proxy_count: 0,
         group_count: 0,
     })
@@ -747,6 +813,9 @@ fn url_decode(s: &str) -> String {
 }
 
 fn detect_rule_format(text: &str) -> SubscriptionFormat {
+    if text.contains("mappings:") && text.contains("target:") {
+        return SubscriptionFormat::SafeSearch;
+    }
     let lines: Vec<_> = text
         .lines()
         .map(str::trim)
@@ -789,6 +858,7 @@ fn parse_format(value: &str) -> Result<SubscriptionFormat, String> {
         "domain-list" => Ok(SubscriptionFormat::DomainList),
         "ip-list" => Ok(SubscriptionFormat::IpList),
         "adblock" => Ok(SubscriptionFormat::Adblock),
+        "safe-search" => Ok(SubscriptionFormat::SafeSearch),
         _ => Err("不支持的订阅格式".into()),
     }
 }
@@ -799,6 +869,7 @@ fn format_name(value: SubscriptionFormat) -> &'static str {
         SubscriptionFormat::DomainList => "domain-list",
         SubscriptionFormat::IpList => "ip-list",
         SubscriptionFormat::Adblock => "adblock",
+        SubscriptionFormat::SafeSearch => "safe-search",
     }
 }
 fn record_error<T>(state: &AppState, id: &str, message: String) -> Result<T, String> {
@@ -835,6 +906,24 @@ mod tests {
             detect_rule_format("203.0.113.0/24"),
             SubscriptionFormat::IpList
         );
+    }
+    #[test]
+    fn imports_validated_safe_search_manifest() {
+        let state = AppState::open(":memory:").unwrap();
+        state.db.lock().unwrap().execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('safe','rule','safe','https://example.test/safe.yaml',1)",[]).unwrap();
+        let report = refresh_safe_search(
+            &state,
+            "safe",
+            "version: 1\nmappings:\n  - domain: search.example.com\n    target: forcesafesearch.google.com\n",
+        )
+        .unwrap();
+        assert_eq!(report.imported_count, 1);
+        let count: i64 = state.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM safe_search_mappings WHERE subscription_id='safe' AND domain='search.example.com'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
     #[test]
     fn counts_proxy_uri_lists() {
