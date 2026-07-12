@@ -320,7 +320,7 @@ pub async fn test_proxy_group(
 ) -> Result<DelayResult, String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
-    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies/")).map_err(error)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
     url.path_segments_mut()
         .map_err(|_| "控制器地址无效")?
         .push(&group)
@@ -492,7 +492,7 @@ pub async fn select_proxy(
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
-    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies/")).map_err(error)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
     url.path_segments_mut()
         .map_err(|_| "代理组名称无效")?
         .push(&group);
@@ -532,7 +532,7 @@ pub async fn test_all_proxy_delays(
 ) -> Result<ProxyDelayResult, String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
-    let mut url = Url::parse(&format!("http://{CONTROLLER}/group/")).map_err(error)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/group")).map_err(error)?;
     url.path_segments_mut()
         .map_err(|_| "控制器地址无效")?
         .push(&group)
@@ -879,8 +879,108 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "DOMAIN-SUFFIX,lan,DIRECT",
         "DOMAIN-SUFFIX,internal,DIRECT",
     ];
+    // 系统服务与国内直连域名，避免系统级与国内流量误走代理
+    // 不依赖 GEOIP（需要 MMDB 文件），纯域名匹配确保国内常见服务直连
+    let direct_rules = [
+        // Apple 系统服务（推送通知、iCloud、App Store 等）
+        "DOMAIN-SUFFIX,apple.com,DIRECT",
+        "DOMAIN-SUFFIX,apple.com.cn,DIRECT",
+        "DOMAIN-SUFFIX,icloud.com,DIRECT",
+        "DOMAIN-SUFFIX,icloud.com.cn,DIRECT",
+        "DOMAIN-SUFFIX,mzstatic.com,DIRECT",
+        "DOMAIN-SUFFIX,apple-cloudkit.com,DIRECT",
+        "DOMAIN-SUFFIX,cdn-apple.com,DIRECT",
+        "DOMAIN-SUFFIX,apple-mapkit.com,DIRECT",
+        // Microsoft 系统服务（Windows 更新、推送等）
+        "DOMAIN-SUFFIX,microsoft.com,DIRECT",
+        "DOMAIN-SUFFIX,windowsupdate.com,DIRECT",
+        "DOMAIN-SUFFIX,windows.com,DIRECT",
+        "DOMAIN-SUFFIX,msn.com,DIRECT",
+        "DOMAIN-SUFFIX,live.com,DIRECT",
+        "DOMAIN-SUFFIX,office.com,DIRECT",
+        // 腾讯系（微信、QQ、腾讯云、腾讯文档 CDN 等）
+        "DOMAIN-SUFFIX,qq.com,DIRECT",
+        "DOMAIN-SUFFIX,weixin.qq.com,DIRECT",
+        "DOMAIN-SUFFIX,tencent.com,DIRECT",
+        "DOMAIN-SUFFIX,gtimg.com,DIRECT",
+        "DOMAIN-SUFFIX,idqqimg.com,DIRECT",
+        "DOMAIN-SUFFIX,qpic.cn,DIRECT",
+        "DOMAIN-SUFFIX,myqcloud.com,DIRECT",
+        "DOMAIN-SUFFIX,qcloud.com,DIRECT",
+        "DOMAIN-SUFFIX,cdn.bcebos.com,DIRECT",
+        // 阿里系（淘宝、天猫、支付宝、阿里云等）
+        "DOMAIN-SUFFIX,alibaba.com,DIRECT",
+        "DOMAIN-SUFFIX,alicdn.com,DIRECT",
+        "DOMAIN-SUFFIX,aliyun.com,DIRECT",
+        "DOMAIN-SUFFIX,aliyuncs.com,DIRECT",
+        "DOMAIN-SUFFIX,taobao.com,DIRECT",
+        "DOMAIN-SUFFIX,tmall.com,DIRECT",
+        "DOMAIN-SUFFIX,alipay.com,DIRECT",
+        "DOMAIN-SUFFIX,alibabacloud.com,DIRECT",
+        "DOMAIN-SUFFIX,mmstat.com,DIRECT",
+        // 百度系
+        "DOMAIN-SUFFIX,baidu.com,DIRECT",
+        "DOMAIN-SUFFIX,bdstatic.com,DIRECT",
+        "DOMAIN-SUFFIX,bdimg.com,DIRECT",
+        "DOMAIN-SUFFIX,bcebos.com,DIRECT",
+        "DOMAIN-SUFFIX,bdydns.com,DIRECT",
+        // 字节跳动系（抖音、飞书等）
+        "DOMAIN-SUFFIX,bytedance.com,DIRECT",
+        "DOMAIN-SUFFIX,byteimg.com,DIRECT",
+        "DOMAIN-SUFFIX,douyin.com,DIRECT",
+        "DOMAIN-SUFFIX,douyinpic.com,DIRECT",
+        "DOMAIN-SUFFIX,feishu.cn,DIRECT",
+        // 京东
+        "DOMAIN-SUFFIX,jd.com,DIRECT",
+        "DOMAIN-SUFFIX,360buy.com,DIRECT",
+        "DOMAIN-SUFFIX,360buyimg.com,DIRECT",
+        // 网易
+        "DOMAIN-SUFFIX,163.com,DIRECT",
+        "DOMAIN-SUFFIX,126.com,DIRECT",
+        "DOMAIN-SUFFIX,netease.com,DIRECT",
+        // 微博/新浪
+        "DOMAIN-SUFFIX,weibo.com,DIRECT",
+        "DOMAIN-SUFFIX,sina.com.cn,DIRECT",
+        "DOMAIN-SUFFIX,sinaimg.cn,DIRECT",
+        "DOMAIN-SUFFIX,sinajs.com,DIRECT",
+        // B站
+        "DOMAIN-SUFFIX,bilibili.com,DIRECT",
+        "DOMAIN-SUFFIX,bilivideo.com,DIRECT",
+        "DOMAIN-SUFFIX,hdslb.com,DIRECT",
+        "DOMAIN-SUFFIX,biliapi.net,DIRECT",
+        // 美团/大众点评
+        "DOMAIN-SUFFIX,meituan.com,DIRECT",
+        "DOMAIN-SUFFIX,dianping.com,DIRECT",
+        // 拼多多
+        "DOMAIN-SUFFIX,pinduoduo.com,DIRECT",
+        "DOMAIN-SUFFIX,yangkeduo.com,DIRECT",
+        // 小米
+        "DOMAIN-SUFFIX,mi.com,DIRECT",
+        "DOMAIN-SUFFIX,xiaomi.com,DIRECT",
+        "DOMAIN-SUFFIX,miui.com,DIRECT",
+        // 华为
+        "DOMAIN-SUFFIX,huawei.com,DIRECT",
+        "DOMAIN-SUFFIX,dbankcdn.com,DIRECT",
+        // 知乎/豆瓣/小红书
+        "DOMAIN-SUFFIX,zhihu.com,DIRECT",
+        "DOMAIN-SUFFIX,zhimg.com,DIRECT",
+        "DOMAIN-SUFFIX,douban.com,DIRECT",
+        "DOMAIN-SUFFIX,xiaohongshu.com,DIRECT",
+        // 开发者/工具
+        "DOMAIN-SUFFIX,csdn.net,DIRECT",
+        "DOMAIN-SUFFIX,gitee.com,DIRECT",
+        "DOMAIN-SUFFIX,oschina.net,DIRECT",
+        // 政府/教育域名
+        "DOMAIN-SUFFIX,gov.cn,DIRECT",
+        "DOMAIN-SUFFIX,edu.cn,DIRECT",
+        // 国内通用 CDN 与基础设施
+        "DOMAIN-SUFFIX,cdn.bcebos.com,DIRECT",
+        "DOMAIN-SUFFIX,qlogo.cn,DIRECT",
+        "DOMAIN-SUFFIX,tencent-cloud.com,DIRECT",
+    ];
     let mut all_rules: Vec<Value> = lan_rules
         .iter()
+        .chain(direct_rules.iter())
         .map(|r| Value::String((*r).into()))
         .collect();
     all_rules.append(&mut rules);
@@ -1207,7 +1307,10 @@ fn last_log_lines(path: &Path, count: usize) -> io::Result<String> {
 
 fn tun_startup_ready(log: &str) -> bool {
     let log = log.to_ascii_lowercase();
-    log.contains("tun[") && log.contains("proxy listening at:")
+    // 旧版格式: "Tun[0] proxy listening at: utun5"
+    // 新版格式: "[TUN] Tun adapter listening at: utun4(...)"
+    (log.contains("tun[") && log.contains("proxy listening at:"))
+        || log.contains("tun adapter listening at:")
 }
 
 fn tun_startup_failed(log: &str) -> bool {
@@ -1298,8 +1401,13 @@ mod tests {
 
     #[test]
     fn accepts_only_an_explicit_tun_ready_log() {
+        // 旧版 mihomo 日志格式
         assert!(tun_startup_ready(
             "level=info msg=\"Tun[0] proxy listening at: utun5\""
+        ));
+        // 新版 mihomo 日志格式
+        assert!(tun_startup_ready(
+            "level=info msg=\"[TUN] Tun adapter listening at: utun4([198.18.0.1/30],[fdfe:dcba:9876::1/126]), mtu: 9000, auto route: true, auto redir: false, ip stack: Mixed\""
         ));
         assert!(!tun_startup_failed(
             "level=info msg=\"Tun[0] proxy listening at: utun5\""

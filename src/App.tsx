@@ -113,15 +113,12 @@ function Rules({ parentRules, subscriptions, refreshingId, onRefresh, onTogglePa
 }
 
 function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, locked, sessionToken }: { subscriptions:backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void; coreStatus:backend.CoreStatus|null; locked:boolean; sessionToken:string|null }) {
-  const [groups, setGroups] = useState<backend.ProxyGroup[]>([]);
   const running = coreStatus?.running === true;
   const [expandedId, setExpandedId] = useState<string|null>(null);
   const [subProxies, setSubProxies] = useState<Record<string, backend.SubscriptionProxyInfo>>({});
   const [selectedGroup, setSelectedGroup] = useState<string|null>(null);
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [testingSpeed, setTestingSpeed] = useState(false);
-  const refreshProxies = () => { if (running && sessionToken) void backend.getProxies(sessionToken).then(setGroups).catch(() => {}); };
-  useEffect(() => { if(!sessionToken)setGroups([]);refreshProxies(); const timer = running&&sessionToken ? window.setInterval(refreshProxies, 10000) : 0; return () => { if (timer) window.clearInterval(timer); }; }, [running,sessionToken]);
   useEffect(() => { if (refreshingId) setSubProxies(prev => { const next = { ...prev }; delete next[refreshingId]; return next; }); }, [refreshingId]);
   useEffect(() => { const ids = new Set(subscriptions.map(s => s.id)); setSubProxies(prev => { const next: Record<string, backend.SubscriptionProxyInfo> = {}; for (const [k, v] of Object.entries(prev)) if (ids.has(k)) next[k] = v; return next; }); }, [subscriptions]);
   useEffect(() => {
@@ -133,7 +130,6 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
         .catch(()=>{});
     }
   }, [sessionToken,subscriptions,subProxies]);
-  const handleSelect = async (group: string, name: string) => { if (locked || !sessionToken) return; try { await backend.selectProxy(sessionToken, group, name); refreshProxies(); } catch (reason) { console.error(reason); } };
   const toggleExpand = async (id: string) => {
     if (!sessionToken) return;
     if (expandedId === id) { setExpandedId(null); setSelectedGroup(null); return; }
@@ -148,7 +144,6 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
     try {
       const result = await backend.testAllProxyDelays(sessionToken);
       setDelays(result.delays);
-      refreshProxies();
     } catch (reason) { console.error(reason); }
     finally { setTestingSpeed(false); }
   };
@@ -158,6 +153,15 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
     if (d < 200) return { text: `${d}ms`, cls: "fast" };
     if (d < 500) return { text: `${d}ms`, cls: "medium" };
     return { text: `${d}ms`, cls: "slow" };
+  };
+  // 构建归一化的延迟查找表，支持模糊匹配
+  const findDelay = (name: string): number | undefined => {
+    if (delays[name] != null) return delays[name];
+    const lower = name.toLowerCase();
+    for (const [key, value] of Object.entries(delays)) {
+      if (key.toLowerCase() === lower) return value;
+    }
+    return undefined;
   };
   return <>
     <section className="toolbar"><div><h2>家长管理的代理</h2><p>导入代理订阅，仅提取节点和代理组，自动过滤不相关的网络配置。</p></div><button className="primary" onClick={onAdd}><Plus size={16}/>导入订阅</button></section>
@@ -205,7 +209,7 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
                   <div className="sub-proxy-grid">
                     {info.proxies.map(p => {
                       const isMember = memberSet ? memberSet.has(p.name) : true;
-                      const dl = delayLabel(delays[p.name]);
+                      const dl = delayLabel(findDelay(p.name));
                       return <div className={`sub-proxy-node${isMember ? "" : " dimmed"}`} key={p.name}>
                         <span className="sub-proxy-node-name">{p.name}</span>
                         <span className="sub-proxy-node-meta">
@@ -221,7 +225,6 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
         </div>}
       </section>;
     })}
-    {running && groups.length > 0 && <section className="proxy-groups"><div className="toolbar"><div><h2>代理组与节点</h2><p>选择每个代理组使用的节点。点击网速检测测试所有节点延迟。</p></div><button className={`speed-test-btn${testingSpeed ? " testing" : ""}`} disabled={testingSpeed} onClick={handleSpeedTest}><Gauge size={14}/>{testingSpeed ? "测速中…" : "全网测速"}</button></div>{groups.map(group => <div className="proxy-group-block" key={group.name}><div className="proxy-group-head"><h3>{group.name}</h3><span className="proxy-group-type">{group.groupType === "Selector" ? "手动选择" : group.groupType === "URLTest" ? "自动测速" : group.groupType}</span></div><div className="proxy-node-grid">{group.nodes.map(node => { const active = group.now === node.name; const dl = delayLabel(delays[node.name] ?? node.delay ?? undefined); return <button key={node.name} className={`proxy-node ${active ? "active" : ""}`} disabled={locked && !active} onClick={() => void handleSelect(group.name, node.name)}><div className="proxy-node-name">{node.name}</div><div className="proxy-node-meta"><span className="proxy-node-type">{node.nodeType}</span>{dl && <span className={`proxy-node-delay ${dl.cls}`}>{dl.text}</span>}</div></button>; })}</div></div>)}</section>}
   </>;
 }
 
