@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Gauge, LockKeyhole, Network, Plus, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
 import * as backend from "./backend";
 
@@ -61,6 +61,7 @@ export function App() {
         <button className={page === "proxy" ? "active" : ""} onClick={() => setPage("proxy")}><Network/>代理节点</button>
       </nav>
       <div className={locked ? "locked" : "locked unlocked"} onClick={() => locked ? setDialog("unlock") : void handleLock()} role="button" aria-label={locked ? "点击解锁" : "点击锁定"} tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter"||e.key===" ")locked?setDialog("unlock"):void handleLock();}}><LockKeyhole size={18}/><div><b>{locked ? "管理台已锁定" : "管理台已解锁"}</b><span>{locked ? "点击解锁" : "点击锁定"}</span></div></div>
+      <div className="sidebar-version">CleanWeb v0.1.0</div>
     </aside>
     <main>
       <header><div><span className="eyebrow">家庭网络保护</span><h1>{titles[page]}</h1></div></header>
@@ -79,11 +80,19 @@ export function App() {
 
 function Overview({ settings, coreStatus, locked, logs, onClear, onExport, onToggle, onRetention }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;locked:boolean;logs:backend.AccessLog[];onClear:()=>Promise<void>;onExport:()=>Promise<void>; onToggle: (key: string, enabled: boolean) => Promise<void>; onRetention: (value: string) => Promise<void> }) {
   const running=coreStatus?.running===true;
+  const blockedCount = logs.filter(l => l.decision === "block").length;
+  const allowedCount = logs.filter(l => l.decision === "allow").length;
+  const totalCount = logs.length;
   return <>
       <section className="hero">
         <div className="pulse"><ShieldCheck size={34}/></div>
         <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Mihomo TUN 正在执行网络策略" : "开启后将启动内核并接管网络"}</h2><p>{running?`内核 PID ${coreStatus?.pid} · fake-IP DNS 已配置`:settings.protectionEnabled?"配置要求保护开启，但内核当前未运行":"当前网络未被 CleanWeb 接管"}</p></div>
         <Switch checked={settings.protectionEnabled} label="总保护" onChange={(value) => onToggle("protection_enabled", value)} />
+      </section>
+      <section className="stats">
+        <article><span>已拦截</span><strong>{blockedCount}</strong><small>最近 {logs.length} 条记录中</small></article>
+        <article><span>已允许</span><strong>{allowedCount}</strong><small>正常访问请求</small></article>
+        <article><span>总请求</span><strong>{totalCount}</strong><small>监控期间总计</small></article>
       </section>
       <section className="setting-grid">
         <SettingCard title="网络代理" note="由家长决定是否使用代理节点"><Switch checked={settings.proxyEnabled} label="代理" onChange={(value) => onToggle("proxy_enabled", value)} /></SettingCard>
@@ -264,25 +273,16 @@ function ParentRuleDialog({onClose,onSubmit}:{onClose:()=>void;onSubmit:(input:b
 
 function SubscriptionDialog({ kind, onClose, onSubmit }: { kind: "规则" | "代理"; onClose: () => void; onSubmit:(input:backend.NewSubscription)=>Promise<void> }) {
   const [error,setError]=useState("");
-  const [allSources,setAllSources]=useState<backend.RecommendedSource[]>([]);
-  const [selectedFormat,setSelectedFormat]=useState("auto");
-  const formRef=useRef<HTMLFormElement>(null);
-  useEffect(()=>{ if(kind==="规则"){ backend.getRecommendedSources().then(setAllSources).catch(()=>setAllSources([])); } },[kind]);
-  const filteredSources = selectedFormat==="auto" ? allSources : allSources.filter(s=>s.format===selectedFormat);
-  const handleFormatChange=(fmt:string)=>{ setSelectedFormat(fmt); };
-  const applySource=(src:backend.RecommendedSource)=>{ const form=formRef.current; if(!form)return; (form.elements.namedItem("name")as HTMLInputElement).value=src.name; (form.elements.namedItem("url")as HTMLInputElement).value=src.url; (form.elements.namedItem("format")as HTMLSelectElement).value=src.format; (form.elements.namedItem("category")as HTMLSelectElement).value=src.category; };
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="subscription-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
       <h2 id="subscription-title">添加{kind}订阅</h2>
       <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR 和 Adblock 列表。" : "只会提取代理节点和代理组。"}</p>
-      <form ref={formRef} onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
-        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" value={selectedFormat} onChange={e=>handleFormatChange(e.target.value)}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索映射</option></select></>}
+      <form onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
+        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format"><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索映射</option></select></>}
         <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
         <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
-        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category"><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select>
-        {filteredSources.length>0 && <div className="recommended-sources"><span className="recommended-sources-title">推荐规则源（点击自动填入）</span><div className="recommended-sources-grid">{filteredSources.map(src=><button type="button" className="recommended-source-card" key={src.url} onClick={()=>applySource(src)}><div className="recommended-source-head"><span className="recommended-source-name">{src.name}</span><span className="recommended-source-badge">{src.format}</span></div><p className="recommended-source-desc">{src.description}</p></button>)}</div></div>}
-        </>}
+        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category"><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select></>}
         <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval"><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
         {error&&<span className="form-error">{error}</span>}
         <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并添加</button></div>

@@ -24,6 +24,45 @@ pub struct NetworkConflicts {
     pub vpn_services: Vec<String>,
 }
 
+/// Returns the DNS server addresses currently configured by the operating
+/// system. On macOS these can be LAN addresses which auto-route deliberately
+/// bypasses, so the TUN config must add exact routes for them.
+pub fn system_dns_servers() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/sbin/scutil")
+            .arg("--dns")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| parse_macos_dns_servers(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_dns_servers(output: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    for line in output.lines() {
+        let Some((_, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        if !line.trim_start().starts_with("nameserver[") {
+            continue;
+        }
+        let value = value.trim();
+        if value.parse::<std::net::IpAddr>().is_ok()
+            && !matches!(value, "127.0.0.1" | "::1" | "198.18.0.1")
+            && !values.iter().any(|existing| existing == value)
+        {
+            values.push(value.to_owned());
+        }
+    }
+    values
+}
+
 /// A human-readable operating-system version string.
 pub fn os_version() -> String {
     #[cfg(target_os = "macos")]
@@ -100,8 +139,8 @@ pub fn cleanweb_mihomo_running(pid: u32) -> bool {
     #[cfg(target_os = "macos")]
     {
         let expected = format!("{SYSTEM_RUNTIME_DIR}/mihomo");
-        return run_command("/bin/ps", &["-p", &pid.to_string(), "-o", "command="])
-            .is_some_and(|command| command.contains(&expected));
+        run_command("/bin/ps", &["-p", &pid.to_string(), "-o", "command="])
+            .is_some_and(|command| command.contains(&expected))
     }
     #[cfg(not(target_os = "macos"))]
     true
@@ -157,9 +196,11 @@ pub fn start_mihomo_privileged(binary: &Path, config: &Path) -> Result<(u32, Pat
     let installed_binary = system_dir.join("mihomo");
     let installed_config = system_dir.join("config.yaml");
     let log = system_dir.join("mihomo.log");
+    let safe_paths = config.parent().ok_or("无法定位 CleanWeb 配置目录")?;
     let command = format!(
-        "/bin/mkdir -p {dir} && /usr/bin/install -o root -g wheel -m 700 {source_binary} {binary} && /usr/bin/install -o root -g wheel -m 600 {source_config} {config} && /usr/bin/touch {log} && /bin/chmod 644 {log} && : > {log} && {{ {binary} -d {dir} -f {config} >> {log} 2>&1 & echo $!; }}",
+        "/bin/mkdir -p {dir} && /usr/bin/install -o root -g wheel -m 700 {source_binary} {binary} && /usr/bin/install -o root -g wheel -m 600 {source_config} {config} && /usr/bin/touch {log} && /bin/chmod 644 {log} && : > {log} && {{ /usr/bin/env SAFE_PATHS={safe_paths} {binary} -d {dir} -f {config} >> {log} 2>&1 & echo $!; }}",
         dir = shell_quote(&system_dir),
+        safe_paths = shell_quote(safe_paths),
         source_binary = shell_quote(binary),
         binary = shell_quote(&installed_binary),
         source_config = shell_quote(config),
@@ -295,6 +336,16 @@ mod tests {
         assert_eq!(
             value.has_conflict,
             !value.interfaces.is_empty() || !value.vpn_services.is_empty()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_unique_macos_dns_servers() {
+        let output = "resolver #1\n  nameserver[0] : 10.195.85.120\n  nameserver[1] : 240e:479::19\nresolver #2\n  nameserver[0] : 10.195.85.120\n";
+        assert_eq!(
+            parse_macos_dns_servers(output),
+            vec!["10.195.85.120", "240e:479::19"]
         );
     }
 }

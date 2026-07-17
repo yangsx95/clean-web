@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
 use reqwest::header::CONTENT_LENGTH;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -75,7 +78,7 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
         .await
         .map_err(|value| format!("订阅下载失败：{value}"))?;
     if !response.status().is_success() {
-        return record_error(&state, &id, format!("服务器返回 {}", response.status()));
+        return record_error(state, &id, format!("服务器返回 {}", response.status()));
     }
     if response
         .headers()
@@ -84,17 +87,17 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
         .and_then(|v| v.parse::<usize>().ok())
         .is_some_and(|size| size > MAX_SUBSCRIPTION_BYTES)
     {
-        return record_error(&state, &id, "订阅文件超过20MB限制".into());
+        return record_error(state, &id, "订阅文件超过20MB限制".into());
     }
     let bytes = response.bytes().await.map_err(error)?;
     if bytes.len() > MAX_SUBSCRIPTION_BYTES {
-        return record_error(&state, &id, "订阅文件超过20MB限制".into());
+        return record_error(state, &id, "订阅文件超过20MB限制".into());
     }
     let text = String::from_utf8(bytes.to_vec()).map_err(|_| "订阅不是有效UTF-8文本")?;
 
     let report = if kind == "rule" {
         refresh_rules(
-            &state,
+            state,
             &id,
             &url,
             configured_format.as_deref(),
@@ -198,8 +201,16 @@ fn refresh_safe_search(state: &AppState, id: &str, text: &str) -> Result<Refresh
     ];
     let mut normalized = Vec::new();
     for (index, mapping) in manifest.mappings.into_iter().enumerate() {
-        let domain = mapping.domain.trim().trim_end_matches('.').to_ascii_lowercase();
-        let target = mapping.target.trim().trim_end_matches('.').to_ascii_lowercase();
+        let domain = mapping
+            .domain
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        let target = mapping
+            .target
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
         if domain.is_empty()
             || !domain.contains('.')
             || domain.contains(['/', ':', ' '])
@@ -239,8 +250,8 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
         return Ok(result);
     }
     // 尝试 base64 解码（很多订阅商会把整个 Clash 配置 base64 后返回）
-    if let Some(decoded) = flexible_base64_decode(text.trim())
-        .and_then(|s| String::from_utf8(s).ok())
+    if let Some(decoded) =
+        flexible_base64_decode(text.trim()).and_then(|s| String::from_utf8(s).ok())
     {
         if let Some(result) = try_parse_clash_yaml(&decoded)? {
             return Ok(result);
@@ -282,10 +293,7 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
         return Err("无法解析任何代理节点".into());
     }
     let mut clean = serde_yaml::Mapping::new();
-    clean.insert(
-        Value::String("proxies".into()),
-        Value::Sequence(proxies),
-    );
+    clean.insert(Value::String("proxies".into()), Value::Sequence(proxies));
     let payload = serde_yaml::to_string(&clean).map_err(error)?;
     Ok((
         RefreshReport {
@@ -324,7 +332,10 @@ fn parse_single_uri(uri: &str, index: &mut usize) -> Option<Value> {
         match uri[search_start..].rfind('#') {
             Some(rel_pos) => {
                 let abs_pos = search_start + rel_pos;
-                (&uri[..abs_pos], url_decode(&uri[abs_pos + 1..].replace('+', " ")))
+                (
+                    &uri[..abs_pos],
+                    url_decode(&uri[abs_pos + 1..].replace('+', " ")),
+                )
             }
             None => (uri, format!("节点{}", index)),
         }
@@ -358,10 +369,16 @@ fn parse_single_uri(uri: &str, index: &mut usize) -> Option<Value> {
     if let Some(rest) = main.strip_prefix("tuic://") {
         return parse_tuic(rest, &name);
     }
-    if let Some(rest) = main.strip_prefix("socks5://").or_else(|| main.strip_prefix("socks://")) {
+    if let Some(rest) = main
+        .strip_prefix("socks5://")
+        .or_else(|| main.strip_prefix("socks://"))
+    {
         return parse_socks(rest, &name);
     }
-    if let Some(rest) = main.strip_prefix("http://").or_else(|| main.strip_prefix("https://")) {
+    if let Some(rest) = main
+        .strip_prefix("http://")
+        .or_else(|| main.strip_prefix("https://"))
+    {
         return parse_http_proxy(rest, &name);
     }
     None
@@ -407,8 +424,7 @@ fn parse_ss(rest: &str, name: &str) -> Option<Value> {
         }
     } else {
         // 旧格式: base64(method:password@host:port)
-        let decoded = flexible_base64_decode(rest)
-            .and_then(|b| String::from_utf8(b).ok())?;
+        let decoded = flexible_base64_decode(rest).and_then(|b| String::from_utf8(b).ok())?;
         if let Some((method_pass, hostport)) = decoded.rsplit_once('@') {
             if let Some((method, password)) = method_pass.split_once(':') {
                 map.insert("cipher".into(), method.into());
@@ -420,15 +436,12 @@ fn parse_ss(rest: &str, name: &str) -> Option<Value> {
             }
         }
     }
-    if map.get("server").is_none() {
-        return None;
-    }
+    map.get("server")?;
     Some(Value::Mapping(map))
 }
 
 fn parse_vmess(rest: &str, name: &str) -> Option<Value> {
-    let decoded = flexible_base64_decode(rest)
-        .and_then(|b| String::from_utf8(b).ok())?;
+    let decoded = flexible_base64_decode(rest).and_then(|b| String::from_utf8(b).ok())?;
     let json: serde_json::Value = serde_json::from_str(&decoded).ok()?;
     let get = |k: &str| json.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let mut map = serde_yaml::Mapping::new();
@@ -437,28 +450,40 @@ fn parse_vmess(rest: &str, name: &str) -> Option<Value> {
     map.insert("server".into(), get("add").into());
     map.insert("port".into(), get("port").parse::<u32>().ok()?.into());
     map.insert("uuid".into(), get("id").into());
-    map.insert("alterId".into(), get("aid").parse::<u32>().unwrap_or(0).into());
+    map.insert(
+        "alterId".into(),
+        get("aid").parse::<u32>().unwrap_or(0).into(),
+    );
     let scy = get("scy");
-    map.insert("cipher".into(), (if scy.is_empty() { "auto" } else { scy }).into());
+    map.insert(
+        "cipher".into(),
+        (if scy.is_empty() { "auto" } else { scy }).into(),
+    );
     let network = get("net");
     if !network.is_empty() {
         map.insert("network".into(), network.into());
     }
-    if network == "ws" || network == "h2" || network == "grpc" {
-        if !get("path").is_empty() {
-            map.insert(format!("{}-opts", network).as_str().into(), {
+    if (network == "ws" || network == "h2" || network == "grpc") && !get("path").is_empty() {
+        map.insert(
+            format!("{}-opts", network).as_str().into(),
+            {
                 let mut opts = serde_yaml::Mapping::new();
                 opts.insert("path".into(), get("path").into());
                 if !get("host").is_empty() {
-                    opts.insert("headers".into(), {
-                        let mut h = serde_yaml::Mapping::new();
-                        h.insert("Host".into(), get("host").into());
-                        h
-                    }.into());
+                    opts.insert(
+                        "headers".into(),
+                        {
+                            let mut h = serde_yaml::Mapping::new();
+                            h.insert("Host".into(), get("host").into());
+                            h
+                        }
+                        .into(),
+                    );
                 }
                 opts
-            }.into());
-        }
+            }
+            .into(),
+        );
     }
     let tls = get("tls");
     if tls == "tls" {
@@ -478,10 +503,8 @@ fn parse_vless_trojan(rest: &str, name: &str, ptype: &str) -> Option<Value> {
         None => (hostport_query, ""),
     };
     let (host, port) = hostport.rsplit_once(':')?;
-    let params: std::collections::HashMap<&str, &str> = query
-        .split('&')
-        .filter_map(|p| p.split_once('='))
-        .collect();
+    let params: std::collections::HashMap<&str, &str> =
+        query.split('&').filter_map(|p| p.split_once('=')).collect();
 
     let mut map = serde_yaml::Mapping::new();
     map.insert("name".into(), name.into());
@@ -510,11 +533,15 @@ fn parse_vless_trojan(rest: &str, name: &str, ptype: &str) -> Option<Value> {
         }
         if let Some(host) = params.get("host") {
             if network == "ws" {
-                opts.insert("headers".into(), {
-                    let mut h = serde_yaml::Mapping::new();
-                    h.insert("Host".into(), url_decode(host).into());
-                    h
-                }.into());
+                opts.insert(
+                    "headers".into(),
+                    {
+                        let mut h = serde_yaml::Mapping::new();
+                        h.insert("Host".into(), url_decode(host).into());
+                        h
+                    }
+                    .into(),
+                );
             } else {
                 opts.insert("host".into(), url_decode(host).into());
             }
@@ -530,7 +557,11 @@ fn parse_vless_trojan(rest: &str, name: &str, ptype: &str) -> Option<Value> {
         if let Some(sni) = params.get("sni") {
             map.insert("servername".into(), url_decode(sni).into());
         }
-        if params.get("allowInsecure").map(|v| *v == "1").unwrap_or(false) {
+        if params
+            .get("allowInsecure")
+            .map(|v| *v == "1")
+            .unwrap_or(false)
+        {
             map.insert("skip-cert-verify".into(), true.into());
         }
     }
@@ -550,10 +581,8 @@ fn parse_tuic(rest: &str, name: &str) -> Option<Value> {
         None => (hostport_query, ""),
     };
     let (host, port) = hostport.rsplit_once(':')?;
-    let params: std::collections::HashMap<&str, &str> = query
-        .split('&')
-        .filter_map(|p| p.split_once('='))
-        .collect();
+    let params: std::collections::HashMap<&str, &str> =
+        query.split('&').filter_map(|p| p.split_once('=')).collect();
     let (uuid, password) = auth.split_once(':')?;
 
     let mut map = serde_yaml::Mapping::new();
@@ -575,8 +604,7 @@ fn parse_tuic(rest: &str, name: &str) -> Option<Value> {
 
 /// SSR 链接格式: ssr://base64(host:port:protocol:method:obfs:base64(password)/?remarks=base64(name)&protoparam=base64(val)&obfsparam=base64(val))
 fn parse_ssr(rest: &str, name: &str) -> Option<Value> {
-    let decoded = flexible_base64_decode(rest)
-        .and_then(|b| String::from_utf8(b).ok())?;
+    let decoded = flexible_base64_decode(rest).and_then(|b| String::from_utf8(b).ok())?;
     // 分离路径和查询参数
     let (path, query) = match decoded.split_once('/').or_else(|| decoded.split_once('?')) {
         Some((p, q)) => (p, q),
@@ -595,15 +623,13 @@ fn parse_ssr(rest: &str, name: &str) -> Option<Value> {
         .and_then(|b| String::from_utf8(b).ok())
         .unwrap_or_else(|| fields[5].to_string());
 
-    let params: std::collections::HashMap<&str, &str> = query
-        .split('&')
-        .filter_map(|p| p.split_once('='))
-        .collect();
+    let params: std::collections::HashMap<&str, &str> =
+        query.split('&').filter_map(|p| p.split_once('=')).collect();
 
     // 提取节点名称: remarks 字段优先
     if let Some(remarks_b64) = params.get("remarks") {
-        if let Some(remarks) = flexible_base64_decode(remarks_b64)
-            .and_then(|b| String::from_utf8(b).ok())
+        if let Some(remarks) =
+            flexible_base64_decode(remarks_b64).and_then(|b| String::from_utf8(b).ok())
         {
             if !remarks.trim().is_empty() {
                 // 使用 remarks 作为名称（但 name 已由外层传入）
@@ -650,10 +676,8 @@ fn parse_hysteria(rest: &str, name: &str) -> Option<Value> {
         None => (rest, ""),
     };
     let (host, port) = hostport.rsplit_once(':')?;
-    let params: std::collections::HashMap<&str, &str> = query
-        .split('&')
-        .filter_map(|p| p.split_once('='))
-        .collect();
+    let params: std::collections::HashMap<&str, &str> =
+        query.split('&').filter_map(|p| p.split_once('=')).collect();
 
     let mut map = serde_yaml::Mapping::new();
     map.insert("name".into(), name.into());
@@ -783,7 +807,9 @@ fn try_parse_clash_yaml(text: &str) -> Result<Option<(RefreshReport, String)>, S
 
 /// 灵活的 base64 解码：依次尝试标准、URL-safe no-pad、标准 no-pad
 fn flexible_base64_decode(input: &str) -> Option<Vec<u8>> {
-    STANDARD.decode(input).ok()
+    STANDARD
+        .decode(input)
+        .ok()
         .or_else(|| URL_SAFE_NO_PAD.decode(input).ok())
         .or_else(|| STANDARD.decode(input.trim_end_matches('=')).ok())
 }
@@ -796,10 +822,9 @@ fn url_decode(s: &str) -> String {
     let mut i = 0;
     while i < src.len() {
         if src[i] == b'%' && i + 2 < src.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                &std::str::from_utf8(&src[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&src[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 bytes.push(byte);
                 i += 3;
                 continue;
@@ -808,8 +833,7 @@ fn url_decode(s: &str) -> String {
         bytes.push(src[i]);
         i += 1;
     }
-    String::from_utf8(bytes)
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 fn detect_rule_format(text: &str) -> SubscriptionFormat {
@@ -988,8 +1012,14 @@ mod tests {
         assert_eq!(node.get("server").unwrap().as_str().unwrap(), "1.2.3.4");
         assert_eq!(node.get("port").unwrap().as_u64().unwrap(), 443);
         assert_eq!(node.get("password").unwrap().as_str().unwrap(), "test123");
-        assert_eq!(node.get("protocol").unwrap().as_str().unwrap(), "auth_aes128_md5");
-        assert_eq!(node.get("obfs").unwrap().as_str().unwrap(), "tls1.2_ticket_auth");
+        assert_eq!(
+            node.get("protocol").unwrap().as_str().unwrap(),
+            "auth_aes128_md5"
+        );
+        assert_eq!(
+            node.get("obfs").unwrap().as_str().unwrap(),
+            "tls1.2_ticket_auth"
+        );
     }
 
     #[test]
@@ -1003,7 +1033,7 @@ mod tests {
         assert_eq!(node.get("auth-str").unwrap().as_str().unwrap(), "secret");
         assert_eq!(node.get("obfs").unwrap().as_str().unwrap(), "xor");
         assert_eq!(node.get("sni").unwrap().as_str().unwrap(), "my.server.com");
-        assert_eq!(node.get("skip-cert-verify").unwrap().as_bool().unwrap(), true);
+        assert!(node.get("skip-cert-verify").unwrap().as_bool().unwrap());
     }
 
     #[test]
@@ -1012,7 +1042,10 @@ mod tests {
         let mut idx = 1;
         let node = parse_single_uri(uri, &mut idx).unwrap();
         assert_eq!(node.get("type").unwrap().as_str().unwrap(), "socks5");
-        assert_eq!(node.get("server").unwrap().as_str().unwrap(), "proxy.example.com");
+        assert_eq!(
+            node.get("server").unwrap().as_str().unwrap(),
+            "proxy.example.com"
+        );
         assert_eq!(node.get("port").unwrap().as_u64().unwrap(), 1080);
         assert_eq!(node.get("username").unwrap().as_str().unwrap(), "user");
         assert_eq!(node.get("password").unwrap().as_str().unwrap(), "pass");
@@ -1024,7 +1057,10 @@ mod tests {
         let mut idx = 1;
         let node = parse_single_uri(uri, &mut idx).unwrap();
         assert_eq!(node.get("type").unwrap().as_str().unwrap(), "http");
-        assert_eq!(node.get("server").unwrap().as_str().unwrap(), "proxy.example.com");
+        assert_eq!(
+            node.get("server").unwrap().as_str().unwrap(),
+            "proxy.example.com"
+        );
         assert_eq!(node.get("port").unwrap().as_u64().unwrap(), 8080);
     }
 
@@ -1060,9 +1096,15 @@ mod tests {
         let mut idx = 1;
         let node = parse_single_uri(uri, &mut idx).expect("should parse SIP002 SS URI");
         assert_eq!(node.get("type").unwrap().as_str().unwrap(), "ss");
-        assert_eq!(node.get("server").unwrap().as_str().unwrap(), "www.g00gle.com");
+        assert_eq!(
+            node.get("server").unwrap().as_str().unwrap(),
+            "www.g00gle.com"
+        );
         assert_eq!(node.get("port").unwrap().as_u64().unwrap(), 10086);
-        assert_eq!(node.get("cipher").unwrap().as_str().unwrap(), "chacha20-ietf-poly1305");
+        assert_eq!(
+            node.get("cipher").unwrap().as_str().unwrap(),
+            "chacha20-ietf-poly1305"
+        );
         assert_eq!(node.get("password").unwrap().as_str().unwrap(), "6xf/tf-0");
     }
 
@@ -1085,7 +1127,8 @@ mod tests {
         let decoded = url_decode("%E5%8D%81%E4%B9%9D%E5%A4%A797.61%25%20292.84GB");
         assert_eq!(decoded, "十九大97.61% 292.84GB");
         // 香港澳门A01 | IEPL | x2
-        let decoded2 = url_decode("%E9%A6%99%E6%B8%AF%E6%BE%B3%E9%97%A8A01%20%7C%20IEPL%20%7C%20x2");
+        let decoded2 =
+            url_decode("%E9%A6%99%E6%B8%AF%E6%BE%B3%E9%97%A8A01%20%7C%20IEPL%20%7C%20x2");
         assert_eq!(decoded2, "香港澳门A01 | IEPL | x2");
     }
 
@@ -1096,7 +1139,10 @@ mod tests {
         let mut idx = 1;
         let node = parse_single_uri(uri, &mut idx).unwrap();
         assert_eq!(node.get("name").unwrap().as_str().unwrap(), "香港澳门A01");
-        assert_eq!(node.get("server").unwrap().as_str().unwrap(), "www.g00gle.com");
+        assert_eq!(
+            node.get("server").unwrap().as_str().unwrap(),
+            "www.g00gle.com"
+        );
     }
 
     #[test]

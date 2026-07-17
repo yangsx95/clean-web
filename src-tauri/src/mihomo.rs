@@ -180,7 +180,7 @@ pub fn auto_start_protection(
 }
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
-    stop_child(&state)?;
+    stop_child(state)?;
     std::thread::sleep(Duration::from_millis(250));
     let conflicts = platform::detect_network_conflicts();
     if conflicts.has_conflict {
@@ -197,8 +197,9 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
-    let secret = controller_secret(&state)?;
-    let config = build_config(&state, &secret, true)?;
+    let secret = controller_secret(state)?;
+    let config = build_config(state, &secret, true)?;
+    let config_hash = config_hash(&config);
     atomic_write(&runtime.join("config.yaml"), config.as_bytes()).map_err(error)?;
     let config_path = runtime.join("config.yaml");
     #[cfg(target_os = "macos")]
@@ -254,6 +255,11 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
             last_log_lines(&health_log, 12).unwrap_or_else(|_| "等待 Mihomo TUN 就绪超时".into())
         );
     }
+    atomic_write(
+        &runtime.join("active-config"),
+        format!("{pid}\n{config_hash}\n").as_bytes(),
+    )
+    .map_err(error)?;
     core_status(state)
 }
 
@@ -278,13 +284,18 @@ pub async fn reload_protection(
     if !status.running {
         return Ok(status);
     }
+    // 只能比较当前运行实例确认加载过的配置。用户目录中的 config.yaml 可能已经
+    // 被新版本覆盖，而 root 内核仍运行旧配置；仅比较该文件会错误跳过安全搜索刷新。
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(&app, &runtime)?;
     let secret = controller_secret(&state)?;
+    let new_config = build_config(&state, &secret, true)?;
+    if active_config_matches(&runtime.join("active-config"), status.pid, &new_config) {
+        return Ok(status);
+    }
     let config_path = runtime.join("config.yaml");
-    let config = build_config(&state, &secret, true)?;
-    atomic_write(&config_path, config.as_bytes()).map_err(error)?;
+    atomic_write(&config_path, new_config.as_bytes()).map_err(error)?;
     let validation = Command::new(binary)
         .args(["-t", "-f"])
         .arg(&config_path)
@@ -298,18 +309,47 @@ pub async fn reload_protection(
             String::from_utf8_lossy(&validation.stderr).trim()
         ));
     }
+
     let mut url = Url::parse(&format!("http://{CONTROLLER}/configs")).map_err(error)?;
     url.query_pairs_mut().append_pair("force", "true");
-    reqwest::Client::new()
+    let response = reqwest::Client::new()
         .put(url)
-        .bearer_auth(secret)
+        .bearer_auth(&secret)
         .json(&serde_json::json!({ "path": config_path }))
         .send()
         .await
-        .map_err(error)?
-        .error_for_status()
+        .map_err(|value| format!("无法连接 Mihomo 热更新接口：{value}"))?;
+    if !response.status().is_success() {
+        let status_code = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Mihomo 热更新失败（HTTP {status_code}）：{detail}。如果这是升级前启动的内核，请关闭保护后重新开启一次。"
+        ));
+    }
+    if let Some(pid) = status.pid {
+        atomic_write(
+            &runtime.join("active-config"),
+            format!("{pid}\n{}\n", config_hash(&new_config)).as_bytes(),
+        )
         .map_err(error)?;
-    Ok(status)
+    }
+    core_status(&state)
+}
+
+fn config_hash(config: &str) -> String {
+    format!("{:x}", Sha256::digest(config.as_bytes()))
+}
+
+fn active_config_matches(path: &Path, running_pid: Option<u32>, config: &str) -> bool {
+    let Some(running_pid) = running_pid else {
+        return false;
+    };
+    let Ok(marker) = fs::read_to_string(path) else {
+        return false;
+    };
+    let mut lines = marker.lines();
+    lines.next().and_then(|value| value.parse::<u32>().ok()) == Some(running_pid)
+        && lines.next() == Some(config_hash(config).as_str())
 }
 
 #[tauri::command]
@@ -347,7 +387,10 @@ pub async fn test_proxy_group(
 }
 
 #[tauri::command]
-pub async fn get_proxies(session_token: String, state: State<'_, AppState>) -> Result<Vec<ProxyGroup>, String> {
+pub async fn get_proxies(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ProxyGroup>, String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
     let url = format!("http://{CONTROLLER}/proxies");
@@ -705,12 +748,25 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         insert(
             &mut settings,
             "ports",
-            Value::Sequence(ports.into_iter().map(|port| Value::String(port.into())).collect()),
+            Value::Sequence(
+                ports
+                    .into_iter()
+                    .map(|port| Value::String(port.into()))
+                    .collect(),
+            ),
         );
         insert(&mut settings, "override-destination", Value::Bool(true));
         sniff_protocols.insert(Value::String(protocol.into()), Value::Mapping(settings));
     }
     insert(&mut sniffer, "sniff", Value::Mapping(sniff_protocols));
+    if safe_search_enabled {
+        let mut skip_domains = Vec::new();
+        for mapping in &safe_search_mappings {
+            skip_domains.push(Value::String(mapping.domain.clone()));
+            skip_domains.push(Value::String(mapping.target.clone()));
+        }
+        insert(&mut sniffer, "skip-domain", Value::Sequence(skip_domains));
+    }
     insert(&mut root, "sniffer", Value::Mapping(sniffer));
 
     let mut tun = Mapping::new();
@@ -719,6 +775,14 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+    let dns_routes = dns_route_addresses(&platform::system_dns_servers());
+    if !dns_routes.is_empty() {
+        insert(
+            &mut tun,
+            "route-address",
+            Value::Sequence(dns_routes.into_iter().map(Value::String).collect()),
+        );
+    }
     insert(
         &mut tun,
         "dns-hijack",
@@ -745,14 +809,12 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::Sequence(vec![
             Value::String("https://1.1.1.1/dns-query".into()),
             Value::String("https://8.8.8.8/dns-query".into()),
-            Value::String("system://".into()),
         ]),
     );
     insert(
         &mut dns,
         "proxy-server-nameserver",
         Value::Sequence(vec![
-            Value::String("system://".into()),
             Value::String("223.5.5.5".into()),
             Value::String("119.29.29.29".into()),
         ]),
@@ -761,8 +823,8 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         &mut dns,
         "direct-nameserver",
         Value::Sequence(vec![
-            Value::String("system://".into()),
             Value::String("223.5.5.5".into()),
+            Value::String("119.29.29.29".into()),
         ]),
     );
     // 本地域名使用系统 DNS 解析，避免 fake-ip 导致无法访问路由器等内网设备
@@ -771,8 +833,8 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         &mut ns_policy,
         "+.home,+.local,+.lan,+.internal,+.arpa",
         Value::Sequence(vec![
-            Value::String("system://".into()),
             Value::String("223.5.5.5".into()),
+            Value::String("119.29.29.29".into()),
         ]),
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
@@ -798,6 +860,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     if safe_search_enabled {
         for mapping in &safe_search_mappings {
             fake_filter.push(mapping.domain.clone());
+            fake_filter.push(mapping.target.clone());
         }
     }
     let fake_filter_values: Vec<Value> = fake_filter
@@ -817,9 +880,18 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut root, "proxies", Value::Sequence(proxies));
     let mut groups = imported_groups;
     for group in &mut groups {
-        let Some(mapping) = group.as_mapping_mut() else { continue };
-        let Some(name) = mapping.get(Value::String("name".into())).and_then(Value::as_str) else { continue };
-        let Some(selected) = selections.get(name) else { continue };
+        let Some(mapping) = group.as_mapping_mut() else {
+            continue;
+        };
+        let Some(name) = mapping
+            .get(Value::String("name".into()))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(selected) = selections.get(name) else {
+            continue;
+        };
         if let Some(members) = mapping
             .get_mut(Value::String("proxies".into()))
             .and_then(Value::as_sequence_mut)
@@ -992,6 +1064,25 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     serde_yaml::to_string(&root).map_err(error)
 }
 
+fn dns_route_addresses(servers: &[String]) -> Vec<String> {
+    if servers.is_empty() {
+        return Vec::new();
+    }
+    let mut routes = vec![
+        "0.0.0.0/1".to_owned(),
+        "128.0.0.0/1".to_owned(),
+        "::/1".to_owned(),
+        "8000::/1".to_owned(),
+    ];
+    routes.extend(servers.iter().filter_map(|server| {
+        server
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
+    }));
+    routes
+}
+
 fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
@@ -1083,10 +1174,9 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
 }
 
 fn safe_search_manifest() -> Result<SafeSearchManifest, String> {
-    let manifest: SafeSearchManifest = serde_yaml::from_str(include_str!(
-        "../resources/safe-search/defaults.yaml"
-    ))
-    .map_err(|value| format!("内置安全搜索规则无效：{value}"))?;
+    let manifest: SafeSearchManifest =
+        serde_yaml::from_str(include_str!("../resources/safe-search/defaults.yaml"))
+            .map_err(|value| format!("内置安全搜索规则无效：{value}"))?;
     if manifest.version != 1 || manifest.mappings.is_empty() {
         return Err("内置安全搜索规则版本无效".into());
     }
@@ -1127,6 +1217,27 @@ fn safe_search_hosts(mappings: &[SafeSearchMapping]) -> Value {
         hosts.insert(
             Value::String(mapping.domain.clone()),
             Value::String(mapping.target.clone()),
+        );
+    }
+    // 阻断常见 DoH 服务器，强制浏览器回退到普通 DNS，
+    // 否则加密的 DNS 查询会绕过 hosts 重定向，安全搜索失效
+    let doh_servers = [
+        "dns.google",
+        "dns.google.com",
+        "cloudflare-dns.com",
+        "mozilla.cloudflare-dns.com",
+        "chrome.cloudflare-dns.com",
+        "dns.microsoft",
+        "doh.opendns.com",
+        "dns.quad9.net",
+        "dns.adguard.com",
+        "dns-family.adguard.com",
+        "security.cloudflare-dns.com",
+    ];
+    for server in doh_servers {
+        hosts.insert(
+            Value::String(server.to_string()),
+            Value::String("127.0.0.1".to_string()),
         );
     }
     Value::Mapping(hosts)
@@ -1219,7 +1330,10 @@ fn sanitize_proxy_groups(groups: &mut Vec<Value>, proxy_names: &[Value]) {
         let Some(source) = group.as_mapping() else {
             return false;
         };
-        let Some(name) = source.get(Value::String("name".into())).and_then(Value::as_str) else {
+        let Some(name) = source
+            .get(Value::String("name".into()))
+            .and_then(Value::as_str)
+        else {
             return false;
         };
         let group_type = source
@@ -1228,7 +1342,10 @@ fn sanitize_proxy_groups(groups: &mut Vec<Value>, proxy_names: &[Value]) {
             .unwrap_or("select");
         if name.is_empty()
             || matches!(name, "CleanWeb" | "DIRECT" | "REJECT")
-            || !matches!(group_type, "select" | "url-test" | "fallback" | "load-balance")
+            || !matches!(
+                group_type,
+                "select" | "url-test" | "fallback" | "load-balance"
+            )
         {
             return false;
         }
@@ -1261,7 +1378,10 @@ fn sanitize_proxy_groups(groups: &mut Vec<Value>, proxy_names: &[Value]) {
     });
 }
 fn move_named_first(values: &mut Vec<Value>, selected: &str) {
-    if let Some(index) = values.iter().position(|value| value.as_str() == Some(selected)) {
+    if let Some(index) = values
+        .iter()
+        .position(|value| value.as_str() == Some(selected))
+    {
         let value = values.remove(index);
         values.insert(0, value);
     }
@@ -1359,8 +1479,53 @@ mod tests {
                 .and_then(Value::as_str),
             Some("forcesafesearch.google.com")
         );
+        assert_eq!(
+            yaml.get("hosts")
+                .and_then(|hosts| hosts.get("www.google.*"))
+                .and_then(Value::as_str),
+            Some("forcesafesearch.google.com")
+        );
+        assert_eq!(
+            yaml.get("hosts")
+                .and_then(|hosts| hosts.get("www.youtube-nocookie.com"))
+                .and_then(Value::as_str),
+            Some("restrictmoderate.youtube.com")
+        );
+        let fake_ip_filter = yaml
+            .get("dns")
+            .and_then(|dns| dns.get("fake-ip-filter"))
+            .and_then(Value::as_sequence)
+            .unwrap();
+        assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
+        assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
+    }
+
+    #[test]
+    fn does_not_treat_a_stale_disk_config_as_the_active_safe_search_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("active-config");
+        let config = "hosts:\n  www.google.com: forcesafesearch.google.com\n";
+
+        // 回归场景：config.yaml 已被新版本写入，但正在运行的 root 内核没有加载它。
+        assert!(!active_config_matches(&marker, Some(42), config));
+        fs::write(&marker, format!("41\n{}\n", config_hash(config))).unwrap();
+        assert!(!active_config_matches(&marker, Some(42), config));
+
+        fs::write(&marker, format!("42\n{}\n", config_hash(config))).unwrap();
+        assert!(active_config_matches(&marker, Some(42), config));
+    }
+
+    #[test]
+    fn adds_exact_tun_routes_for_lan_dns_servers() {
+        let routes =
+            dns_route_addresses(&["10.195.85.120".into(), "240e:479:4e90:3e59::19".into()]);
+
+        assert!(routes.contains(&"0.0.0.0/1".into()));
+        assert!(routes.contains(&"128.0.0.0/1".into()));
+        assert!(routes.contains(&"10.195.85.120/32".into()));
+        assert!(routes.contains(&"240e:479:4e90:3e59::19/128".into()));
     }
 
     #[test]

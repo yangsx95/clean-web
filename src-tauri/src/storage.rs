@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
 
-const SESSION_TTL: Duration = Duration::from_secs(15 * 60);
+const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
 
 pub struct AppState {
     pub(crate) db: Mutex<Connection>,
@@ -331,7 +331,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
          );
          CREATE TABLE IF NOT EXISTS parent_rules (
            id TEXT PRIMARY KEY,
-           action TEXT NOT NULL CHECK(action IN ('allow','block')),
+           action TEXT NOT NULL CHECK(action IN ('allow','block','proxy')),
            kind TEXT NOT NULL,
            pattern TEXT NOT NULL,
            category TEXT NOT NULL DEFAULT 'custom',
@@ -352,6 +352,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
            PRIMARY KEY(subscription_id,domain)
          );",
     )?;
+    migrate_parent_rules_proxy_action(db)?;
     let defaults = [
         ("protection_enabled", "false"),
         ("proxy_enabled", "false"),
@@ -378,6 +379,38 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn migrate_parent_rules_proxy_action(db: &Connection) -> rusqlite::Result<()> {
+    let table_sql: Option<String> = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='parent_rules'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if !table_sql
+        .as_deref()
+        .is_some_and(|sql| sql.contains("CHECK(action IN ('allow','block'))"))
+    {
+        return Ok(());
+    }
+    db.execute_batch(
+        "ALTER TABLE parent_rules RENAME TO parent_rules_old;
+         CREATE TABLE parent_rules (
+           id TEXT PRIMARY KEY,
+           action TEXT NOT NULL CHECK(action IN ('allow','block','proxy')),
+           kind TEXT NOT NULL,
+           pattern TEXT NOT NULL,
+           category TEXT NOT NULL DEFAULT 'custom',
+           enabled INTEGER NOT NULL DEFAULT 1,
+           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+           UNIQUE(action,kind,pattern)
+         );
+         INSERT OR IGNORE INTO parent_rules(id,action,kind,pattern,category,enabled,created_at)
+           SELECT id,action,kind,pattern,category,enabled,created_at FROM parent_rules_old;
+         DROP TABLE parent_rules_old;",
+    )
 }
 
 #[tauri::command]
@@ -836,6 +869,20 @@ mod tests {
     }
 
     #[test]
+    fn parent_rules_allow_proxy_action() {
+        let state = AppState::open(":memory:").unwrap();
+        state
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('p','proxy','Exact','example.com','custom')",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn recommended_sources_have_valid_fields() {
         let sources = get_recommended_rule_sources();
         assert!(!sources.is_empty(), "推荐源列表不应为空");
@@ -844,8 +891,16 @@ mod tests {
         for src in &sources {
             assert!(!src.name.is_empty(), "名称不应为空");
             assert!(src.url.starts_with("http"), "URL 应为 HTTP(S): {}", src.url);
-            assert!(valid_formats.contains(&src.format.as_str()), "无效格式: {}", src.format);
-            assert!(valid_categories.contains(&src.category.as_str()), "无效分类: {}", src.category);
+            assert!(
+                valid_formats.contains(&src.format.as_str()),
+                "无效格式: {}",
+                src.format
+            );
+            assert!(
+                valid_categories.contains(&src.category.as_str()),
+                "无效分类: {}",
+                src.category
+            );
             assert!(!src.description.is_empty(), "描述不应为空");
         }
     }

@@ -1,6 +1,10 @@
 version: 1
 mappings:
+  - domain: google.com
+    target: forcesafesearch.google.com
   - domain: www.google.com
+    target: forcesafesearch.google.com
+  - domain: www.google.*
     target: forcesafesearch.google.com
   - domain: www.google.com.hk
     target: forcesafesearch.google.com
@@ -20,6 +24,8 @@ mappings:
     target: forcesafesearch.google.com
   - domain: www.google.fr
     target: forcesafesearch.google.com
+  - domain: bing.com
+    target: strict.bing.com
   - domain: www.bing.com
     target: strict.bing.com
   - domain: cn.bing.com
@@ -29,6 +35,8 @@ mappings:
   - domain: www.youtube.com
     target: restrictmoderate.youtube.com
   - domain: m.youtube.com
+    target: restrictmoderate.youtube.com
+  - domain: www.youtube-nocookie.com
     target: restrictmoderate.youtube.com
   - domain: youtubei.googleapis.com
     target: restrictmoderate.youtube.com

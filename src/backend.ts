@@ -59,6 +59,8 @@ export async function updateSetting(sessionToken: string, key: string, value: st
   if (key === "proxy_enabled") defaults.proxyEnabled = value === "true";
   if (key === "automatic_node_selection") defaults.automaticNodeSelection = value === "true";
   if (key === "access_logging_enabled") defaults.accessLoggingEnabled = value === "true";
+  if (key === "safe_search_enabled") defaults.safeSearchEnabled = value === "true";
+  if (key === "log_retention") defaults.logRetention = value;
   if (key.startsWith("category.")) defaults.categories[key.slice(9)] = value === "true";
   return structuredClone(defaults);
 }
