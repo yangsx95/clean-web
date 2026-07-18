@@ -1,11 +1,14 @@
 pub mod access_logs;
 pub mod mihomo;
 pub mod platform;
+#[cfg(target_os = "macos")]
+pub mod privileged_service;
 pub mod proxy_crypto;
 pub mod rules;
 pub mod storage;
 pub mod subscription_download;
 pub mod subscriptions;
+pub mod xray;
 
 use std::fs;
 use tauri::Manager;
@@ -18,10 +21,14 @@ pub fn run() {
             fs::create_dir_all(&data_dir)?;
             app.manage(storage::AppState::open(data_dir.join("cleanweb.db"))?);
             let background_app = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(3));
+            std::thread::spawn(move || {
                 let state = background_app.state::<storage::AppState>();
-                let _ = tauri::async_runtime::block_on(access_logs::sync_access_logs_inner(&state));
+                access_logs::initialize_log_cursors(&state);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let _ =
+                        tauri::async_runtime::block_on(access_logs::sync_access_logs_inner(&state));
+                }
             });
             #[cfg(target_os = "macos")]
             {
@@ -38,6 +45,9 @@ pub fn run() {
                     });
                     if std::env::args().any(|argument| argument == "--background") {
                         let _ = window.hide();
+                    } else {
+                        let _ = window.show();
+                        let _ = window.set_focus();
                     }
                 }
             }
@@ -48,6 +58,7 @@ pub fn run() {
             storage::initialize_password,
             storage::unlock,
             storage::lock,
+            storage::validate_session,
             storage::get_settings,
             storage::update_setting,
             storage::list_subscriptions,
@@ -67,6 +78,7 @@ pub fn run() {
             mihomo::reload_protection,
             mihomo::test_proxy_group,
             mihomo::get_proxies,
+            mihomo::get_saved_proxy_selection,
             mihomo::get_subscription_proxies,
             mihomo::select_proxy,
             mihomo::test_all_proxy_delays,
@@ -77,6 +89,16 @@ pub fn run() {
             access_logs::clear_access_logs,
             access_logs::export_access_logs_csv,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run CleanWeb");
+        .build(tauri::generate_context!())
+        .expect("failed to build CleanWeb")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }

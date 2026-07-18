@@ -1,105 +1,163 @@
-# CleanWeb V1 product specification
+# CleanWeb 产品规格（V1）
 
-## Product statement
+## 产品定位
 
-CleanWeb is a parental-control network filter for Windows and, later, macOS.
-Content safety takes precedence over proxy routing. A parent controls all
-policies and proxy choices; a child cannot change protection settings.
+CleanWeb 是面向家庭和个人自律用户的本地网络净化工具。它在同一个网络接管层中同时完成不良内容过滤和用户自带代理访问，解决代理软件与 DNS/广告过滤工具并存时容易失效或冲突的问题。
 
-## V1 users and platform
+内容安全始终优先于代理和直连路由。CleanWeb 不销售、不提供代理节点，也不承诺其他 VPN、Clash 或 AdGuard VPN 与 CleanWeb 同时运行。
 
-- Primary environment: family-owned Windows computers.
-- Administrator: parent holding the Windows administrator account and the
-  CleanWeb management password.
-- Managed user: child using a standard Windows account.
-- macOS follows after the Windows architecture and rule engine are validated.
+## 用户与管理边界
 
-## Required capabilities
+- 首要用户：为同一台设备设置网络规则的家长，以及希望主动过滤不良内容的个人用户。
+- V1 使用 CleanWeb 管理密码区分管理者和普通使用者，不处理多个操作系统账户的独立策略。
+- 普通使用者被假定为不具备系统管理员/root 权限、不会进行专业逆向或重装系统的非技术用户。
+- 管理者可以开启或关闭总保护、代理、安全搜索、广告过滤和日志，并管理规则、订阅和代理节点。
+- 忘记管理密码时，只允许通过本机系统管理员授权重置。
 
-1. Capture device traffic using a TUN-based networking service.
-2. Block domains, subdomains, IPs, and CIDRs using local rules.
-3. Support exact, suffix, substring, wildcard, and regular-expression domain
-   rules. Substring and regex rules are advanced features and may overblock.
-4. Block core categories: pornography and suggestive content, gambling, drugs,
-   graphic violence, self-harm, hate/extremism, fraud, phishing, and malware.
-5. Offer optional categories including advertising, tracking, games, short
-   video, live streaming, and social media.
-6. Import Clash/Mihomo proxy nodes and proxy groups while rejecting imported
-   DNS, routing, scripts, TUN settings, and bypass policies.
-7. Automatically latency-test approved proxy nodes. Only a parent may select
-   a node or change proxy behavior.
-8. Import Clash/Mihomo providers, basic Adblock domain rules, hosts files,
-   plain domain lists, and IP/CIDR lists. Unsupported cosmetic, script, and URL
-   rules must be reported rather than silently treated as supported.
-9. Enforce safe-search modes where supported for Google, Bing, YouTube,
-   DuckDuckGo, Yahoo, Baidu, Sogou, 360 Search, and Yandex.
-10. Start protection with Windows. Normal child actions cannot stop the service,
-    change policy, or uninstall the product.
+## 平台顺序
 
-## Explicit V1 boundaries
+1. macOS 13+，首发平台；一个 Universal 安装包支持 Intel 和 Apple Silicon。
+2. Windows 10 22H2 和 Windows 11，功能与 macOS 等价后发布。
+3. Android 10+，使用 Android 原生 VPN 架构单独实现。
+4. iOS 16+，以取得 Network Extension 能力和通过 App Store 审核为前提，不阻塞其他平台发布。
 
-- Unknown and newly registered domains are allowed by default.
-- Unknown direct-IP connections are allowed, logged, and marked as warnings.
-- IPs and CIDRs on a blocklist are blocked.
-- HTTPS is not decrypted. Page text, images, video, full URL paths, and AI
-  conversations are not inspected.
-- A blocked connection fails normally; V1 does not provide an interstitial page.
-- Service failure is fail-open: networking continues without filtering.
-- Multiple managed OS accounts, remote cloud administration, access requests,
-  OpenVPN coexistence, and VPN interoperability are outside V1.
-- Administrator/root-level adversaries and service crashes are not within the
-  anti-circumvention guarantee.
+首版 macOS 采用官网分发、Developer ID 签名和 Apple 公证，不以 Mac App Store 为首发前提。
 
-## Policy priority (highest first)
+## 功能开关
 
-1. Product-integrity and anti-bypass policy
-2. Malware, phishing, fraud, and other high-risk security rules
-3. Parent blocklist
-4. Parent allowlist
-5. Core content-safety categories
-6. Optional content categories
-7. Third-party subscriptions
-8. Proxy-routing policy
-9. Default allow
+- **总保护**：决定 CleanWeb 是否接管设备网络。管理者主动关闭后必须恢复正常网络。
+- **内容过滤**：总保护开启时始终生效，不提供独立关闭开关。
+- **网络代理**：可独立开启或关闭；关闭时，允许的流量直接连接。
+- **安全搜索**：可独立开启或关闭。
+- **广告与跟踪保护**：可独立开启或关闭。
+- **访问日志**：可独立开启或关闭，默认开启。
+- **自动选择节点**：可独立开启或关闭。
 
-A parent allowlist overrides content and subscription rules. It does not
-override high-risk security rules unless an advanced administrative override is
-explicitly enabled.
+不允许出现“总保护开启、仅使用代理但不执行核心内容过滤”的状态。
 
-## Rule provenance and commercial safety
+## 内容过滤
 
-- Normalize semantically equivalent rules into one canonical record.
-- Preserve every contributing source and category on that record.
-- Removing a subscription removes only its source contribution.
-- Bundle only sources whose licenses permit commercial redistribution.
-- Store source URL, license, attribution, version, checksum, and update time.
-- Sign first-party rule packages and retain the last valid version for rollback.
-- User-added sources are clearly distinguished from bundled trusted sources.
+### 强制类别
 
-## Access log
+总保护开启时必须过滤：
 
-Each decision may record:
+- 色情及擦边内容；
+- 赌博；
+- 毒品；
+- 暴力和血腥内容；
+- 自残和自杀内容；
+- 仇恨和极端主义；
+- 诈骗、钓鱼和恶意软件。
 
-- Timestamp
-- Observed domain, when available
-- Target IP and port
-- Allow/block/warning result
-- Matching canonical rule and category
-- Originating process
-- Windows version
-- Logged-in Windows user
-- Direct connection or selected proxy group
+诈骗、钓鱼和恶意软件属于高风险安全类别，普通白名单不能覆盖。其他核心内容类别可由管理者使用明确的手动白名单处理误杀。
 
-Unknown direct-IP access receives a warning classification. Retention is
-configurable up to 90 days or permanently. V1 stores logs locally.
+广告和普通跟踪器合并为一个可选类别；恶意广告仍属于强制安全类别。
 
-## UX direction
+### 可观察范围
 
-The UI is calm, clean, and administrative rather than styled like a generic VPN
-client. It has two states:
+V1 可以根据以下信息做出决策：
 
-- Locked state: protection summary and non-sensitive status only.
-- Management state: unlocked by parent credentials; rules, subscriptions,
-  proxy nodes, logs, and settings are editable.
+- 域名和子域名；
+- DNS 查询；
+- 目标 IP；
+- IPv4/IPv6 CIDR。
 
-Destructive and protection-reducing actions require explicit confirmation.
+V1 不解密 HTTPS，不检测网页正文、图片、视频、AI 对话或完整 URL 路径。未知和新注册域名默认放行；未知直接 IP 连接默认放行，但记录为警告。被拦截连接表现为普通网络失败，不显示 HTTPS 拦截页。
+
+### 自定义规则
+
+支持精确域名、域名后缀、包含关键词、通配符、正则表达式、IP 和 CIDR。关键词和正则属于高级规则，保存前必须验证语法并明确提示可能扩大匹配范围。
+
+### 规则优先级
+
+从高到低：
+
+1. 诈骗、钓鱼、恶意软件等高风险安全规则；
+2. 管理者手动黑名单；
+3. 管理者手动白名单；
+4. 核心内容类别；
+5. 广告、跟踪等可选类别；
+6. 第三方订阅；
+7. 未被规则命中的本地网络直连；
+8. 代理或直连路由；
+9. 默认放行。
+
+过滤规则必须排在代理和内置直连规则之前，避免同一域名的 `DIRECT` 规则绕过拦截；显式 IP/CIDR 黑名单也必须先于本地网络直连。
+
+## 安全搜索
+
+在服务商支持的范围内强制 Google、Bing、YouTube、DuckDuckGo、Yahoo、百度、搜狗、360 搜索和 Yandex 的安全模式。不把抖音、小红书或 B 站青少年模式纳入 DNS 安全搜索范围。
+
+安全搜索映射属于独立规则类型：CleanWeb 内置默认映射，也支持经过格式验证的订阅映射，避免将厂商地址永久写死在业务逻辑中。
+
+## 规则供应链
+
+- 安装后必须自带可立即生效的基础核心规则。
+- 官方推荐源具有固定分类；用户添加来源时必须选择分类，混合来源标记为“第三方综合”。
+- 官方规则包必须签名、校验版本并保留最后一次有效版本。
+- 官方核心规则每天检查；第三方订阅支持每6小时、12小时、每天或每周更新。
+- 更新失败继续使用最后一次有效规则，不影响联网。
+- 用户可导入许可证未知的自定义来源，但 CleanWeb 不得把它作为官方资源重新分发。
+- 官方分发的每个规则源必须记录 URL、许可证、归属、版本、校验和和更新时间，并确认允许商业再分发。
+- 语义相同的规则标准化为一个记录，同时保留所有来源贡献；删除一个订阅只移除该来源的贡献。
+- 社区举报、审核和公共共享平台不属于 V1，只预留来源和版本字段。
+
+## 代理
+
+- 用户只导入自己的订阅；CleanWeb 不销售、不托管代理节点。
+- 支持 Mihomo 能力范围内的主流协议，但不新增 SSR 支持；SSR 输入应报告为不支持。
+- 从 Clash/Mihomo 订阅中只保留代理节点、代理组和节点关系。
+- 丢弃订阅中的 DNS、TUN、路由规则、脚本、本地端口、控制器和绕过策略。
+- 支持管理者手动选点、批量延迟测试、自动选择和节点故障切换。
+- 不支持按域名选择代理或直连；过滤完成后的允许流量统一使用当前代理策略。
+- 代理关闭或节点全部失效时，过滤继续运行；需要代理的网站自然连接失败，普通直连网站继续访问。
+- V1 不处理“代理订阅必须依靠已失效代理才能更新”的特殊恢复流程。
+- 不向其他应用暴露本地 HTTP/SOCKS 监听端口，设备流量统一经过 TUN。
+
+## 网络生命周期与冲突
+
+- 检测并展示其他 VPN/TUN 或系统代理，但不阻止 CleanWeb 启动。V1 采用尽力共存策略；路由优先级变化可能导致第三方代理或 CleanWeb 部分失效，应向用户提示当前检测结果。
+- 不自动终止或修改第三方 VPN 软件。
+- CleanWeb 服务或 Mihomo 崩溃后优先自动重启；V1 不坚持系统级断网锁。
+- 自动恢复最终失败时保持网络可用，并在客户端明确显示“保护失效”。
+- 管理者主动关闭或卸载时必须恢复 DNS、路由、启动项和网络状态。
+- 应用升级不得重复要求日常管理员授权；安装特权组件或执行系统管理员密码重置时可以要求一次系统授权。
+
+## 访问日志与隐私
+
+每个网络连接最多记录一条最终决策：
+
+- 时间；
+- 域名（可观察时）；
+- 目标 IP 和端口；
+- 放行、拦截或未知 IP 警告；
+- 命中规则和分类；
+- 发起进程；
+- 当前操作系统和系统用户；
+- 直连或代理；
+- 使用的代理组。
+
+日志不保存订阅地址、代理凭据或完整节点名称。日志默认开启且仅保存在本机，首次启用保护时必须明确告知。保留期可设为7天、30天、90天或永久，默认30天；支持筛选、清空和导出 CSV。
+
+V1 不提供账户、云同步、远程监控或自动遥测。诊断包由用户主动导出，并默认清除域名、IP、用户名、订阅地址、节点和凭据。
+
+## 发布与商业边界
+
+- 第一阶段作为免费测试版发布，不加入不完整的付费限制或联网授权。
+- 应用启动时可以检查应用更新，但必须由用户确认安装。
+- Xray 与 Mihomo 均随应用版本发布，不单独在线替换。
+- Xray 作为独立 MPL-2.0 策略前置程序分发，安装包包含准确版本的许可证和归属。
+- Mihomo 作为独立 GPLv3 可执行程序分发和调用；发布时仍须履行准确版本对应的许可证、归属和源代码义务。
+- 商业发布前必须对 Mihomo、所有依赖和所有官方规则源进行专业许可证审查。
+
+## V1 验收标准
+
+- 开启保护后10秒内完成网络接管。
+- 同一网络条件下，TUN 直连吞吐不低于未开启时的85%。
+- 支持至少50万条标准化域名/IP规则。
+- 规则更新失败不破坏最后一次有效规则。
+- 内核崩溃后10秒内开始自动恢复。
+- 一次配置变化只执行一次热更新，不重复弹出系统管理员密码。
+- 日志实时采集连接最终决策，不能依赖低频轮询当前连接列表作为最终方案。
+- 安装、升级、主动关闭和卸载后不残留错误 DNS、路由或 TUN 状态。
+- 功能完成必须由真实流量、真实拦截、代理、DNS、安全搜索、日志、崩溃恢复和卸载恢复测试证明，不能仅以界面或配置存在作为完成依据。

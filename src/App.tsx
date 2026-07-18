@@ -18,10 +18,22 @@ export function App() {
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const titles = { overview: "网络环境安全", rules: "规则管理", proxy: "代理节点" };
   const requestAction = (action: "rules" | "proxy") => setDialog(locked ? "unlock" : action);
-  useEffect(() => { Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus()]).then(([bootstrap,current,core]) => {
-    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core); setReady(true);
+  useEffect(() => { void (async () => {
+    const [bootstrap,current,core] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus()]);
+    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);
+    const storedToken = backend.getStoredSessionToken();
+    if (storedToken) {
+      try {
+        const result = await backend.validateSession(storedToken);
+        const [logs,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,100),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
+        setSessionToken(result.sessionToken);setAccessLogs(logs);setSubscriptions(saved);setParentRules(rules);setLocked(false);
+      } catch {
+        backend.clearStoredSessionToken();
+      }
+    }
+    setReady(true);
     if(current.protectionEnabled&&!core.running)void backend.autoStartProtection().then(setCoreStatus).catch(reason=>setRuntimeError(String(reason)));
-  }); }, []);
+  })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.refreshDueSubscriptions().then(()=>backend.reloadProtection(sessionToken)).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,100),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
@@ -50,6 +62,7 @@ export function App() {
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);setDialog(null);};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);};
+  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError("");try{const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result.requiresReload)await reloadRuntime(sessionToken);setSettings(await backend.getSettings());}catch(reason){setRuntimeError(String(reason));throw reason;}};
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.listAccessLogs(sessionToken,undefined,undefined,100).then(setAccessLogs);refresh();const timer=window.setInterval(refresh,3000);return()=>window.clearInterval(timer);},[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
   return <div className="shell">
@@ -68,7 +81,7 @@ export function App() {
       {runtimeError&&<div className="runtime-error" role="alert">{runtimeError}</div>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} locked={locked} logs={accessLogs} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={()=>locked?setDialog("unlock"):setDialog("custom")} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("rules")} />}
-      {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("proxy")} coreStatus={coreStatus} locked={locked} sessionToken={sessionToken} />}
+      {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("proxy")} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
@@ -86,7 +99,7 @@ function Overview({ settings, coreStatus, locked, logs, onClear, onExport, onTog
   return <>
       <section className="hero">
         <div className="pulse"><ShieldCheck size={34}/></div>
-        <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Mihomo TUN 正在执行网络策略" : "开启后将启动内核并接管网络"}</h2><p>{running?`内核 PID ${coreStatus?.pid} · fake-IP DNS 已配置`:settings.protectionEnabled?"配置要求保护开启，但内核当前未运行":"当前网络未被 CleanWeb 接管"}</p></div>
+        <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Clean Web 正在执行网络策略" : "开启后将启动保护并接管网络"}</h2><p>{running?`保护服务 PID ${coreStatus?.pid} · 安全 DNS 已配置`:settings.protectionEnabled?"配置要求保护开启，但服务当前未运行":"当前网络未被 Clean Web 接管"}</p></div>
         <Switch checked={settings.protectionEnabled} label="总保护" onChange={(value) => onToggle("protection_enabled", value)} />
       </section>
       <section className="stats">
@@ -105,29 +118,42 @@ function Overview({ settings, coreStatus, locked, logs, onClear, onExport, onTog
 }
 
 function SettingCard({ title, note, children }: { title: string; note: string; children: React.ReactNode }) { return <article className="setting-card"><div><b>{title}</b><span>{note}</span></div>{children}</article>; }
-function Switch({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) { return <button type="button" role="switch" aria-label={label} aria-checked={checked} className={`switch ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span/></button>; }
+function Switch({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void | Promise<void> }) {
+  const [pending, setPending] = useState(false);
+  const handleClick = async () => {
+    if (pending) return;
+    setPending(true);
+    try { await onChange(!checked); }
+    finally { setPending(false); }
+  };
+  return <button type="button" role="switch" aria-label={label} aria-checked={checked} aria-busy={pending} disabled={pending} className={`switch ${checked ? "on" : ""} ${pending ? "pending" : ""}`} onClick={() => void handleClick()}><span/></button>;
+}
 
 function Rules({ parentRules, subscriptions, refreshingId, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:()=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void }) {
   return <>
     <section className="toolbar"><div><h2>家庭自定义规则</h2><p>家长黑白名单优先于普通内容和第三方订阅规则。</p></div><button className="primary" onClick={onAddParentRule}><Plus size={16}/>添加规则</button></section>
-    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{parentRules.length===0&&<div className="table-empty">尚未添加家庭规则</div>}{parentRules.map(item=><div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{item.kind} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{item.action==="block"?"拦截":item.action==="proxy"?"代理放行":"直连放行"}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} onChange={value=>void onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>)}</section>
+    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{parentRules.length===0&&<div className="table-empty">尚未添加家庭规则</div>}{parentRules.map(item=><div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{item.kind} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{item.action==="block"?"拦截":item.action==="proxy"?"代理放行":"直连放行"}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} onChange={value=>onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>)}</section>
     <section className="toolbar"><div><h2>规则来源</h2><p>标准化并合并多个来源，保留每条规则的出处。</p></div><button className="primary" onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
       {subscriptions.length === 0 && <div className="table-empty">尚未添加规则订阅</div>}
-      {subscriptions.map((item) => <div className="table-row" key={item.id}><div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div><span>{item.format ?? "自动检测"}</span><Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>void onToggleSubscription(item.id,value)}/><div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>)}
+      {subscriptions.map((item) => <div className="table-row" key={item.id}><div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div><span>{item.format ?? "自动检测"}</span><Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>onToggleSubscription(item.id,value)}/><div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>)}
     </section>
     <section className="hint"><ShieldCheck size={19}/><div><b>匹配能力</b><p>支持精确域名、域名后缀、关键词、通配符、正则表达式、IP 与 CIDR。</p></div></section>
   </>;
 }
 
-function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, locked, sessionToken }: { subscriptions:backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void; coreStatus:backend.CoreStatus|null; locked:boolean; sessionToken:string|null }) {
+function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, automatic, onAutomatic, onSelectNode, sessionToken }: { subscriptions:backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void; coreStatus:backend.CoreStatus|null; automatic:boolean;onAutomatic:()=>Promise<void>;onSelectNode:(name:string)=>Promise<void>;sessionToken:string|null }) {
   const running = coreStatus?.running === true;
   const [expandedId, setExpandedId] = useState<string|null>(null);
   const [subProxies, setSubProxies] = useState<Record<string, backend.SubscriptionProxyInfo>>({});
   const [selectedGroup, setSelectedGroup] = useState<string|null>(null);
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [testingSpeed, setTestingSpeed] = useState(false);
+  const [delayError,setDelayError]=useState("");
+  const [savedSelection,setSavedSelection]=useState<string>();
+  const [runtimeSelection,setRuntimeSelection]=useState<string>();
+  const [selecting,setSelecting]=useState<string>();
   useEffect(() => { if (refreshingId) setSubProxies(prev => { const next = { ...prev }; delete next[refreshingId]; return next; }); }, [refreshingId]);
   useEffect(() => { const ids = new Set(subscriptions.map(s => s.id)); setSubProxies(prev => { const next: Record<string, backend.SubscriptionProxyInfo> = {}; for (const [k, v] of Object.entries(prev)) if (ids.has(k)) next[k] = v; return next; }); }, [subscriptions]);
   useEffect(() => {
@@ -139,6 +165,7 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
         .catch(()=>{});
     }
   }, [sessionToken,subscriptions,subProxies]);
+  useEffect(()=>{if(!sessionToken)return;void backend.getSavedProxySelection(sessionToken).then(setSavedSelection);if(running)void backend.getProxies(sessionToken).then(groups=>setRuntimeSelection(groups.find(group=>group.name==="CleanWeb")?.now)).catch(()=>setRuntimeSelection(undefined));else setRuntimeSelection(undefined);},[sessionToken,running,subscriptions]);
   const toggleExpand = async (id: string) => {
     if (!sessionToken) return;
     if (expandedId === id) { setExpandedId(null); setSelectedGroup(null); return; }
@@ -150,17 +177,18 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
   const handleSpeedTest = async () => {
     if (!running || testingSpeed || !sessionToken) return;
     setTestingSpeed(true);
+    setDelayError("");
     try {
       const result = await backend.testAllProxyDelays(sessionToken);
       setDelays(result.delays);
-    } catch (reason) { console.error(reason); }
+    } catch (reason) { setDelayError(String(reason)); }
     finally { setTestingSpeed(false); }
   };
   const delayLabel = (d: number | undefined) => {
     if (d == null) return null;
-    if (d === 0) return { text: "超时", cls: "timeout" };
-    if (d < 200) return { text: `${d}ms`, cls: "fast" };
-    if (d < 500) return { text: `${d}ms`, cls: "medium" };
+    if (d === 0) return { text: "不可达", cls: "timeout" };
+    if (d < 300) return { text: `${d}ms`, cls: "fast" };
+    if (d < 600) return { text: `${d}ms`, cls: "medium" };
     return { text: `${d}ms`, cls: "slow" };
   };
   // 构建归一化的延迟查找表，支持模糊匹配
@@ -172,8 +200,16 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
     }
     return undefined;
   };
+  const selectableNodes=Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>subProxies[item.id]?.proxies??[]).map(node=>[node.name,node])).values());
+  const chooseNode=async(name:string)=>{if(selecting)return;setSelecting(name);try{await onSelectNode(name);setSavedSelection(name);setRuntimeSelection(name);}finally{setSelecting(undefined);}};
   return <>
     <section className="toolbar"><div><h2>家长管理的代理</h2><p>导入代理订阅，仅提取节点和代理组，自动过滤不相关的网络配置。</p></div><button className="primary" onClick={onAdd}><Plus size={16}/>导入订阅</button></section>
+    {subscriptions.length>0&&<section className="proxy-selector-card">
+      <div className="proxy-selector-head"><div><span className="eyebrow">全局出口</span><h3>{automatic?"自动选择节点":savedSelection??"尚未选择节点"}</h3><p>{running?`当前实际使用：${runtimeSelection??"正在读取…"}`:"保护启动后应用所选节点"}</p></div><div className="proxy-selector-actions"><button className="secondary" disabled={!running||testingSpeed} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button><button className={`secondary${automatic?" selected":""}`} disabled={automatic||Boolean(selecting)} onClick={()=>void onAutomatic()}>自动选择</button></div></div>
+      {delayError&&<div className="proxy-delay-error">{delayError}</div>}
+      <div className="proxy-selector-grid">{selectableNodes.map(node=>{const selected=!automatic&&savedSelection===node.name;const delay=delayLabel(findDelay(node.name));return <button key={node.name} className={`proxy-select-node${selected?" selected":""}`} disabled={Boolean(selecting)} aria-pressed={selected} onClick={()=>void chooseNode(node.name)}><span><b>{node.name}</b><small>{node.nodeType.toUpperCase()}</small></span><span className="proxy-select-status">{selecting===node.name?"切换中…":selected?"已选择":delay?.text??"选择"}</span></button>;})}</div>
+      {selectableNodes.length===0&&<div className="sub-proxy-empty">正在读取已启用订阅中的节点…</div>}
+    </section>}
     {subscriptions.length===0 ? <section className="proxy-card empty-proxy">尚未导入代理订阅</section> : subscriptions.map((item)=>{
       const expanded = expandedId === item.id;
       const info = subProxies[item.id];
@@ -190,7 +226,7 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
             </div>
             <h3>{item.name}</h3><p className={item.lastError?"error-text":""}>{item.lastError??item.url}</p></div>
           <div className="proxy-actions" onClick={(e)=>e.stopPropagation()}>
-            <Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>void onToggleSubscription(item.id,value)}/>
+            <Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>onToggleSubscription(item.id,value)}/>
             <button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>
             <button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button>
           </div>
@@ -213,7 +249,7 @@ function Proxy({ subscriptions, refreshingId, onRefresh, onToggleSubscription, o
                 <div className="sub-proxy-main">
                   <div className="sub-proxy-main-head">
                     <h4>{currentGroup ? `${currentGroup.name} 节点` : "节点列表"}</h4>
-                    {running && <button className={`speed-test-btn${testingSpeed ? " testing" : ""}`} disabled={testingSpeed} onClick={handleSpeedTest}><Gauge size={14}/>{testingSpeed ? "测速中…" : "网速检测"}</button>}
+                    {running && <button className={`speed-test-btn${testingSpeed ? " testing" : ""}`} disabled={testingSpeed} onClick={handleSpeedTest} title="通过代理执行3次 HTTP 往返测试并显示中位延迟，不代表下载带宽"><Gauge size={14}/>{testingSpeed ? "延迟检测中…" : "延迟检测"}</button>}
                   </div>
                   <div className="sub-proxy-grid">
                     {info.proxies.map(p => {

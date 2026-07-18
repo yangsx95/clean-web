@@ -1,51 +1,137 @@
-# CleanWeb V1 architecture
+# CleanWeb V1 架构
 
-## Components
+## 总体原则
 
-### Desktop UI
+CleanWeb 将策略管理和网络执行分离：CleanWeb 是唯一策略权威，Xray 是 TUN、DNS 与安全搜索的策略前置内核，Mihomo 是受控的代理传输后端。代理订阅不能修改 DNS、TUN、过滤规则、系统路由或绕过策略。过滤决策必须先于代理路由。
 
-Tauri 2 with React and TypeScript provides the Windows management client. The
-UI never edits generated proxy configuration directly; it calls a narrow set of
-typed service commands.
+V1 采用故障开放策略：服务异常时尝试恢复，但无法恢复时不使用独立系统防火墙永久断网。客户端必须准确显示保护是否真实运行。
 
-### Privileged Windows service
+## 共享领域模型
 
-A Rust service owns policy storage, rule compilation, logging, lifecycle checks,
-and communication with the networking core. It runs independently of the UI so
-closing the window does not stop protection.
+跨平台共享以下概念和序列化格式，而不是强求共享全部 UI 或系统代码：
 
-### Rule engine
+- 设置与管理会话；
+- 标准化规则、分类、动作、优先级和来源；
+- 规则/代理/安全搜索订阅元数据；
+- 代理节点和代理组选择；
+- 访问日志字段与保留策略；
+- 官方规则包的签名和版本元数据。
 
-The rule engine converts imported formats into canonical records, maintains
-source provenance, compiles indexes, and returns a deterministic decision with
-an explanation. Exact and suffix indexes are evaluated before expensive
-wildcard and regex rules.
+Rust 规则和订阅模块可以在桌面平台直接复用。Android/iOS 是否通过 FFI 复用 Rust，应在移动端原型验证后决定；平台 VPN 生命周期仍由原生代码负责。
 
-### Proxy core boundary
+## 桌面管理客户端
 
-Mihomo is treated as a separately distributed GPLv3 program and controlled via
-configuration and its documented external API. CleanWeb extracts only nodes and
-proxy groups from subscriptions, then generates its own locked DNS, TUN, filter,
-and routing configuration.
+Tauri 2、React 和 TypeScript 提供 macOS 与 Windows 管理界面。界面只调用窄范围的类型化命令，不直接编辑生成的 Mihomo 配置。
 
-This separation reduces coupling but does not replace a release-time open-source
-license review. The product must provide all notices and corresponding source
-required for the exact Mihomo binary it distributes.
+界面分为：
 
-### Storage
+- 锁定状态：仅显示非敏感运行状态；
+- 管理状态：通过 CleanWeb 管理密码解锁规则、订阅、代理和日志；
+- 保护失效状态：区分“配置要求开启”和“内核真实运行”。
 
-SQLite stores policies, canonical rules, source references, subscriptions,
-proxy metadata, and access logs. Secrets are encrypted using Windows DPAPI.
+## 特权服务
 
-## Windows networking direction
+### macOS
 
-The first prototype uses Mihomo TUN for traffic capture and proxy protocols.
-CleanWeb remains the policy authority. A later hardening phase should evaluate a
-Windows Filtering Platform callout/service for stronger process identity and
-anti-bypass enforcement.
+首次启用保护时安装 root LaunchDaemon。安装需要一次系统管理员授权，之后通过版本化、固定命令的 Unix socket 启停 Xray 和 Mihomo，避免每次变更配置都重复弹出密码。
 
-## Fail-open behavior
+特权服务必须：
 
-The agreed V1 behavior allows networking when CleanWeb or its filtering core is
-unavailable. The UI must describe this accurately and show whether protection is
-currently active; V1 makes no remote failure notification guarantee.
+- 只接受 ping、启动受控内核和停止受控内核等固定操作；
+- 验证二进制和配置来源位于 CleanWeb 应用数据目录；
+- 持有 root Xray 与 Mihomo 生命周期；
+- 备份并恢复系统 DNS；
+- 拒绝任意 shell、任意路径和任意命令执行。
+
+### Windows
+
+正式版本必须使用独立 Windows Service 持有 Mihomo、TUN、DNS、开机启动和恢复流程。管理 UI 不应长期以管理员身份运行。UI 与服务之间使用受 ACL 保护的版本化 IPC，普通用户只能读取安全状态，管理操作还需有效的 CleanWeb 管理会话。
+
+## 移动端
+
+### Android
+
+Android 10+ 使用 Kotlin、Jetpack Compose 和 `VpnService`。Mihomo 运行在本地 VPN 数据路径中，不开放本地代理端口。首版可以引导用户启用“始终开启 VPN”和“无 VPN 时阻止连接”，但不实现设备所有者、MDM 或对拥有设备管理员权限用户的强对抗。
+
+### iOS
+
+iOS 16+ 使用 Network Extension/Packet Tunnel Provider。开发前必须确认 Apple entitlement、App Store VPN/家长控制政策以及 Mihomo 在扩展内的资源和许可证边界。无法获得权限时，iOS 延后而不改变桌面和 Android 架构。
+
+## 规则引擎与存储
+
+规则引擎负责：
+
+- IDNA 域名标准化；
+- 精确、后缀、关键词、通配符、正则、IP 和 CIDR 验证；
+- 语义去重和多来源贡献；
+- 固定策略层级；
+- 编译为 Xray/Mihomo 可执行策略；
+- 返回可写入日志的稳定规则 ID、分类和来源。
+
+SQLite 保存设置、密码哈希、订阅、标准化规则、来源贡献、代理选择和访问日志。代理订阅内容必须使用平台密钥能力加密：macOS Keychain、Windows DPAPI；移动端分别使用 Android Keystore 和 iOS Keychain。
+
+高风险规则、家长规则、内容规则和第三方规则必须在存储模型中保持可区分，不能只依赖导入顺序推断优先级。
+
+## 规则供应链
+
+官方基础规则以独立签名包随应用或更新服务分发。更新流程执行：下载到临时位置、限制大小、解析、许可证/版本检查、签名校验、标准化、编译验证、原子切换。任何一步失败都保留最后有效版本。
+
+第三方 HTTPS 订阅执行大小限制、超时、格式检测、逐条验证和原子替换，但不宣称为 CleanWeb 官方可信内容。安全搜索映射使用版本化 YAML 清单和同样的验证机制。
+
+## 双内核边界
+
+Xray 是设备流量的唯一入口：创建 TUN，并在回环地址 `127.0.0.1:53` 提供 CleanWeb DNS。macOS 特权服务在保护启动时备份当前网络服务的 DNS、将系统 DNS 指向该回环监听；Xray 在本地执行安全搜索域名别名和过滤，再把上游 DNS 通过受控出站发送。关闭、失败回滚或重启耗尽时恢复原 DNS。仅在 Xray 内改写连接目标不能视为系统 DNS 接管。Xray 不保存或实现用户代理协议，而是把过滤后的连接交给 Mihomo。
+
+CleanWeb 将 Mihomo 作为独立 GPLv3 程序，通过生成配置和外部控制 API 管理：
+
+- 从订阅中提取并清洗节点和代理组；
+- 只监听经过随机凭据保护的回环 SOCKS/Mixed 端口，不创建第二个 TUN；
+- 只保留节点、代理组、测速、故障切换和最终传输能力；内容过滤、IP/CIDR、SafeSearch、DNS 与直连例外全部由 Xray 执行；
+- 不接受订阅提供的控制器、监听端口、DNS、脚本或规则；
+- 只监听回环控制器并使用随机密钥；
+- 配置写入后先校验，再启动或执行一次热更新；
+- 日常热更新不重新安装特权组件。
+
+安全搜索域名只在 Xray 中映射。Xray 使用 `freedom + ForceIP + dialerProxy` 先把厂商别名动态解析为 IP，再通过本地 Mihomo SOCKS 传输；Mihomo 传输模式禁用 SNI 目标覆盖，避免把安全搜索 IP 恢复成原始搜索域名。CleanWeb 不修改系统 hosts，也不在业务代码中写死厂商 IP。
+
+GPL 进程隔离降低业务代码耦合，但不免除发布者对准确二进制版本承担的许可证和对应源代码义务。
+
+## 网络生命周期
+
+启动流程：
+
+1. 验证总保护设置和管理权限；
+2. 检测并记录其他 VPN/TUN 或系统代理；检测结果只提示，不阻止启动；
+3. 生成并分别校验 Xray 策略配置和 Mihomo 传输配置；
+4. 通过平台特权服务先启动 Mihomo，再启动 Xray；
+5. 等待 Xray TUN、回环 DNS 和 Mihomo 回环传输端口真正就绪；
+6. macOS 特权服务在安装全局 TUN 路由前解析 Mihomo 配置中的代理服务器端点，为其保留经原物理网关的精确旁路路由，防止代理节点连接再次进入 TUN；
+7. 备份当前网络服务 DNS 并将系统 DNS 指向 `127.0.0.1`；同一次保护生命周期内重启内核不得覆盖原备份；
+8. 验证公网路由实际指向本次 Xray TUN，再原子记录运行 PID 与配置哈希；
+8. UI 只在进程和路由健康检查同时成功后显示“保护运行中”。
+
+代理端点旁路只用于 Mihomo 建立代理隧道本身。普通应用流量仍由 Xray TUN 统一接管并先执行过滤策略；特权服务停止、崩溃回滚或升级时必须删除这些精确路由。
+
+代理节点变化优先使用 Mihomo 控制 API 热更新；过滤和安全搜索变化重新校验并原子切换双配置。运行配置标记同时包含 Xray 与 Mihomo 配置哈希，不能因 Mihomo 文本未变化而跳过策略更新。任一必要内核退出后守护服务在10秒内开始有限次数重启；连续失败则恢复系统网络、保持联网并显示保护失效。
+
+主动停止和卸载流程必须停止内核、恢复 DNS 和路由、移除启动项与特权组件，并允许用户选择是否保留本地配置和日志。
+
+## 冲突检测
+
+首版对其他 VPN/TUN 采用尽力共存策略。检测结果展示具体接口或服务，但不阻止 CleanWeb 启动，也不自动关闭第三方应用。由于多个 TUN 的路由优先级可被任一软件重新改写，V1 不承诺同时运行时双方功能都完整生效。
+
+## 访问日志
+
+最终架构消费 Xray access log 与 Mihomo 最终出站事件，而不是每3秒轮询当前连接快照。Xray 黑洞拦截事件使用同一标准化规则集回算稳定规则 ID 和分类；Mihomo `/connections` 只用于尽力补全进程和目标 IP。采集器增量读取两份持久日志后写入 SQLite，并按保留策略清理。
+
+日志采集失败不得阻断网络。关闭日志时停止采集，不保留新的访问记录。诊断导出与访问日志导出是两个不同功能，诊断包默认脱敏。
+
+## 更新与发布
+
+- 官方规则每天检查并签名校验；
+- 第三方订阅按用户周期更新；
+- 应用更新由用户确认；
+- Mihomo 随应用发布，不运行独立自更新器；
+- macOS 产物为签名、公证的 Universal DMG/PKG；
+- Windows 产物安装独立服务并验证卸载恢复；
+- 所有平台发布前执行真实网络、升级、崩溃和卸载测试。

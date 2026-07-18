@@ -63,7 +63,9 @@ pub fn import_text(
             SubscriptionFormat::DomainList => parse_domain_line(line),
             SubscriptionFormat::IpList => parse_ip_line(line),
             SubscriptionFormat::Adblock => parse_adblock_line(line),
-            SubscriptionFormat::SafeSearch => Err("safe-search manifests are parsed as structured YAML".into()),
+            SubscriptionFormat::SafeSearch => {
+                Err("safe-search manifests are parsed as structured YAML".into())
+            }
         };
 
         match result {
@@ -137,10 +139,7 @@ fn parse_hosts_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>,
         return Ok(None);
     }
     // 去除 www. 前缀后使用 Suffix 匹配，确保主域名及其所有子域名均被拦截
-    let base = domain
-        .strip_prefix("www.")
-        .unwrap_or(&domain)
-        .to_owned();
+    let base = domain.strip_prefix("www.").unwrap_or(&domain).to_owned();
     Ok(Some((MatcherKind::Suffix, base, Action::Block)))
 }
 
@@ -247,8 +246,14 @@ mod tests {
         );
         assert_eq!(report.rules.len(), 2, "localhost 和 broadcasthost 应被跳过");
         assert_eq!(report.rules[0].rule.kind, MatcherKind::Suffix);
-        assert_eq!(report.rules[0].rule.pattern, "pornhub.com", "www. 前缀应被去除");
-        assert_eq!(report.rules[1].rule.pattern, "xvideos.com", "www. 前缀应被去除");
+        assert_eq!(
+            report.rules[0].rule.pattern, "pornhub.com",
+            "www. 前缀应被去除"
+        );
+        assert_eq!(
+            report.rules[1].rule.pattern, "xvideos.com",
+            "www. 前缀应被去除"
+        );
     }
 
     #[test]

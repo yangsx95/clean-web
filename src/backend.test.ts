@@ -1,0 +1,90 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+describe("browser preview persistence", () => {
+  beforeEach(() => {
+    const storage = new Map<string, string>();
+    const sessionStorage = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        clear: () => storage.clear(),
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: {
+        clear: () => sessionStorage.clear(),
+        getItem: (key: string) => sessionStorage.get(key) ?? null,
+        setItem: (key: string, value: string) => sessionStorage.set(key, value),
+        removeItem: (key: string) => sessionStorage.delete(key),
+      },
+    });
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    vi.resetModules();
+  });
+
+  it("keeps protection enabled after a page reload", async () => {
+    let backend = await import("./backend");
+    await backend.startProtection("browser-preview");
+    await backend.updateSetting("browser-preview", "protection_enabled", "true");
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    await expect(backend.getSettings()).resolves.toMatchObject({ protectionEnabled: true });
+    await expect(backend.getCoreStatus()).resolves.toMatchObject({ running: true });
+  });
+
+  it("keeps the unlocked backend session across a page reload", async () => {
+    let backend = await import("./backend");
+    await backend.unlock("parent123");
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    expect(backend.getStoredSessionToken()).toBe("browser-preview");
+    await expect(backend.validateSession("browser-preview")).resolves.toMatchObject({
+      sessionToken: "browser-preview",
+    });
+  });
+
+  it("keeps parent rules after a page reload", async () => {
+    let backend = await import("./backend");
+    await backend.createParentRule("browser-preview", {
+      action: "block",
+      kind: "suffix",
+      pattern: "example.com",
+      category: "custom",
+    });
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    await expect(backend.listParentRules("browser-preview")).resolves.toMatchObject([
+      { action: "block", kind: "suffix", pattern: "example.com", category: "custom", enabled: true },
+    ]);
+  });
+
+  it("keeps subscriptions after a page reload", async () => {
+    let backend = await import("./backend");
+    await backend.createSubscription("browser-preview", {
+      kind: "rule",
+      name: "Test rules",
+      url: "https://example.com/rules.txt",
+      format: "domain-list",
+      category: "custom",
+    });
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
+      { kind: "rule", name: "Test rules", url: "https://example.com/rules.txt", enabled: true },
+    ]);
+  });
+});

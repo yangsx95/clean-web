@@ -102,13 +102,15 @@ impl CompiledRule {
     }
 
     fn matches(&self, domain: Option<&str>, ip: Option<IpAddr>) -> bool {
-        match (&self.matcher, self.source.kind.clone()) {
+        match (&self.matcher, &self.source.kind) {
             (Matcher::Domain(expected), MatcherKind::Exact) => {
                 domain.is_some_and(|d| d == expected)
             }
-            (Matcher::Domain(expected), MatcherKind::Suffix) => {
-                domain.is_some_and(|d| d == expected || d.ends_with(&format!(".{expected}")))
-            }
+            (Matcher::Domain(expected), MatcherKind::Suffix) => domain.is_some_and(|domain| {
+                domain
+                    .strip_suffix(expected)
+                    .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
+            }),
             (Matcher::Contains(value), _) => domain.is_some_and(|d| d.contains(value)),
             (Matcher::Pattern(pattern), _) => domain.is_some_and(|d| pattern.is_match(d)),
             (Matcher::Ip(expected), _) => ip.is_some_and(|value| value == *expected),
@@ -146,7 +148,7 @@ impl RuleSet {
     }
 }
 
-fn normalize_domain(value: &str) -> Result<String, RuleError> {
+pub(crate) fn normalize_domain(value: &str) -> Result<String, RuleError> {
     let trimmed = value.trim().trim_end_matches('.').to_ascii_lowercase();
     if trimmed.is_empty() || trimmed.contains('/') {
         return Err(RuleError::InvalidDomain(value.into()));
@@ -154,7 +156,7 @@ fn normalize_domain(value: &str) -> Result<String, RuleError> {
     idna::domain_to_ascii(&trimmed).map_err(|_| RuleError::InvalidDomain(value.into()))
 }
 
-fn wildcard_regex(value: &str) -> Result<Regex, RuleError> {
+pub(crate) fn wildcard_regex(value: &str) -> Result<Regex, RuleError> {
     let mut pattern = String::from("^");
     for ch in value.trim().to_ascii_lowercase().chars() {
         match ch {

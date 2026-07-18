@@ -25,6 +25,8 @@ pub struct AppState {
     sessions: Mutex<HashMap<String, Instant>>,
     pub(crate) data_dir: PathBuf,
     pub(crate) core_process: Mutex<Option<Child>>,
+    pub(crate) access_log_cursor: Mutex<u64>,
+    pub(crate) xray_access_log_cursor: Mutex<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -259,6 +261,8 @@ impl AppState {
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf(),
             core_process: Mutex::new(None),
+            access_log_cursor: Mutex::new(0),
+            xray_access_log_cursor: Mutex::new(0),
         })
     }
 
@@ -496,6 +500,18 @@ pub fn lock(session_token: String, state: State<'_, AppState>) -> Result<(), Str
         .map_err(|_| "会话状态不可用")?
         .remove(&session_token);
     Ok(())
+}
+
+#[tauri::command]
+pub fn validate_session(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<UnlockResult, String> {
+    state.require_session(&session_token)?;
+    Ok(UnlockResult {
+        session_token,
+        expires_in_seconds: SESSION_TTL.as_secs(),
+    })
 }
 
 #[tauri::command]
@@ -823,7 +839,7 @@ fn allowed_setting(key: &str, value: &str) -> bool {
             | "automatic_node_selection"
             | "access_logging_enabled"
             | "safe_search_enabled"
-    ) || key.starts_with("category.");
+    ) || matches!(key, "category.ads" | "category.tracking");
     (boolean_key && matches!(value, "true" | "false"))
         || (key == "log_retention" && matches!(value, "7d" | "30d" | "90d" | "forever"))
 }
@@ -863,7 +879,10 @@ mod tests {
         assert!(allowed_setting("safe_search_enabled", "true"));
         assert!(allowed_setting("safe_search_enabled", "false"));
         assert!(!allowed_setting("safe_search_enabled", "yes"));
-        assert!(allowed_setting("category.pornography", "false"));
+        assert!(!allowed_setting("category.pornography", "false"));
+        assert!(!allowed_setting("category.malware", "false"));
+        assert!(allowed_setting("category.ads", "false"));
+        assert!(allowed_setting("category.tracking", "false"));
         assert!(!allowed_setting("password_hash", "stolen"));
         assert!(!allowed_setting("proxy_enabled", "yes"));
     }

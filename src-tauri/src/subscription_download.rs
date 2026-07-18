@@ -263,7 +263,6 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
         .unwrap_or_else(|| text.to_owned());
     let supported = [
         "ss://",
-        "ssr://",
         "vmess://",
         "vless://",
         "trojan://",
@@ -276,7 +275,7 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
         "https://",
         "wireguard://",
     ];
-    let count = decoded_text
+    let supported_count = decoded_text
         .lines()
         .filter(|line| {
             supported
@@ -284,7 +283,14 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
                 .any(|prefix| line.trim().starts_with(prefix))
         })
         .count();
-    if count == 0 {
+    let unsupported_ssr_count = decoded_text
+        .lines()
+        .filter(|line| line.trim().starts_with("ssr://"))
+        .count();
+    if supported_count == 0 {
+        if unsupported_ssr_count > 0 {
+            return Err("SSR 协议已停止支持，请更换为其他代理协议".into());
+        }
         return Err("未找到支持的代理节点或代理组".into());
     }
     // 将 URI 列表转换为 Clash YAML 格式
@@ -292,6 +298,7 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
     if proxies.is_empty() {
         return Err("无法解析任何代理节点".into());
     }
+    let proxy_count = proxies.len();
     let mut clean = serde_yaml::Mapping::new();
     clean.insert(Value::String("proxies".into()), Value::Sequence(proxies));
     let payload = serde_yaml::to_string(&clean).map_err(error)?;
@@ -299,8 +306,8 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
         RefreshReport {
             detected_format: "clash".into(),
             imported_count: 0,
-            ignored_count: 0,
-            proxy_count: count,
+            ignored_count: unsupported_ssr_count,
+            proxy_count,
             group_count: 0,
         },
         payload,
@@ -344,9 +351,6 @@ fn parse_single_uri(uri: &str, index: &mut usize) -> Option<Value> {
 
     if let Some(rest) = main.strip_prefix("ss://") {
         return parse_ss(rest, &name);
-    }
-    if let Some(rest) = main.strip_prefix("ssr://") {
-        return parse_ssr(rest, &name);
     }
     if let Some(rest) = main.strip_prefix("vmess://") {
         return parse_vmess(rest, &name);
@@ -602,73 +606,6 @@ fn parse_tuic(rest: &str, name: &str) -> Option<Value> {
     Some(Value::Mapping(map))
 }
 
-/// SSR 链接格式: ssr://base64(host:port:protocol:method:obfs:base64(password)/?remarks=base64(name)&protoparam=base64(val)&obfsparam=base64(val))
-fn parse_ssr(rest: &str, name: &str) -> Option<Value> {
-    let decoded = flexible_base64_decode(rest).and_then(|b| String::from_utf8(b).ok())?;
-    // 分离路径和查询参数
-    let (path, query) = match decoded.split_once('/').or_else(|| decoded.split_once('?')) {
-        Some((p, q)) => (p, q),
-        None => (decoded.as_str(), ""),
-    };
-    let fields: Vec<&str> = path.split(':').collect();
-    if fields.len() < 6 {
-        return None;
-    }
-    let host = fields[0];
-    let port = fields[1].parse::<u32>().ok()?;
-    let protocol = fields[2];
-    let method = fields[3];
-    let obfs = fields[4];
-    let password = flexible_base64_decode(fields[5])
-        .and_then(|b| String::from_utf8(b).ok())
-        .unwrap_or_else(|| fields[5].to_string());
-
-    let params: std::collections::HashMap<&str, &str> =
-        query.split('&').filter_map(|p| p.split_once('=')).collect();
-
-    // 提取节点名称: remarks 字段优先
-    if let Some(remarks_b64) = params.get("remarks") {
-        if let Some(remarks) =
-            flexible_base64_decode(remarks_b64).and_then(|b| String::from_utf8(b).ok())
-        {
-            if !remarks.trim().is_empty() {
-                // 使用 remarks 作为名称（但 name 已由外层传入）
-            }
-        }
-    }
-
-    let mut map = serde_yaml::Mapping::new();
-    map.insert("name".into(), name.into());
-    map.insert("type".into(), "ssr".into());
-    map.insert("server".into(), host.into());
-    map.insert("port".into(), port.into());
-    map.insert("cipher".into(), ssr_cipher(method).into());
-    map.insert("password".into(), password.into());
-    if protocol != "origin" {
-        map.insert("protocol".into(), protocol.into());
-        if let Some(pp) = params.get("protoparam") {
-            let decoded_pp = flexible_base64_decode(pp)
-                .and_then(|b| String::from_utf8(b).ok())
-                .unwrap_or_default();
-            if !decoded_pp.is_empty() {
-                map.insert("protocol-param".into(), decoded_pp.into());
-            }
-        }
-    }
-    if obfs != "plain" {
-        map.insert("obfs".into(), obfs.into());
-        if let Some(op) = params.get("obfsparam") {
-            let decoded_op = flexible_base64_decode(op)
-                .and_then(|b| String::from_utf8(b).ok())
-                .unwrap_or_default();
-            if !decoded_op.is_empty() {
-                map.insert("obfs-param".into(), decoded_op.into());
-            }
-        }
-    }
-    Some(Value::Mapping(map))
-}
-
 /// Hysteria v1 链接格式: hysteria://host:port?protocol=udp&auth=base64(auth)&insecure=1&obfs=xor&obfsParam=val&up=mbps&down=mbps&peer=sni
 fn parse_hysteria(rest: &str, name: &str) -> Option<Value> {
     let (hostport, query) = match rest.split_once('?') {
@@ -762,29 +699,34 @@ fn parse_http_proxy(rest: &str, name: &str) -> Option<Value> {
     Some(Value::Mapping(map))
 }
 
-/// 将 SSR 加密方式映射为 Mihomo 支持的 cipher 名称
-fn ssr_cipher(method: &str) -> &str {
-    match method {
-        "none" => "dummy",
-        other => other,
-    }
-}
-
 /// 尝试将文本解析为 Clash YAML，成功时返回 (RefreshReport, payload)
 fn try_parse_clash_yaml(text: &str) -> Result<Option<(RefreshReport, String)>, String> {
     if let Ok(yaml) = serde_yaml::from_str::<Value>(text) {
-        let proxies = yaml
+        let source_proxies = yaml
             .get("proxies")
             .and_then(Value::as_sequence)
-            .map_or(0, Vec::len);
+            .cloned()
+            .unwrap_or_default();
+        let source_proxy_count = source_proxies.len();
+        let proxies: Vec<Value> = source_proxies
+            .into_iter()
+            .filter(|proxy| proxy.get("type").and_then(Value::as_str) != Some("ssr"))
+            .collect();
+        let ignored_count = source_proxy_count.saturating_sub(proxies.len());
         let groups = yaml
             .get("proxy-groups")
             .and_then(Value::as_sequence)
             .map_or(0, Vec::len);
-        if proxies > 0 || groups > 0 {
+        if proxies.is_empty() && source_proxy_count > 0 && ignored_count == source_proxy_count {
+            return Err("SSR 协议已停止支持，请更换为其他代理协议".into());
+        }
+        if !proxies.is_empty() || groups > 0 {
             let mut clean = serde_yaml::Mapping::new();
-            if let Some(value) = yaml.get("proxies") {
-                clean.insert(Value::String("proxies".into()), value.clone());
+            if !proxies.is_empty() {
+                clean.insert(
+                    Value::String("proxies".into()),
+                    Value::Sequence(proxies.clone()),
+                );
             }
             if let Some(value) = yaml.get("proxy-groups") {
                 clean.insert(Value::String("proxy-groups".into()), value.clone());
@@ -794,8 +736,8 @@ fn try_parse_clash_yaml(text: &str) -> Result<Option<(RefreshReport, String)>, S
                 RefreshReport {
                     detected_format: "clash".into(),
                     imported_count: 0,
-                    ignored_count: 0,
-                    proxy_count: proxies,
+                    ignored_count,
+                    proxy_count: proxies.len(),
                     group_count: groups,
                 },
                 payload,
@@ -1000,26 +942,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_ssr_uri() {
-        // ssr://host:port:protocol:method:obfs:base64(password)/?remarks=base64(name)&protoparam=base64(val)&obfsparam=base64(val)
-        // host=1.2.3.4, port=443, protocol=auth_aes128_md5, method=aes-256-cfb, obfs=tls1.2_ticket_auth, password=test123
+    fn rejects_ssr_only_subscriptions() {
         let ssr_body = "1.2.3.4:443:auth_aes128_md5:aes-256-cfb:tls1.2_ticket_auth:dGVzdDEyMw/?remarks=5peg6Ieq5ZCN&protoparam=&obfsparam=";
         let ssr_b64 = URL_SAFE_NO_PAD.encode(ssr_body.as_bytes());
         let uri = format!("ssr://{ssr_b64}#MySSR");
-        let mut idx = 1;
-        let node = parse_single_uri(&uri, &mut idx).unwrap();
-        assert_eq!(node.get("type").unwrap().as_str().unwrap(), "ssr");
-        assert_eq!(node.get("server").unwrap().as_str().unwrap(), "1.2.3.4");
-        assert_eq!(node.get("port").unwrap().as_u64().unwrap(), 443);
-        assert_eq!(node.get("password").unwrap().as_str().unwrap(), "test123");
-        assert_eq!(
-            node.get("protocol").unwrap().as_str().unwrap(),
-            "auth_aes128_md5"
-        );
-        assert_eq!(
-            node.get("obfs").unwrap().as_str().unwrap(),
-            "tls1.2_ticket_auth"
-        );
+        let error = parse_proxy_payload(&uri).unwrap_err();
+        assert!(error.contains("SSR"));
     }
 
     #[test]
@@ -1078,13 +1006,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_mixed_uri_with_ssr_and_vless() {
+    fn ignores_ssr_in_mixed_uri_subscriptions() {
         let ssr_body = "1.2.3.4:443:origin:aes-256-cfb:plain:dGVzdA/?remarks=5peg6Ieq";
         let ssr_b64 = URL_SAFE_NO_PAD.encode(ssr_body.as_bytes());
         let text = format!("ssr://{ssr_b64}#SSR节点\nvless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls#VLESS节点");
         let (report, payload) = parse_proxy_payload(&text).unwrap();
-        assert_eq!(report.proxy_count, 2);
-        assert!(payload.contains("ssr"));
+        assert_eq!(report.proxy_count, 1);
+        assert_eq!(report.ignored_count, 1);
+        assert!(!payload.contains("type: ssr"));
         assert!(payload.contains("vless"));
     }
 

@@ -1,7 +1,7 @@
 #[cfg(target_os = "windows")]
 fn ensure_admin() {
-    use std::process::exit;
     use std::os::windows::ffi::OsStrExt;
+    use std::process::exit;
 
     #[repr(C)]
     struct TokenElevation {
@@ -51,7 +51,9 @@ fn ensure_admin() {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             false
         } else {
-            let mut elevation = TokenElevation { token_is_elevated: 0 };
+            let mut elevation = TokenElevation {
+                token_is_elevated: 0,
+            };
             let mut ret_size: u32 = 0;
             let result = GetTokenInformation(
                 token,
@@ -90,6 +92,14 @@ fn ensure_admin() {
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|argument| argument == "--privileged-service") {
+        if let Err(value) = cleanweb_lib::privileged_service::run() {
+            eprintln!("CleanWeb privileged service failed: {value}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Release 构建自动请求管理员权限（TUN 需要）；
     // Debug/Dev 模式跳过，请用管理员终端运行 `npm run tauri dev`。
     #[cfg(all(target_os = "windows", not(debug_assertions)))]
