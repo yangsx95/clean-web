@@ -779,6 +779,7 @@ h1 {
 }
 
 .error-text { color: var(--color-danger) !important; }
+.required-source { color: var(--color-success); font-size: 12px; font-weight: 700; }
 
 .proxy-selector-card {
   background: var(--color-bg-card);

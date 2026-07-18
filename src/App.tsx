@@ -55,7 +55,18 @@ export function App() {
     setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); setDialog(null);
   };
   const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); };
-  const removeSubscription = async (id: string) => { if (!sessionToken) { setDialog("unlock"); return; } await backend.deleteSubscription(sessionToken,id); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); };
+  const removeSubscription = async (id: string) => {
+    if (!sessionToken) { setDialog("unlock"); return; }
+    setRuntimeError("");
+    try {
+      await backend.deleteSubscription(sessionToken,id);
+      setSubscriptions(await backend.listSubscriptions(sessionToken));
+      try { await reloadRuntime(sessionToken); }
+      catch (reason) { setRuntimeError(`订阅已删除，但保护配置重载失败：${String(reason)}`); }
+    } catch (reason) {
+      setRuntimeError(`删除订阅失败：${String(reason)}`);
+    }
+  };
   const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}setRefreshingId(id);try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}};
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await backend.clearAccessLogs(sessionToken);setAccessLogs([]);};
   const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}const csv=await backend.exportAccessLogsCsv(sessionToken);const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="cleanweb-access-logs.csv";link.click();URL.revokeObjectURL(url);};
@@ -137,7 +148,10 @@ function Rules({ parentRules, subscriptions, refreshingId, onRefresh, onTogglePa
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
       {subscriptions.length === 0 && <div className="table-empty">尚未添加规则订阅</div>}
-      {subscriptions.map((item) => <div className="table-row" key={item.id}><div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div><span>{item.format ?? "自动检测"}</span><Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>onToggleSubscription(item.id,value)}/><div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>)}
+      {subscriptions.map((item) => {
+        const required=item.id.startsWith("default:");
+        return <div className="table-row" key={item.id}><div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div><span>{item.format ?? "自动检测"}</span>{required?<span className="required-source">强制启用</span>:<Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>onToggleSubscription(item.id,value)}/>}<div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{!required&&<button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button>}</div></div>;
+      })}
     </section>
     <section className="hint"><ShieldCheck size={19}/><div><b>匹配能力</b><p>支持精确域名、域名后缀、关键词、通配符、正则表达式、IP 与 CIDR。</p></div></section>
   </>;

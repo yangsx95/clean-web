@@ -382,6 +382,94 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
             params![key, value],
         )?;
     }
+    seed_default_rule_subscriptions(db)?;
+    Ok(())
+}
+
+fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
+    const SEED_MARKER: &str = "builtin_rule_sources_v4_seeded";
+    db.execute(
+        "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%'",
+        [],
+    )?;
+    let seeded = db
+        .query_row(
+            "SELECT value FROM settings WHERE key=?1",
+            params![SEED_MARKER],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some();
+    if seeded {
+        return Ok(());
+    }
+
+    db.execute(
+        "DELETE FROM settings WHERE key LIKE 'deleted_default_source.%'",
+        [],
+    )?;
+    // Remove the short-lived v1 entries whose upstream paths no longer exist.
+    db.execute(
+        "DELETE FROM subscriptions WHERE id LIKE 'builtin:blackmatrix7:%' OR id='default:blocklistproject:malware'",
+        [],
+    )?;
+
+    let sources = [
+        (
+            "default:stevenblack:porn",
+            "默认源 · 色情内容",
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
+            "hosts",
+            "pornography",
+        ),
+        (
+            "default:stevenblack:gambling",
+            "默认源 · 赌博网站",
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
+            "hosts",
+            "gambling",
+        ),
+        (
+            "default:blocklistproject:drugs",
+            "默认源 · 毒品网站",
+            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt",
+            "domain-list",
+            "drugs",
+        ),
+        (
+            "default:blocklistproject:fraud",
+            "默认源 · 诈骗网站",
+            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt",
+            "domain-list",
+            "fraud",
+        ),
+        (
+            "default:blocklistproject:phishing",
+            "默认源 · 钓鱼网站",
+            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt",
+            "domain-list",
+            "phishing",
+        ),
+        (
+            "default:urlhaus:malware",
+            "默认源 · 恶意软件",
+            "https://urlhaus.abuse.ch/downloads/hostfile/",
+            "hosts",
+            "malware",
+        ),
+    ];
+    for (id, name, url, format, category) in sources {
+        db.execute(
+            "INSERT OR IGNORE INTO subscriptions(
+               id,kind,name,url,format,category,update_interval_hours,enabled
+             ) VALUES(?1,'rule',?2,?3,?4,?5,24,1)",
+            params![id, name, url, format, category],
+        )?;
+    }
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES(?1,'true')",
+        params![SEED_MARKER],
+    )?;
     Ok(())
 }
 
@@ -633,6 +721,9 @@ pub fn set_subscription_enabled(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
+    if id.starts_with("default:") && !enabled {
+        return Err("默认规则源必须保持启用".into());
+    }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     if db
         .execute(
@@ -655,16 +746,28 @@ pub fn delete_subscription(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
+    if id.starts_with("default:") {
+        return Err("默认规则源不能删除".into());
+    }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    if db
+    delete_subscription_inner(&db, &id)?;
+    drop(db);
+    Ok(())
+}
+
+fn delete_subscription_inner(db: &Connection, id: &str) -> Result<(), String> {
+    if id.starts_with("default:") {
+        return Err("默认规则源不能删除".into());
+    }
+    let transaction = db.unchecked_transaction().map_err(error)?;
+    if transaction
         .execute("DELETE FROM subscriptions WHERE id=?1", params![id])
         .map_err(error)?
         != 1
     {
         return Err("订阅不存在".into());
     }
-    drop(db);
-    Ok(())
+    transaction.commit().map_err(error)
 }
 
 #[tauri::command]
@@ -922,5 +1025,63 @@ mod tests {
             );
             assert!(!src.description.is_empty(), "描述不应为空");
         }
+    }
+
+    #[test]
+    fn seeds_known_default_rule_sources_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cleanweb.db");
+        {
+            let state = AppState::open(&path).unwrap();
+            let db = state.db.lock().unwrap();
+            let count: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%' AND enabled=1 AND update_interval_hours=24",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 6);
+            assert!(delete_subscription_inner(&db, "default:blocklistproject:fraud").is_err());
+        }
+
+        let state = AppState::open(&path).unwrap();
+        let count: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 6, "默认规则源必须始终存在");
+    }
+
+    #[test]
+    fn default_sources_are_restored_and_forced_enabled() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE subscriptions SET enabled=0 WHERE id='default:stevenblack:porn'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM settings WHERE key='builtin_rule_sources_v4_seeded'",
+            [],
+        )
+        .unwrap();
+        seed_default_rule_subscriptions(&db).unwrap();
+        let enabled: i64 = db
+            .query_row(
+                "SELECT enabled FROM subscriptions WHERE id='default:stevenblack:porn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, 1, "默认规则源必须强制恢复启用");
+        assert!(delete_subscription_inner(&db, "default:stevenblack:porn").is_err());
     }
 }

@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { App } from "./App";
 
 beforeEach(() => {
+  const values = new Map<string,string>();
+  Object.defineProperty(window, "localStorage", { configurable:true, value:{
+    getItem:(key:string)=>values.get(key)??null,
+    setItem:(key:string,value:string)=>values.set(key,value),
+    removeItem:(key:string)=>values.delete(key),
+    clear:()=>values.clear(),
+  }});
   window.sessionStorage.clear();
+  window.localStorage.clear();
 });
 
 afterEach(cleanup);
@@ -45,5 +53,21 @@ describe("management actions", () => {
     await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
     await userEvent.click(screen.getByRole("button", { name: "导入订阅" }));
     expect(screen.getByRole("dialog", { name: "添加代理订阅" })).toBeTruthy();
+  });
+
+  it("does not allow default rule sources to be disabled or deleted", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"default:stevenblack:porn",kind:"rule",name:"默认源 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",enabled:true},
+      {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
+    ]));
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+
+    expect(screen.getByText("强制启用")).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "默认源 · 色情内容订阅" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除默认源 · 色情内容" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
 });
