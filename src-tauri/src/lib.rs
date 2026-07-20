@@ -17,12 +17,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             app.manage(storage::AppState::open(data_dir.join("cleanweb.db"))?);
-            let background_app = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                let state = background_app.state::<storage::AppState>();
-                let _ = tauri::async_runtime::block_on(access_logs::sync_access_logs_inner(&state));
-            });
+            access_logs::start_access_log_collector(app.handle().clone());
             #[cfg(target_os = "macos")]
             {
                 if let Ok(executable) = std::env::current_exe() {

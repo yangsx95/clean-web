@@ -66,14 +66,31 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "严格模式" })).toBeTruthy();
   });
 
-  it("syncs access logs before refreshing the overview counters", async () => {
-    const sync = vi.spyOn(backend, "syncAccessLogs").mockResolvedValue(0);
+  it("shows protection off when auto start is cancelled on app launch", async () => {
+    const enabled = { ...await backend.getSettings(), protectionEnabled: true };
+    const disabled = { ...enabled, protectionEnabled: false };
+    const settings = vi.spyOn(backend, "getSettings")
+      .mockResolvedValueOnce(enabled)
+      .mockResolvedValueOnce(disabled);
+    const autoStart = vi.spyOn(backend, "autoStartProtection")
+      .mockRejectedValueOnce(new Error("已取消管理员授权，CleanWeb 未开启保护"));
+
+    render(<App />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("已取消管理员授权");
+    expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("false");
+    settings.mockRestore();
+    autoStart.mockRestore();
+  });
+
+  it("subscribes to access log update events for overview counters", async () => {
+    const subscribe = vi.spyOn(backend, "onAccessLogsUpdated").mockResolvedValue(() => {});
 
     render(<App />);
     await unlockManagement();
 
-    expect(sync).toHaveBeenCalled();
-    sync.mockRestore();
+    expect(subscribe).toHaveBeenCalled();
+    subscribe.mockRestore();
   });
 
   it("opens both subscription forms when unlocked", async () => {

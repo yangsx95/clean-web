@@ -258,6 +258,12 @@ h1 {
   margin-bottom: var(--spacing-lg);
 }
 
+.hero.off {
+  border-color: #fecaca;
+  background: #fff7f7;
+  box-shadow: 0 14px 28px rgba(185, 28, 28, 0.08);
+}
+
 .pulse {
   width: 72px;
   height: 72px;
@@ -270,6 +276,21 @@ h1 {
   flex-shrink: 0;
 }
 
+.pulse.off {
+  color: var(--color-danger);
+  background: #fee2e2;
+}
+
+.pulse.off > svg:first-child path:last-child {
+  opacity: 0;
+}
+
+.pulse-x {
+  position: absolute;
+  color: var(--color-danger);
+  stroke-width: 3;
+}
+
 .pulse::after {
   content: '';
   position: absolute;
@@ -278,6 +299,11 @@ h1 {
   border: 2px solid var(--color-primary);
   opacity: 0;
   animation: pulse-ring 2s ease-out infinite;
+}
+
+.pulse.off::after {
+  display: none;
+  animation: none;
 }
 
 @keyframes pulse-ring {
@@ -308,11 +334,11 @@ h1 {
 }
 
 .status.off {
-  color: var(--color-text-muted);
-  background: #f3f4f6;
+  color: var(--color-danger);
+  background: #fee2e2;
 }
 
-.status.off::before { background: var(--color-text-muted); }
+.status.off::before { background: var(--color-danger); }
 
 .hero h2 {
   margin: 12px 0 6px;

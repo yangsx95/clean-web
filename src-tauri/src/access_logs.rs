@@ -1,16 +1,17 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{
-    mihomo::controller_secret,
-    platform,
-    storage::AppState,
-};
+use crate::{mihomo::controller_secret, platform, storage::AppState};
 
 const CONTROLLER_CONNECTIONS: &str = "http://127.0.0.1:19090/connections";
+const CONTROLLER_LOGS: &str = "http://127.0.0.1:19090/logs";
+const ACCESS_LOGS_UPDATED_EVENT: &str = "access-logs-updated";
 
 #[derive(Debug, Deserialize)]
 struct ConnectionsResponse {
@@ -51,6 +52,11 @@ struct Metadata {
     process_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct LogLine {
+    payload: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessLog {
@@ -69,6 +75,55 @@ pub struct AccessLog {
     pub route: Option<String>,
     pub proxy_group: Option<String>,
     pub error: Option<String>,
+}
+
+pub fn start_access_log_collector(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let client = reqwest::Client::new();
+        loop {
+            let state = app.state::<AppState>();
+            if !setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
+                tokio_sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+            let secret = match controller_secret(&state) {
+                Ok(value) => value,
+                Err(_) => {
+                    tokio_sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let mut response = match client
+                .get(CONTROLLER_LOGS)
+                .query(&[("level", "info")])
+                .bearer_auth(secret)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => response,
+                _ => {
+                    tokio_sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let mut buffer = String::new();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(index) = buffer.find('\n') {
+                    let line = buffer[..index].trim().to_owned();
+                    buffer.drain(..=index);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let state = app.state::<AppState>();
+                    if insert_reject_log_line(&state, &line).unwrap_or(0) > 0 {
+                        let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
+                    }
+                }
+            }
+            tokio_sleep(Duration::from_secs(2)).await;
+        }
+    });
 }
 
 #[tauri::command]
@@ -123,6 +178,69 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
     }
     cleanup_retention(&db)?;
     Ok(inserted)
+}
+
+fn insert_reject_log_line(state: &AppState, line: &str) -> Result<usize, String> {
+    let message = log_message(line);
+    if !message.contains("REJECT") {
+        return Ok(0);
+    }
+    let Some((domain, port)) = log_target(&message) else {
+        return Ok(0);
+    };
+    let rule = log_rule(&message);
+    let os = platform::os_version();
+    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let id = format!("mihomo-log-{}", event_id_suffix());
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let inserted = db
+        .execute(
+            "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_port,decision,rule,operating_system,system_user,route,proxy_group) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%SZ','now'),?2,?3,'block',?4,?5,?6,'REJECT','REJECT')",
+            params![id, domain, port, rule, os, user],
+        )
+        .map_err(error)?;
+    cleanup_retention(&db)?;
+    Ok(inserted)
+}
+
+fn log_message(line: &str) -> String {
+    serde_json::from_str::<LogLine>(line)
+        .ok()
+        .and_then(|event| event.payload)
+        .unwrap_or_else(|| line.to_owned())
+}
+
+fn log_target(message: &str) -> Option<(String, Option<i64>)> {
+    let after_arrow = message.split_once("-->")?.1.trim();
+    let target = after_arrow.split_whitespace().next()?.trim_matches(',');
+    let target = target.trim_start_matches('[').trim_end_matches(']');
+    let (host, port) = target.rsplit_once(':').unwrap_or((target, ""));
+    let domain = host.trim_matches(['[', ']']).trim().to_owned();
+    if domain.is_empty() {
+        return None;
+    }
+    Some((domain, port.parse::<i64>().ok()))
+}
+
+fn log_rule(message: &str) -> Option<String> {
+    message
+        .split_once(" match ")
+        .and_then(|(_, value)| value.split_once(" using ").map(|(rule, _)| rule.trim()))
+        .filter(|rule| !rule.is_empty())
+        .map(str::to_owned)
+}
+
+fn event_id_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default()
+}
+
+async fn tokio_sleep(duration: Duration) {
+    tauri::async_runtime::spawn_blocking(move || std::thread::sleep(duration))
+        .await
+        .ok();
 }
 
 #[tauri::command]
@@ -287,5 +405,30 @@ mod tests {
     #[test]
     fn csv_escapes_quotes() {
         assert_eq!(csv("a\"b".into()), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn parses_reject_log_target_and_rule() {
+        let message =
+            "[TCP] 127.0.0.1:54321 --> baidu.com:443 match DomainSuffix(baidu.com) using REJECT";
+        assert_eq!(log_target(message), Some(("baidu.com".into(), Some(443))));
+        assert_eq!(log_rule(message), Some("DomainSuffix(baidu.com)".into()));
+    }
+
+    #[test]
+    fn inserts_reject_log_events_from_json_payloads() {
+        let state = AppState::open(":memory:").unwrap();
+        let line = r#"{"type":"info","payload":"[TCP] 127.0.0.1:54321 --> baidu.com:443 match DomainSuffix(baidu.com) using REJECT"}"#;
+        assert_eq!(insert_reject_log_line(&state, line).unwrap(), 1);
+        let db = state.db.lock().unwrap();
+        let (domain, decision): (String, String) = db
+            .query_row(
+                "SELECT domain,decision FROM access_logs LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(domain, "baidu.com");
+        assert_eq!(decision, "block");
     }
 }

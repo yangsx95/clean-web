@@ -32,7 +32,7 @@ export function App() {
       }
     }
     setReady(true);
-    if(current.protectionEnabled)void backend.autoStartProtection().then(setCoreStatus).catch(reason=>setRuntimeError(String(reason)));
+    if(current.protectionEnabled)void backend.autoStartProtection().then(setCoreStatus).catch(async reason=>{setRuntimeError(String(reason));try{setSettings(await backend.getSettings());}catch{}});
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.refreshDueSubscriptions().then(()=>backend.reloadProtection(sessionToken)).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken]);
@@ -74,7 +74,7 @@ export function App() {
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);};
   const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError("");try{const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken);setSettings(await backend.getSettings());}catch(reason){setRuntimeError(String(reason));throw reason;}};
-  useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.syncAccessLogs().catch(()=>0).then(()=>backend.listAccessLogs(sessionToken,undefined,undefined,100)).then(setAccessLogs);refresh();const timer=window.setInterval(refresh,3000);return()=>window.clearInterval(timer);},[sessionToken]);
+  useEffect(()=>{if(!sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.listAccessLogs(sessionToken,undefined,undefined,100).then(logs=>{if(!cancelled)setAccessLogs(logs);});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
   return <div className="shell">
     <aside>
@@ -108,8 +108,8 @@ function Overview({ settings, coreStatus, locked, logs, onClear, onExport, onTog
   const allowedCount = logs.filter(l => l.decision === "allow").length;
   const totalCount = logs.length;
   return <>
-      <section className="hero">
-        <div className="pulse"><ShieldCheck size={34}/></div>
+      <section className={running ? "hero" : "hero off"}>
+        <div className={running ? "pulse" : "pulse off"}><ShieldCheck size={34}/>{!running&&<X className="pulse-x" size={19}/>}</div>
         <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Clean Web 正在执行网络策略" : "开启后将启动保护并接管网络"}</h2><p>{running?`保护服务 PID ${coreStatus?.pid} · 安全 DNS 已配置`:settings.protectionEnabled?"配置要求保护开启，但服务当前未运行":"当前网络未被 Clean Web 接管"}</p></div>
         <Switch checked={settings.protectionEnabled} label="总保护" onChange={(value) => onToggle("protection_enabled", value)} />
       </section>

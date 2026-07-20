@@ -218,6 +218,11 @@ export async function syncAccessLogs():Promise<number>{return isTauri()?invoke("
 export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return isTauri()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}
 export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"time,domain\n";}
+export async function onAccessLogsUpdated(callback:()=>void):Promise<()=>void>{
+  if(!isTauri())return()=>{};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("access-logs-updated", callback);
+}
 export async function listParentRules(sessionToken:string):Promise<ParentRule[]>{if(isTauri())return invoke("list_parent_rules",{sessionToken});previewParentRules=loadPreviewParentRules();return structuredClone(previewParentRules);}
 export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(isTauri())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:crypto.randomUUID(),enabled:true};previewParentRules.unshift(item);savePreviewParentRules();return item;}
 export async function setParentRuleEnabled(sessionToken:string,id:string,enabled:boolean):Promise<void>{if(isTauri())return invoke("set_parent_rule_enabled",{sessionToken,id,enabled});const item=previewParentRules.find(value=>value.id===id);if(item){item.enabled=enabled;savePreviewParentRules();}}
