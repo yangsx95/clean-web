@@ -229,6 +229,10 @@ export async function getAccessLogStats(sessionToken:string):Promise<AccessLogSt
     total: logs.length,
   };
 }
+export async function getPublicAccessLogStats():Promise<AccessLogStats>{
+  if(isTauri())return invoke("public_access_log_stats");
+  return getAccessLogStats("browser-preview");
+}
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}
 export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"time,domain\n";}
 export async function onAccessLogsUpdated(callback:()=>void):Promise<()=>void>{

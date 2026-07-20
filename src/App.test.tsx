@@ -30,6 +30,9 @@ describe("management actions", () => {
   it("starts locked and unlocks with the parent password", async () => {
     render(<App />);
     expect(await screen.findByRole("button", { name: "点击解锁" })).toBeTruthy();
+    expect(screen.getByLabelText("CleanWeb 锁定状态")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "规则管理" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "总保护" })).toBeNull();
     await unlockManagement();
   });
 
@@ -77,7 +80,8 @@ describe("management actions", () => {
     render(<App />);
 
     expect((await screen.findByRole("alert")).textContent).toContain("已取消管理员授权");
-    expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByLabelText("CleanWeb 锁定状态")).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "总保护" })).toBeNull();
     settings.mockRestore();
     autoStart.mockRestore();
   });
@@ -152,8 +156,10 @@ describe("management actions", () => {
   });
 
   it("closes the custom rule dialog after saving even when runtime reload fails", async () => {
+    const coreStatus = vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
     const reload = vi.spyOn(backend, "reloadProtection")
-      .mockResolvedValueOnce({ running: false, controller: "127.0.0.1:19090", configPath: "preview" })
+      .mockResolvedValueOnce({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" })
       .mockRejectedValueOnce(new Error("reload failed"));
 
     render(<App />);
@@ -167,5 +173,6 @@ describe("management actions", () => {
     expect(await screen.findByText("blocked.example")).toBeTruthy();
     expect((await screen.findByRole("alert")).textContent).toContain("规则已添加，但保护配置重载失败");
     reload.mockRestore();
+    coreStatus.mockRestore();
   });
 });

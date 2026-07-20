@@ -363,6 +363,11 @@ pub fn access_log_stats(
     access_log_stats_inner(&state)
 }
 
+#[tauri::command]
+pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogStats, String> {
+    access_log_stats_inner(&state)
+}
+
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.query_row(

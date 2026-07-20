@@ -2,6 +2,7 @@ use std::{
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
     time::Duration,
 };
 
@@ -282,13 +283,30 @@ pub async fn reload_protection(
     if !status.running {
         return Ok(status);
     }
+    if state
+        .reload_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(status);
+    }
+    let result = reload_protection_inner(&app, &state, status).await;
+    state.reload_in_progress.store(false, Ordering::Release);
+    result
+}
+
+async fn reload_protection_inner(
+    app: &AppHandle,
+    state: &AppState,
+    status: CoreStatus,
+) -> Result<CoreStatus, String> {
     // 只能比较当前运行实例确认加载过的配置。用户目录中的 config.yaml 可能已经
     // 被新版本覆盖，而 root 内核仍运行旧配置；仅比较该文件会错误跳过安全搜索刷新。
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
-    let binary = ensure_binary(&app, &runtime)?;
-    let secret = controller_secret(&state)?;
-    let new_config = build_config(&state, &secret, true)?;
+    let binary = ensure_binary(app, &runtime)?;
+    let secret = controller_secret(state)?;
+    let new_config = build_config(state, &secret, true)?;
     if active_config_matches(&runtime.join("active-config"), status.pid, &new_config) {
         return Ok(status);
     }
@@ -331,7 +349,7 @@ pub async fn reload_protection(
         )
         .map_err(error)?;
     }
-    core_status(&state)
+    core_status(state)
 }
 
 fn config_hash(config: &str) -> String {

@@ -71,6 +71,7 @@ pub fn run() {
             access_logs::sync_access_logs,
             access_logs::list_access_logs,
             access_logs::access_log_stats,
+            access_logs::public_access_log_stats,
             access_logs::clear_access_logs,
             access_logs::export_access_logs_csv,
         ])

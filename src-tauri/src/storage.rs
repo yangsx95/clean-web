@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Child,
-    sync::Mutex,
+    sync::{atomic::AtomicBool, Mutex},
     time::{Duration, Instant},
 };
 
@@ -31,6 +31,7 @@ pub struct AppState {
     sessions: Mutex<HashMap<String, Instant>>,
     pub(crate) data_dir: PathBuf,
     pub(crate) core_process: Mutex<Option<Child>>,
+    pub(crate) reload_in_progress: AtomicBool,
 }
 
 #[derive(Debug, Serialize)]
@@ -266,6 +267,7 @@ impl AppState {
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf(),
             core_process: Mutex::new(None),
+            reload_in_progress: AtomicBool::new(false),
         })
     }
 
