@@ -52,7 +52,8 @@ describe("management actions", () => {
     render(<App />);
     await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
-    expect(screen.getByRole("heading", { name: "规则来源" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "添加订阅" }));
     expect(screen.getByRole("dialog", { name: "添加规则订阅" })).toBeTruthy();
   });
@@ -73,16 +74,19 @@ describe("management actions", () => {
 
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
-      {id:"default:stevenblack:porn",kind:"rule",name:"默认源 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",enabled:true},
+      {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
     render(<App />);
     await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
 
-    expect(screen.getByText("强制启用")).toBeTruthy();
-    expect(screen.queryByRole("switch", { name: "默认源 · 色情内容订阅" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "删除默认源 · 色情内容" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
+    expect(screen.getByText("内置启用")).toBeTruthy();
+    expect(screen.queryByText("https://example.test/default")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除内置规则 · 色情内容" })).toBeNull();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });

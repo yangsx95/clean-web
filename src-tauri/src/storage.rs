@@ -388,16 +388,55 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%'",
         [],
     )?;
-    let seeded = db
-        .query_row(
-            "SELECT value FROM settings WHERE key=?1",
-            params![SEED_MARKER],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .is_some();
-    if seeded {
-        return Ok(());
+    let sources = [
+        (
+            "default:stevenblack:porn",
+            "内置规则 · 色情内容",
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
+            "hosts",
+            "pornography",
+        ),
+        (
+            "default:stevenblack:gambling",
+            "内置规则 · 赌博网站",
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
+            "hosts",
+            "gambling",
+        ),
+        (
+            "default:blocklistproject:drugs",
+            "内置规则 · 毒品网站",
+            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt",
+            "domain-list",
+            "drugs",
+        ),
+        (
+            "default:blocklistproject:fraud",
+            "内置规则 · 诈骗网站",
+            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt",
+            "domain-list",
+            "fraud",
+        ),
+        (
+            "default:blocklistproject:phishing",
+            "内置规则 · 钓鱼网站",
+            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt",
+            "domain-list",
+            "phishing",
+        ),
+        (
+            "default:urlhaus:malware",
+            "内置规则 · 恶意软件",
+            "https://urlhaus.abuse.ch/downloads/hostfile/",
+            "hosts",
+            "malware",
+        ),
+    ];
+    for (id, name, _, _, _) in sources {
+        db.execute(
+            "UPDATE subscriptions SET name=?2 WHERE id=?1 AND kind='rule'",
+            params![id, name],
+        )?;
     }
 
     db.execute(
@@ -410,50 +449,6 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
-    let sources = [
-        (
-            "default:stevenblack:porn",
-            "默认源 · 色情内容",
-            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
-            "hosts",
-            "pornography",
-        ),
-        (
-            "default:stevenblack:gambling",
-            "默认源 · 赌博网站",
-            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
-            "hosts",
-            "gambling",
-        ),
-        (
-            "default:blocklistproject:drugs",
-            "默认源 · 毒品网站",
-            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt",
-            "domain-list",
-            "drugs",
-        ),
-        (
-            "default:blocklistproject:fraud",
-            "默认源 · 诈骗网站",
-            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt",
-            "domain-list",
-            "fraud",
-        ),
-        (
-            "default:blocklistproject:phishing",
-            "默认源 · 钓鱼网站",
-            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt",
-            "domain-list",
-            "phishing",
-        ),
-        (
-            "default:urlhaus:malware",
-            "默认源 · 恶意软件",
-            "https://urlhaus.abuse.ch/downloads/hostfile/",
-            "hosts",
-            "malware",
-        ),
-    ];
     for (id, name, url, format, category) in sources {
         db.execute(
             "INSERT OR IGNORE INTO subscriptions(
@@ -463,7 +458,7 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     db.execute(
-        "INSERT INTO settings(key,value) VALUES(?1,'true')",
+        "INSERT OR IGNORE INTO settings(key,value) VALUES(?1,'true')",
         params![SEED_MARKER],
     )?;
     Ok(())
@@ -718,7 +713,7 @@ pub fn set_subscription_enabled(
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
     if id.starts_with("default:") && !enabled {
-        return Err("默认规则源必须保持启用".into());
+        return Err("内置规则必须保持启用".into());
     }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     if db
@@ -743,7 +738,7 @@ pub fn delete_subscription(
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
     if id.starts_with("default:") {
-        return Err("默认规则源不能删除".into());
+        return Err("内置规则不能删除".into());
     }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     delete_subscription_inner(&db, &id)?;
@@ -753,7 +748,7 @@ pub fn delete_subscription(
 
 fn delete_subscription_inner(db: &Connection, id: &str) -> Result<(), String> {
     if id.starts_with("default:") {
-        return Err("默认规则源不能删除".into());
+        return Err("内置规则不能删除".into());
     }
     let transaction = db.unchecked_transaction().map_err(error)?;
     if transaction
@@ -1052,7 +1047,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 6, "默认规则源必须始终存在");
+        assert_eq!(count, 6, "内置规则必须始终存在");
     }
 
     #[test]
@@ -1077,7 +1072,27 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(enabled, 1, "默认规则源必须强制恢复启用");
+        assert_eq!(enabled, 1, "内置规则必须恢复启用");
         assert!(delete_subscription_inner(&db, "default:stevenblack:porn").is_err());
+    }
+
+    #[test]
+    fn default_sources_are_restored_after_seed_marker_exists() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "DELETE FROM subscriptions WHERE id='default:stevenblack:porn'",
+            [],
+        )
+        .unwrap();
+        seed_default_rule_subscriptions(&db).unwrap();
+        let name: String = db
+            .query_row(
+                "SELECT name FROM subscriptions WHERE id='default:stevenblack:porn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "内置规则 · 色情内容");
     }
 }

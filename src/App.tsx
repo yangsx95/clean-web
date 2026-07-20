@@ -141,17 +141,41 @@ function Switch({ checked, label, onChange }: { checked: boolean; label: string;
 }
 
 function Rules({ parentRules, subscriptions, refreshingId, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:()=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void }) {
+  const builtinSubscriptions = subscriptions.filter((item) => item.id.startsWith("default:"));
+  const externalSubscriptions = subscriptions.filter((item) => !item.id.startsWith("default:"));
+  const subscriptionFormat = (item: backend.Subscription) => item.format ?? "自动检测";
+  const updateInterval = (item: backend.Subscription) => item.updateIntervalHours ? `${item.updateIntervalHours}小时更新` : "手动更新";
   return <>
     <section className="toolbar"><div><h2>自定义规则</h2><p>家长黑白名单优先于普通内容和第三方订阅规则。</p></div><button className="primary" onClick={onAddParentRule}><Plus size={16}/>添加规则</button></section>
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{parentRules.length===0&&<div className="table-empty">尚未添加规则</div>}{parentRules.map(item=><div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{item.kind} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{item.action==="block"?"拦截":item.action==="proxy"?"代理放行":"直连放行"}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} onChange={value=>onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>)}</section>
-    <section className="toolbar"><div><h2>规则来源</h2><p>标准化并合并多个来源，保留每条规则的出处。</p></div><button className="primary" onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
+    <section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
-      {subscriptions.length === 0 && <div className="table-empty">尚未添加规则订阅</div>}
-      {subscriptions.map((item) => {
-        const required=item.id.startsWith("default:");
-        return <div className="table-row" key={item.id}><div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div><span>{item.format ?? "自动检测"}</span>{required?<span className="required-source">强制启用</span>:<Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>onToggleSubscription(item.id,value)}/>}<div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{!required&&<button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button>}</div></div>;
-      })}
+      {builtinSubscriptions.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
+      {builtinSubscriptions.map((item) => (
+        <div className="table-row" key={item.id}>
+          <div>
+            <b>{item.name}</b>
+            <small className={item.lastError ? "error-text" : ""}>{item.lastError ?? `由 CleanWeb 维护，合并开源规则来源 · ${updateInterval(item)}`}</small>
+          </div>
+          <span>{subscriptionFormat(item)}</span>
+          <span className="required-source">内置启用</span>
+          <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button></div>
+        </div>
+      ))}
+    </section>
+    <section className="toolbar subscription-toolbar"><div><h2>外部订阅</h2><p>用户导入的第三方规则来源，更新失败时保留最后一次有效规则。</p></div><button className="primary" onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
+    <section className="table-card">
+      <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
+      {externalSubscriptions.length === 0 && <div className="table-empty">尚未添加外部规则订阅</div>}
+      {externalSubscriptions.map((item) => (
+        <div className="table-row" key={item.id}>
+          <div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div>
+          <span>{subscriptionFormat(item)}</span>
+          <Switch checked={item.enabled} label={`${item.name}订阅`} onChange={(value)=>onToggleSubscription(item.id,value)}/>
+          <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div>
+        </div>
+      ))}
     </section>
     <section className="hint"><ShieldCheck size={19}/><div><b>匹配能力</b><p>支持精确域名、域名后缀、关键词、通配符、正则表达式、IP 与 CIDR。</p></div></section>
   </>;
