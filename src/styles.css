@@ -86,7 +86,10 @@ aside {
   color: var(--color-text-sidebar);
   display: flex;
   flex-direction: column;
-  position: relative;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .brand {
@@ -588,7 +591,7 @@ h1 {
 
 .table-head, .table-row {
   display: grid;
-  grid-template-columns: 2fr 0.7fr 0.8fr 0.5fr;
+  grid-template-columns: minmax(0, 1fr) 128px 128px 96px;
   align-items: center;
   gap: var(--spacing-md);
   padding: 14px 20px;
@@ -613,8 +616,21 @@ h1 {
 .table-row:last-child { border-bottom: none; }
 .table-row:hover { background: #f9fafb; }
 
+.table-head > span:nth-child(3),
+.table-head > span:nth-child(4),
+.table-row > :nth-child(3),
+.table-row > :nth-child(4) {
+  justify-self: center;
+}
+
+.table-row > div:first-child { min-width: 0; }
 .table-row div b { display: block; font-weight: 600; }
-.table-row div small { display: block; color: var(--color-text-secondary); margin-top: 4px; }
+.table-row div small {
+  display: block;
+  color: var(--color-text-secondary);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
 
 .enabled {
   color: var(--color-success);
@@ -636,12 +652,14 @@ h1 {
 .row-actions, .proxy-actions {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
 .row-action {
   width: 32px;
   height: 32px;
+  flex: 0 0 32px;
   border: 1px solid var(--color-border);
   background: var(--color-bg-card);
   border-radius: var(--radius-sm);

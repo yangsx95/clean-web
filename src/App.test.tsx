@@ -86,4 +86,22 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
+
+  it("closes the custom rule dialog after saving even when runtime reload fails", async () => {
+    const reload = vi.spyOn(backend, "reloadProtection")
+      .mockResolvedValueOnce({ running: false, controller: "127.0.0.1:19090", configPath: "preview" })
+      .mockRejectedValueOnce(new Error("reload failed"));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("button", { name: "添加规则" }));
+    await userEvent.type(screen.getByLabelText("规则内容"), "blocked.example");
+    await userEvent.click(screen.getByRole("button", { name: "验证并保存" }));
+
+    expect(screen.queryByRole("dialog", { name: "添加规则" })).toBeNull();
+    expect(await screen.findByText("blocked.example")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain("规则已添加，但保护配置重载失败");
+    reload.mockRestore();
+  });
 });
