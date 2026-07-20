@@ -40,6 +40,16 @@ describe("browser preview persistence", () => {
     await expect(backend.getCoreStatus()).resolves.toMatchObject({ running: true });
   });
 
+  it("persists strict mode setting in browser preview", async () => {
+    let backend = await import("./backend");
+    await backend.updateSetting("browser-preview", "strict_mode_enabled", "true");
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    await expect(backend.getSettings()).resolves.toMatchObject({ strictModeEnabled: true });
+  });
+
   it("keeps the unlocked backend session across a page reload", async () => {
     let backend = await import("./backend");
     await backend.unlock("parent123");

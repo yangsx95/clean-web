@@ -1081,6 +1081,12 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
     append_imported_rules(db, &enabled_categories, true, &mut result)?;
+    if enabled_categories
+        .get("strict_mode_enabled")
+        .is_some_and(|value| value == "true")
+    {
+        append_strict_mode_rules(&mut result);
+    }
     let mut statement=db.prepare("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'proxy' THEN 1 ELSE 2 END,created_at").map_err(error)?;
     let rows = statement
         .query_map([], |row| {
@@ -1105,6 +1111,21 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     }
     append_imported_rules(db, &enabled_categories, false, &mut result)?;
     Ok(result)
+}
+
+fn append_strict_mode_rules(result: &mut Vec<Value>) {
+    const STRICT_KEYWORDS: &[&str] = &[
+        "porn", "porno", "sex", "91",
+    ];
+    for keyword in STRICT_KEYWORDS {
+        result.push(Value::String(format!("DOMAIN-KEYWORD,{keyword},REJECT")));
+    }
+    result.push(Value::String(
+        "DOMAIN-REGEX,(^|[.])[a-z0-9]{18,}[.],REJECT".into(),
+    ));
+    result.push(Value::String(
+        "DOMAIN-REGEX,(^|[.])([a-z]+[0-9]+|[0-9]+[a-z]+)[a-z0-9]{10,}[.],REJECT".into(),
+    ));
 }
 
 fn append_imported_rules(
@@ -1534,6 +1555,27 @@ mod tests {
         assert!(!fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
+    }
+
+    #[test]
+    fn strict_mode_adds_heuristic_reject_rules_only_when_enabled() {
+        let state = AppState::open(":memory:").unwrap();
+        let default_config = build_config(&state, "secret", true).unwrap();
+        assert!(!default_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
+        assert!(!default_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9]{18,}[.],REJECT"));
+
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE settings SET value='true' WHERE key='strict_mode_enabled'",
+                [],
+            )
+            .unwrap();
+        }
+        let strict_config = build_config(&state, "secret", true).unwrap();
+        assert!(strict_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
+        assert!(strict_config.contains("DOMAIN-KEYWORD,91,REJECT"));
+        assert!(strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9]{18,}[.],REJECT"));
     }
 
     #[test]

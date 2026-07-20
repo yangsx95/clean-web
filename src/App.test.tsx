@@ -58,6 +58,24 @@ describe("management actions", () => {
     expect(screen.getByRole("dialog", { name: "添加规则订阅" })).toBeTruthy();
   });
 
+  it("shows a strict mode switch on the overview", async () => {
+    render(<App />);
+    await unlockManagement();
+
+    expect(screen.getByText("严格模式")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "严格模式" })).toBeTruthy();
+  });
+
+  it("syncs access logs before refreshing the overview counters", async () => {
+    const sync = vi.spyOn(backend, "syncAccessLogs").mockResolvedValue(0);
+
+    render(<App />);
+    await unlockManagement();
+
+    expect(sync).toHaveBeenCalled();
+    sync.mockRestore();
+  });
+
   it("opens both subscription forms when unlocked", async () => {
     render(<App />);
     await unlockManagement();

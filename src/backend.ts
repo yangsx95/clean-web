@@ -6,6 +6,7 @@ export type Settings = {
   automaticNodeSelection: boolean;
   accessLoggingEnabled: boolean;
   safeSearchEnabled: boolean;
+  strictModeEnabled: boolean;
   logRetention: string;
   categories: Record<string, boolean>;
 };
@@ -30,6 +31,7 @@ const defaultSettings: Settings = {
   automaticNodeSelection: true,
   accessLoggingEnabled: true,
   safeSearchEnabled: true,
+  strictModeEnabled: false,
   logRetention: "30d",
   categories: { pornography: true, gambling: true, drugs: true, violence: true, self_harm: true, hate_extremism: true, fraud: true, phishing: true, malware: true, ads: true, tracking: true },
 };
@@ -135,6 +137,7 @@ export async function updateSetting(sessionToken: string, key: string, value: st
   if (key === "automatic_node_selection") defaults.automaticNodeSelection = value === "true";
   if (key === "access_logging_enabled") defaults.accessLoggingEnabled = value === "true";
   if (key === "safe_search_enabled") defaults.safeSearchEnabled = value === "true";
+  if (key === "strict_mode_enabled") defaults.strictModeEnabled = value === "true";
   if (key === "log_retention") defaults.logRetention = value;
   if (key.startsWith("category.")) defaults.categories[key.slice(9)] = value === "true";
   savePreviewSettings();

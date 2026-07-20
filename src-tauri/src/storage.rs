@@ -48,6 +48,7 @@ pub struct Settings {
     pub automatic_node_selection: bool,
     pub access_logging_enabled: bool,
     pub safe_search_enabled: bool,
+    pub strict_mode_enabled: bool,
     pub log_retention: String,
     pub categories: HashMap<String, bool>,
 }
@@ -359,6 +360,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
         ("automatic_node_selection", "true"),
         ("access_logging_enabled", "true"),
         ("safe_search_enabled", "true"),
+        ("strict_mode_enabled", "false"),
         ("log_retention", "30d"),
         ("category.pornography", "true"),
         ("category.gambling", "true"),
@@ -917,6 +919,7 @@ fn read_settings(db: &Connection) -> rusqlite::Result<Settings> {
         automatic_node_selection: boolean("automatic_node_selection"),
         access_logging_enabled: boolean("access_logging_enabled"),
         safe_search_enabled: boolean("safe_search_enabled"),
+        strict_mode_enabled: boolean("strict_mode_enabled"),
         log_retention: pairs
             .get("log_retention")
             .cloned()
@@ -933,6 +936,7 @@ fn allowed_setting(key: &str, value: &str) -> bool {
             | "automatic_node_selection"
             | "access_logging_enabled"
             | "safe_search_enabled"
+            | "strict_mode_enabled"
     ) || matches!(key, "category.ads" | "category.tracking");
     (boolean_key && matches!(value, "true" | "false"))
         || (key == "log_retention" && matches!(value, "7d" | "30d" | "90d" | "forever"))
@@ -961,6 +965,7 @@ mod tests {
         let state = AppState::open(":memory:").unwrap();
         let settings = read_settings(&state.db.lock().unwrap()).unwrap();
         assert!(!settings.protection_enabled);
+        assert!(!settings.strict_mode_enabled);
         assert!(settings.access_logging_enabled);
         assert!(settings.categories["pornography"]);
     }
@@ -972,7 +977,10 @@ mod tests {
         assert!(allowed_setting("proxy_enabled", "true"));
         assert!(allowed_setting("safe_search_enabled", "true"));
         assert!(allowed_setting("safe_search_enabled", "false"));
+        assert!(allowed_setting("strict_mode_enabled", "true"));
+        assert!(allowed_setting("strict_mode_enabled", "false"));
         assert!(!allowed_setting("safe_search_enabled", "yes"));
+        assert!(!allowed_setting("strict_mode_enabled", "yes"));
         assert!(!allowed_setting("category.pornography", "false"));
         assert!(!allowed_setting("category.malware", "false"));
         assert!(allowed_setting("category.ads", "false"));
