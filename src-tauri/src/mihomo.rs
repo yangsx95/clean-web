@@ -266,7 +266,9 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
 }
 
 fn admin_authorization_cancelled(reason: &str) -> bool {
-    reason.contains("已取消管理员授权") || reason.contains("User canceled") || reason.contains("-128")
+    reason.contains("已取消管理员授权")
+        || reason.contains("User canceled")
+        || reason.contains("-128")
 }
 
 fn set_protection_enabled(state: &AppState, enabled: bool) -> Result<(), String> {
@@ -1136,17 +1138,150 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
 }
 
 fn append_strict_mode_rules(result: &mut Vec<Value>) {
-    const STRICT_KEYWORDS: &[&str] = &[
-        "porn", "porno", "sex", "91",
+    const STRICT_SUFFIXES: &[&str] = &[
+        "yandex.com",
+        "yandex.ru",
+        "yandex.net",
+        "yastatic.net",
+        "yandexadexchange.net",
+        "youtube.com",
+        "youtu.be",
+        "youtube-nocookie.com",
+        "googlevideo.com",
+        "ytimg.com",
+        "youtubei.googleapis.com",
+        "youtube.googleapis.com",
+        "telegram.org",
+        "telegram.me",
+        "t.me",
+        "telegra.ph",
+        "tdesktop.com",
+        "instagram.com",
+        "cdninstagram.com",
+        "ig.me",
+        "threads.net",
+        "facebook.com",
+        "fbcdn.net",
+        "fb.com",
+        "x.com",
+        "twitter.com",
+        "twimg.com",
+        "t.co",
+        "douyin.com",
+        "tiktok.com",
+        "tiktokv.com",
+        "tiktokcdn.com",
+        "muscdn.com",
+        "byteoversea.com",
+        "reddit.com",
+        "redd.it",
+        "redditmedia.com",
+        "redditstatic.com",
+        "tumblr.com",
+        "tumblr.co",
+        "tmblr.co",
+        "discord.com",
+        "discord.gg",
+        "discordapp.com",
+        "discordapp.net",
+        "snapchat.com",
+        "pinterest.com",
+        "pinimg.com",
+        "cam",
+        "sex",
+        "sexy",
+        "porn",
+        "adult",
+        "xxx",
+        "xyz",
+        "top",
+        "click",
+        "icu",
+        "sbs",
+        "cyou",
+        "monster",
+        "quest",
+        "buzz",
+        "fun",
+        "lol",
+        "rest",
+        "cfd",
+        "win",
+        "men",
+        "date",
+        "party",
+        "review",
+        "trade",
+        "download",
+        "stream",
+        "gdn",
+        "zip",
+        "mov",
+        "tk",
+        "ml",
+        "ga",
+        "gq",
+        "cf",
+        "bet",
+        "casino",
+        "poker",
+        "bingo",
     ];
+    const STRICT_KEYWORDS: &[&str] = &[
+        "yandex",
+        "youtube",
+        "telegram",
+        "instagram",
+        "twitter",
+        "tiktok",
+        "porn",
+        "porno",
+        "sex",
+        "sexy",
+        "xxx",
+        "adult",
+        "nude",
+        "naked",
+        "onlyfans",
+        "camgirl",
+        "livecam",
+        "jav",
+        "hentai",
+        "rule34",
+        "91",
+    ];
+    const STRICT_CIDRS: &[&str] = &[
+        "91.108.4.0/22",
+        "91.108.8.0/22",
+        "91.108.12.0/22",
+        "91.108.16.0/22",
+        "91.108.20.0/22",
+        "91.108.56.0/22",
+        "149.154.160.0/20",
+    ];
+    for suffix in STRICT_SUFFIXES {
+        result.push(Value::String(format!("DOMAIN-SUFFIX,{suffix},REJECT")));
+    }
     for keyword in STRICT_KEYWORDS {
         result.push(Value::String(format!("DOMAIN-KEYWORD,{keyword},REJECT")));
     }
+    for cidr in STRICT_CIDRS {
+        result.push(Value::String(format!("IP-CIDR,{cidr},REJECT,no-resolve")));
+    }
     result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])[a-z0-9]{18,}[.],REJECT".into(),
+        "DOMAIN-REGEX,(^|[.])[a-z0-9-]*[0-9]{5}[0-9]*[a-z0-9-]*([.]|$),REJECT".into(),
     ));
     result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])([a-z]+[0-9]+|[0-9]+[a-z]+)[a-z0-9]{10,}[.],REJECT".into(),
+        "DOMAIN-REGEX,(^|[.])[0-9a-f]{8}[0-9a-f]*([.]|$),REJECT".into(),
+    ));
+    result.push(Value::String(
+        "DOMAIN-REGEX,(^|[.])[bcdfghjklmnpqrstvwxyz0-9]{7}[bcdfghjklmnpqrstvwxyz0-9]*([.]|$),REJECT".into(),
+    ));
+    result.push(Value::String(
+        "DOMAIN-REGEX,(^|[.])[a-z][a-z]*[0-9]{4}[0-9]*[a-z][a-z]*([.]|$),REJECT".into(),
+    ));
+    result.push(Value::String(
+        "DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT".into(),
     ));
 }
 
@@ -1584,7 +1719,11 @@ mod tests {
         let state = AppState::open(":memory:").unwrap();
         let default_config = build_config(&state, "secret", true).unwrap();
         assert!(!default_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
-        assert!(!default_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9]{18,}[.],REJECT"));
+        assert!(!default_config.contains("DOMAIN-SUFFIX,youtube.com,REJECT"));
+        assert!(!default_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
+        assert!(
+            !default_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT")
+        );
 
         {
             let db = state.db.lock().unwrap();
@@ -1595,14 +1734,18 @@ mod tests {
             .unwrap();
         }
         let strict_config = build_config(&state, "secret", true).unwrap();
+        assert!(strict_config.contains("DOMAIN-SUFFIX,youtube.com,REJECT"));
         assert!(strict_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
         assert!(strict_config.contains("DOMAIN-KEYWORD,91,REJECT"));
-        assert!(strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9]{18,}[.],REJECT"));
+        assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
+        assert!(strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"));
     }
 
     #[test]
     fn detects_admin_authorization_cancellation_errors() {
-        assert!(admin_authorization_cancelled("已取消管理员授权，CleanWeb 未开启保护"));
+        assert!(admin_authorization_cancelled(
+            "已取消管理员授权，CleanWeb 未开启保护"
+        ));
         assert!(admin_authorization_cancelled("User canceled."));
         assert!(admin_authorization_cancelled("osascript failed -128"));
         assert!(!admin_authorization_cancelled("等待 Mihomo TUN 就绪超时"));

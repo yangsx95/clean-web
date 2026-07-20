@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    fs::File,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    time::Duration,
 };
 
 use rusqlite::params;
@@ -12,6 +15,7 @@ use crate::{mihomo::controller_secret, platform, storage::AppState};
 const CONTROLLER_CONNECTIONS: &str = "http://127.0.0.1:19090/connections";
 const CONTROLLER_LOGS: &str = "http://127.0.0.1:19090/logs";
 const ACCESS_LOGS_UPDATED_EVENT: &str = "access-logs-updated";
+const MACOS_PRIVILEGED_LOG: &str = "/Library/Application Support/CleanWeb/mihomo.log";
 
 #[derive(Debug, Deserialize)]
 struct ConnectionsResponse {
@@ -77,6 +81,15 @@ pub struct AccessLog {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessLogStats {
+    pub block: i64,
+    pub allow: i64,
+    pub warning: i64,
+    pub total: i64,
+}
+
 pub fn start_access_log_collector(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
@@ -89,6 +102,9 @@ pub fn start_access_log_collector(app: AppHandle) {
             let secret = match controller_secret(&state) {
                 Ok(value) => value,
                 Err(_) => {
+                    if sync_mihomo_log_files(&state).unwrap_or(0) > 0 {
+                        let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
+                    }
                     tokio_sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -102,6 +118,9 @@ pub fn start_access_log_collector(app: AppHandle) {
             {
                 Ok(response) if response.status().is_success() => response,
                 _ => {
+                    if sync_mihomo_log_files(&state).unwrap_or(0) > 0 {
+                        let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
+                    }
                     tokio_sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -135,6 +154,7 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
     if !setting_bool(state, "access_logging_enabled")? {
         return Ok(0);
     }
+    let mut inserted = sync_mihomo_log_files(state)?;
     let secret = controller_secret(state)?;
     let response = match reqwest::Client::new()
         .get(CONTROLLER_CONNECTIONS)
@@ -146,13 +166,12 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
             .json::<ConnectionsResponse>()
             .await
             .map_err(error)?,
-        _ => return Ok(0),
+        _ => return Ok(inserted),
     };
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let categories = rule_categories(state)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let mut inserted = 0;
     for connection in response.connections {
         let route = if connection.chains.is_empty() {
             None
@@ -191,7 +210,7 @@ fn insert_reject_log_line(state: &AppState, line: &str) -> Result<usize, String>
     let rule = log_rule(&message);
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-    let id = format!("mihomo-log-{}", event_id_suffix());
+    let id = format!("mihomo-log-{}", line_id_suffix(line));
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let inserted = db
         .execute(
@@ -203,11 +222,50 @@ fn insert_reject_log_line(state: &AppState, line: &str) -> Result<usize, String>
     Ok(inserted)
 }
 
+fn sync_mihomo_log_files(state: &AppState) -> Result<usize, String> {
+    let mut inserted = 0;
+    for path in mihomo_log_paths(state) {
+        inserted += sync_mihomo_log_file(state, &path)?;
+    }
+    Ok(inserted)
+}
+
+fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Ok(0),
+    };
+    let mut inserted = 0;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        inserted += insert_reject_log_line(state, &line)?;
+    }
+    Ok(inserted)
+}
+
+fn mihomo_log_paths(state: &AppState) -> Vec<PathBuf> {
+    let mut paths = vec![state.data_dir.join("mihomo/mihomo.log")];
+    #[cfg(target_os = "macos")]
+    paths.push(PathBuf::from(MACOS_PRIVILEGED_LOG));
+    paths
+}
+
 fn log_message(line: &str) -> String {
+    if let Some(message) = logfmt_msg(line) {
+        return message;
+    }
     serde_json::from_str::<LogLine>(line)
         .ok()
         .and_then(|event| event.payload)
         .unwrap_or_else(|| line.to_owned())
+}
+
+fn logfmt_msg(line: &str) -> Option<String> {
+    let value = line.split_once(" msg=")?.1.trim();
+    if let Some(rest) = value.strip_prefix('"') {
+        let end = rest.rfind('"')?;
+        return Some(rest[..end].replace("\\\"", "\""));
+    }
+    Some(value.split_whitespace().next()?.to_owned())
 }
 
 fn log_target(message: &str) -> Option<(String, Option<i64>)> {
@@ -230,11 +288,9 @@ fn log_rule(message: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn event_id_suffix() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or_default()
+fn line_id_suffix(line: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(line.as_bytes()))
 }
 
 async fn tokio_sleep(duration: Duration) {
@@ -283,6 +339,37 @@ pub fn list_access_logs(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
     Ok(rows)
+}
+
+#[tauri::command]
+pub fn access_log_stats(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<AccessLogStats, String> {
+    state.require_session(&session_token)?;
+    access_log_stats_inner(&state)
+}
+
+fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    db.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN decision='block' THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision='allow' THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision='warning' THEN 1 ELSE 0 END),0),
+           COUNT(*)
+         FROM access_logs",
+        [],
+        |row| {
+            Ok(AccessLogStats {
+                block: row.get(0)?,
+                allow: row.get(1)?,
+                warning: row.get(2)?,
+                total: row.get(3)?,
+            })
+        },
+    )
+    .map_err(error)
 }
 
 #[tauri::command]
@@ -416,6 +503,15 @@ mod tests {
     }
 
     #[test]
+    fn extracts_mihomo_logfmt_message() {
+        let line = r#"time="2026-07-20T17:21:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:54135 --> www.baidu.com:443 match DomainSuffix(baidu.com) using REJECT""#;
+        assert_eq!(
+            log_message(line),
+            "[TCP] 198.18.0.1:54135 --> www.baidu.com:443 match DomainSuffix(baidu.com) using REJECT"
+        );
+    }
+
+    #[test]
     fn inserts_reject_log_events_from_json_payloads() {
         let state = AppState::open(":memory:").unwrap();
         let line = r#"{"type":"info","payload":"[TCP] 127.0.0.1:54321 --> baidu.com:443 match DomainSuffix(baidu.com) using REJECT"}"#;
@@ -430,5 +526,49 @@ mod tests {
             .unwrap();
         assert_eq!(domain, "baidu.com");
         assert_eq!(decision, "block");
+    }
+
+    #[test]
+    fn inserts_reject_log_events_from_mihomo_logfmt_once() {
+        let state = AppState::open(":memory:").unwrap();
+        let line = r#"time="2026-07-20T17:21:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:54135 --> www.baidu.com:443 match DomainSuffix(baidu.com) using REJECT""#;
+        assert_eq!(insert_reject_log_line(&state, line).unwrap(), 1);
+        assert_eq!(insert_reject_log_line(&state, line).unwrap(), 0);
+        let db = state.db.lock().unwrap();
+        let (domain, decision): (String, String) = db
+            .query_row(
+                "SELECT domain,decision FROM access_logs LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(domain, "www.baidu.com");
+        assert_eq!(decision, "block");
+    }
+
+    #[test]
+    fn stats_count_all_access_logs_without_recent_list_limit() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        for index in 0..150 {
+            db.execute(
+                "INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES(?1,'2026-01-01T00:00:00Z','allow','macOS','u')",
+                params![format!("allow-{index}")],
+            )
+            .unwrap();
+        }
+        for index in 0..2 {
+            db.execute(
+                "INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES(?1,'2026-01-01T00:00:00Z','block','macOS','u')",
+                params![format!("block-{index}")],
+            )
+            .unwrap();
+        }
+        drop(db);
+
+        let stats = access_log_stats_inner(&state).unwrap();
+        assert_eq!(stats.allow, 150);
+        assert_eq!(stats.block, 2);
+        assert_eq!(stats.total, 152);
     }
 }

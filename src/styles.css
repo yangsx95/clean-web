@@ -725,20 +725,6 @@ h1 {
 /* ===== PARENT RULES ===== */
 .parent-rules { margin-bottom: var(--spacing-lg); }
 
-/* ===== HINT BOX ===== */
-.hint {
-  margin-top: var(--spacing-md);
-  padding: var(--spacing-md) 18px;
-  border: 1px solid #d1fae5;
-  background: #ecfdf5;
-  border-radius: var(--radius-lg);
-  display: flex;
-  gap: 12px;
-  color: var(--color-primary-dark);
-}
-
-.hint p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 12px; }
-
 /* ===== PROXY CARD ===== */
 .proxy-card {
   background: var(--color-bg-card);

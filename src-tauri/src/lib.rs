@@ -1,4 +1,5 @@
 pub mod access_logs;
+pub mod builtin_rules;
 pub mod mihomo;
 pub mod platform;
 pub mod proxy_crypto;
@@ -69,6 +70,7 @@ pub fn run() {
             mihomo::auto_start_protection,
             access_logs::sync_access_logs,
             access_logs::list_access_logs,
+            access_logs::access_log_stats,
             access_logs::clear_access_logs,
             access_logs::export_access_logs_csv,
         ])

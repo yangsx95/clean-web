@@ -1,0 +1,31 @@
+# CleanWeb built-in adult content supplement.
+# Curated from the user's OpenClash custom rules. Keep only high-confidence adult domains here.
+DOMAIN-SUFFIX,pornhub.com,REJECT
+DOMAIN-SUFFIX,pornhubpremium.com,REJECT
+DOMAIN-SUFFIX,phncdn.com,REJECT
+DOMAIN-SUFFIX,xvideos.com,REJECT
+DOMAIN-SUFFIX,xnxx.com,REJECT
+DOMAIN-SUFFIX,xhamster.com,REJECT
+DOMAIN-SUFFIX,redtube.com,REJECT
+DOMAIN-SUFFIX,onlyfans.com,REJECT
+DOMAIN-SUFFIX,spankbang.com,REJECT
+DOMAIN-SUFFIX,youjizz.com,REJECT
+DOMAIN-SUFFIX,brazzers.com,REJECT
+DOMAIN-SUFFIX,chaturbate.com,REJECT
+DOMAIN-SUFFIX,livejasmin.com,REJECT
+DOMAIN-SUFFIX,stripchat.com,REJECT
+DOMAIN-SUFFIX,bongacams.com,REJECT
+DOMAIN-SUFFIX,cam4.com,REJECT
+DOMAIN-SUFFIX,myfreecams.com,REJECT
+DOMAIN-SUFFIX,eporner.com,REJECT
+DOMAIN-SUFFIX,beeg.com,REJECT
+DOMAIN-SUFFIX,tnaflix.com,REJECT
+DOMAIN-SUFFIX,thumbzilla.com,REJECT
+DOMAIN-SUFFIX,rule34.xxx,REJECT
+DOMAIN-SUFFIX,nhentai.net,REJECT
+DOMAIN-SUFFIX,hanime.tv,REJECT
+DOMAIN-SUFFIX,jable.tv,REJECT
+DOMAIN-SUFFIX,javbus.com,REJECT
+DOMAIN-SUFFIX,javdb.com,REJECT
+DOMAIN,gamebus001.com,REJECT
+DOMAIN-SUFFIX,gamebus001.com,REJECT

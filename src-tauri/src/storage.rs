@@ -15,8 +15,14 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
+use crate::builtin_rules::{
+    CLEANWEB_ADULT_SUPPLEMENT_ID, CLEANWEB_ADULT_SUPPLEMENT_TEXT, CLEANWEB_ADULT_SUPPLEMENT_URL,
+    CLEANWEB_SECURITY_SUPPLEMENT_ID, CLEANWEB_SECURITY_SUPPLEMENT_TEXT,
+    CLEANWEB_SECURITY_SUPPLEMENT_URL,
+};
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
+use crate::subscriptions::{import_text, SubscriptionFormat};
 
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
 
@@ -433,6 +439,20 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
             "hosts",
             "malware",
         ),
+        (
+            CLEANWEB_ADULT_SUPPLEMENT_ID,
+            "内置规则 · 成人站点补充",
+            CLEANWEB_ADULT_SUPPLEMENT_URL,
+            "clash",
+            "pornography",
+        ),
+        (
+            CLEANWEB_SECURITY_SUPPLEMENT_ID,
+            "内置规则 · DNS 防绕过",
+            CLEANWEB_SECURITY_SUPPLEMENT_URL,
+            "clash",
+            "phishing",
+        ),
     ];
     for (id, name, _, _, _) in sources {
         db.execute(
@@ -455,15 +475,48 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         db.execute(
             "INSERT OR IGNORE INTO subscriptions(
                id,kind,name,url,format,category,update_interval_hours,enabled
-             ) VALUES(?1,'rule',?2,?3,?4,?5,24,1)",
+             ) VALUES(?1,'rule',?2,?3,?4,?5,CASE WHEN ?3 LIKE 'builtin://%' THEN NULL ELSE 24 END,1)",
             params![id, name, url, format, category],
         )?;
     }
+    seed_builtin_rule_text(
+        db,
+        CLEANWEB_ADULT_SUPPLEMENT_ID,
+        CLEANWEB_ADULT_SUPPLEMENT_URL,
+        "pornography",
+        CLEANWEB_ADULT_SUPPLEMENT_TEXT,
+    )?;
+    seed_builtin_rule_text(
+        db,
+        CLEANWEB_SECURITY_SUPPLEMENT_ID,
+        CLEANWEB_SECURITY_SUPPLEMENT_URL,
+        "phishing",
+        CLEANWEB_SECURITY_SUPPLEMENT_TEXT,
+    )?;
     db.execute(
         "INSERT OR IGNORE INTO settings(key,value) VALUES(?1,'true')",
         params![SEED_MARKER],
     )?;
     Ok(())
+}
+
+fn seed_builtin_rule_text(
+    db: &Connection,
+    id: &str,
+    url: &str,
+    category: &str,
+    text: &str,
+) -> rusqlite::Result<()> {
+    let imported = import_text(SubscriptionFormat::Clash, text, id, url, category);
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "DELETE FROM imported_rules WHERE subscription_id=?1",
+        params![id],
+    )?;
+    for item in imported.rules {
+        transaction.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,item.rule.id,format!("{:?}",item.rule.kind),item.rule.pattern,format!("{:?}",item.rule.action),item.rule.category,item.source.source_line as i64])?;
+    }
+    transaction.commit()
 }
 
 fn migrate_parent_rules_proxy_action(db: &Connection) -> rusqlite::Result<()> {
@@ -1045,17 +1098,31 @@ mod tests {
         }
 
         let state = AppState::open(&path).unwrap();
-        let count: i64 = state
-            .db
-            .lock()
-            .unwrap()
+        let db = state.db.lock().unwrap();
+        let count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 6, "内置规则必须始终存在");
+        assert_eq!(count, 8, "内置规则必须始终存在");
+        let builtin_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:cleanweb:%' AND enabled=1 AND update_interval_hours IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(builtin_count, 2, "打包规则不应参与网络刷新");
+        let imported_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(imported_count > 0, "打包规则必须写入可执行规则表");
     }
 
     #[test]

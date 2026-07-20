@@ -15,6 +15,7 @@ export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
 export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string};
+export type AccessLogStats={block:number;allow:number;warning:number;total:number};
 export type ParentRule={id:string;action:"allow"|"block"|"proxy";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
 const previewSettingsKey = "cleanweb.preview.settings";
@@ -216,6 +217,16 @@ export async function selectProxy(sessionToken:string,group:string,name:string):
 export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(isTauri())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});return{delays:{}};}
 export async function syncAccessLogs():Promise<number>{return isTauri()?invoke("sync_access_logs"):0;}
 export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return isTauri()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}
+export async function getAccessLogStats(sessionToken:string):Promise<AccessLogStats>{
+  if(isTauri())return invoke("access_log_stats",{sessionToken});
+  const logs=await listAccessLogs(sessionToken,undefined,undefined,5000);
+  return {
+    block: logs.filter(log=>log.decision==="block").length,
+    allow: logs.filter(log=>log.decision==="allow").length,
+    warning: logs.filter(log=>log.decision==="warning").length,
+    total: logs.length,
+  };
+}
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}
 export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"time,domain\n";}
 export async function onAccessLogsUpdated(callback:()=>void):Promise<()=>void>{

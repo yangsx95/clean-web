@@ -93,6 +93,32 @@ describe("management actions", () => {
     subscribe.mockRestore();
   });
 
+  it("uses access log stats instead of the recent log list for counters", async () => {
+    const logs = Array.from({ length: 100 }, (_, index) => ({
+      id: `allow-${index}`,
+      observedAt: "2026-01-01T00:00:00Z",
+      decision: "allow" as const,
+      operatingSystem: "test",
+      systemUser: "test",
+    }));
+    const listLogs = vi.spyOn(backend, "listAccessLogs").mockResolvedValue(logs);
+    const stats = vi.spyOn(backend, "getAccessLogStats").mockResolvedValue({
+      block: 2,
+      allow: 150,
+      warning: 0,
+      total: 152,
+    });
+
+    render(<App />);
+    await unlockManagement();
+
+    expect(await screen.findByText("150")).toBeTruthy();
+    expect(screen.getByText("152")).toBeTruthy();
+    expect(screen.getByText("2")).toBeTruthy();
+    listLogs.mockRestore();
+    stats.mockRestore();
+  });
+
   it("opens both subscription forms when unlocked", async () => {
     render(<App />);
     await unlockManagement();

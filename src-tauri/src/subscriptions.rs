@@ -63,7 +63,9 @@ pub fn import_text(
             SubscriptionFormat::DomainList => parse_domain_line(line),
             SubscriptionFormat::IpList => parse_ip_line(line),
             SubscriptionFormat::Adblock => parse_adblock_line(line),
-            SubscriptionFormat::SafeSearch => Err("safe-search manifests are parsed as structured YAML".into()),
+            SubscriptionFormat::SafeSearch => {
+                Err("safe-search manifests are parsed as structured YAML".into())
+            }
         };
 
         match result {
@@ -105,6 +107,7 @@ fn parse_clash_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>,
         "DOMAIN" => (MatcherKind::Exact, fields[1].to_owned()),
         "DOMAIN-SUFFIX" => (MatcherKind::Suffix, fields[1].to_owned()),
         "DOMAIN-KEYWORD" => (MatcherKind::Contains, fields[1].to_owned()),
+        "DOMAIN-REGEX" => (MatcherKind::Regex, fields[1].to_owned()),
         "IP-CIDR" | "IP-CIDR6" => (MatcherKind::Cidr, fields[1].to_owned()),
         "PROCESS-NAME" | "PROCESS-PATH" | "DST-PORT" | "SRC-PORT" | "MATCH" => {
             return Err("rule type is outside domain/IP filtering".into())
@@ -137,10 +140,7 @@ fn parse_hosts_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>,
         return Ok(None);
     }
     // 去除 www. 前缀后使用 Suffix 匹配，确保主域名及其所有子域名均被拦截
-    let base = domain
-        .strip_prefix("www.")
-        .unwrap_or(&domain)
-        .to_owned();
+    let base = domain.strip_prefix("www.").unwrap_or(&domain).to_owned();
     Ok(Some((MatcherKind::Suffix, base, Action::Block)))
 }
 
@@ -219,10 +219,11 @@ mod tests {
 
     #[test]
     fn imports_supported_clash_rules_and_reports_unsupported_ones() {
-        let report = import(SubscriptionFormat::Clash, "DOMAIN,ads.example,REJECT\nDOMAIN-SUFFIX,bad.example,REJECT\nPROCESS-NAME,app.exe,REJECT");
-        assert_eq!(report.rules.len(), 2);
+        let report = import(SubscriptionFormat::Clash, "DOMAIN,ads.example,REJECT\nDOMAIN-SUFFIX,bad.example,REJECT\nDOMAIN-REGEX,(^|[.])bad[.],REJECT\nPROCESS-NAME,app.exe,REJECT");
+        assert_eq!(report.rules.len(), 3);
         assert_eq!(report.ignored.len(), 1);
         assert_eq!(report.rules[1].rule.kind, MatcherKind::Suffix);
+        assert_eq!(report.rules[2].rule.kind, MatcherKind::Regex);
     }
 
     #[test]
@@ -247,8 +248,14 @@ mod tests {
         );
         assert_eq!(report.rules.len(), 2, "localhost 和 broadcasthost 应被跳过");
         assert_eq!(report.rules[0].rule.kind, MatcherKind::Suffix);
-        assert_eq!(report.rules[0].rule.pattern, "pornhub.com", "www. 前缀应被去除");
-        assert_eq!(report.rules[1].rule.pattern, "xvideos.com", "www. 前缀应被去除");
+        assert_eq!(
+            report.rules[0].rule.pattern, "pornhub.com",
+            "www. 前缀应被去除"
+        );
+        assert_eq!(
+            report.rules[1].rule.pattern, "xvideos.com",
+            "www. 前缀应被去除"
+        );
     }
 
     #[test]

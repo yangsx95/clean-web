@@ -1,7 +1,7 @@
 #[cfg(target_os = "windows")]
 fn ensure_admin() {
-    use std::process::exit;
     use std::os::windows::ffi::OsStrExt;
+    use std::process::exit;
 
     #[repr(C)]
     struct TokenElevation {
@@ -51,7 +51,9 @@ fn ensure_admin() {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             false
         } else {
-            let mut elevation = TokenElevation { token_is_elevated: 0 };
+            let mut elevation = TokenElevation {
+                token_is_elevated: 0,
+            };
             let mut ret_size: u32 = 0;
             let result = GetTokenInformation(
                 token,

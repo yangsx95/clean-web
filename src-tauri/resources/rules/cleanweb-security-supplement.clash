@@ -1,0 +1,8 @@
+# CleanWeb built-in anti-bypass supplement.
+# Blocks common public DoH endpoints that can bypass local DNS filtering.
+DOMAIN-SUFFIX,dns.google,REJECT
+DOMAIN-SUFFIX,cloudflare-dns.com,REJECT
+DOMAIN-SUFFIX,mozilla.cloudflare-dns.com,REJECT
+DOMAIN-SUFFIX,dns.quad9.net,REJECT
+DOMAIN-SUFFIX,doh.pub,REJECT
+DOMAIN-SUFFIX,dns.alidns.com,REJECT
