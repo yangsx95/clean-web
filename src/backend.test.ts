@@ -63,6 +63,17 @@ describe("browser preview persistence", () => {
     });
   });
 
+  it("restores the unlocked backend session when session storage is cleared by webview reload", async () => {
+    let backend = await import("./backend");
+    await backend.unlock("parent123");
+    window.sessionStorage.clear();
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    expect(backend.getStoredSessionToken()).toBe("browser-preview");
+  });
+
   it("keeps parent rules after a page reload", async () => {
     let backend = await import("./backend");
     await backend.createParentRule("browser-preview", {

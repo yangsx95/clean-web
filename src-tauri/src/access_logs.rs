@@ -135,7 +135,7 @@ pub fn start_access_log_collector(app: AppHandle) {
                         continue;
                     }
                     let state = app.state::<AppState>();
-                    if insert_reject_log_line(&state, &line).unwrap_or(0) > 0 {
+                    if insert_mihomo_log_line(&state, &line).unwrap_or(0) > 0 {
                         let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
                     }
                 }
@@ -199,23 +199,28 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
     Ok(inserted)
 }
 
-fn insert_reject_log_line(state: &AppState, line: &str) -> Result<usize, String> {
+fn insert_mihomo_log_line(state: &AppState, line: &str) -> Result<usize, String> {
     let message = log_message(line);
-    if !message.contains("REJECT") {
+    let Some(route) = log_route(&message) else {
         return Ok(0);
-    }
+    };
     let Some((domain, port)) = log_target(&message) else {
         return Ok(0);
     };
     let rule = log_rule(&message);
+    let decision = if route.eq_ignore_ascii_case("REJECT") {
+        "block"
+    } else {
+        "allow"
+    };
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let id = format!("mihomo-log-{}", line_id_suffix(line));
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let inserted = db
         .execute(
-            "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_port,decision,rule,operating_system,system_user,route,proxy_group) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%SZ','now'),?2,?3,'block',?4,?5,?6,'REJECT','REJECT')",
-            params![id, domain, port, rule, os, user],
+            "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_port,decision,rule,operating_system,system_user,route,proxy_group) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%SZ','now'),?2,?3,?4,?5,?6,?7,?8,?8)",
+            params![id, domain, port, decision, rule, os, user, route],
         )
         .map_err(error)?;
     cleanup_retention(&db)?;
@@ -237,7 +242,7 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
     };
     let mut inserted = 0;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
-        inserted += insert_reject_log_line(state, &line)?;
+        inserted += insert_mihomo_log_line(state, &line)?;
     }
     Ok(inserted)
 }
@@ -286,6 +291,14 @@ fn log_rule(message: &str) -> Option<String> {
         .and_then(|(_, value)| value.split_once(" using ").map(|(rule, _)| rule.trim()))
         .filter(|rule| !rule.is_empty())
         .map(str::to_owned)
+}
+
+fn log_route(message: &str) -> Option<String> {
+    message
+        .split_once(" using ")
+        .and_then(|(_, value)| value.split_whitespace().next())
+        .map(|route| route.trim_matches(',').to_owned())
+        .filter(|route| !route.is_empty())
 }
 
 fn line_id_suffix(line: &str) -> String {
@@ -500,6 +513,7 @@ mod tests {
             "[TCP] 127.0.0.1:54321 --> baidu.com:443 match DomainSuffix(baidu.com) using REJECT";
         assert_eq!(log_target(message), Some(("baidu.com".into(), Some(443))));
         assert_eq!(log_rule(message), Some("DomainSuffix(baidu.com)".into()));
+        assert_eq!(log_route(message), Some("REJECT".into()));
     }
 
     #[test]
@@ -515,7 +529,7 @@ mod tests {
     fn inserts_reject_log_events_from_json_payloads() {
         let state = AppState::open(":memory:").unwrap();
         let line = r#"{"type":"info","payload":"[TCP] 127.0.0.1:54321 --> baidu.com:443 match DomainSuffix(baidu.com) using REJECT"}"#;
-        assert_eq!(insert_reject_log_line(&state, line).unwrap(), 1);
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 1);
         let db = state.db.lock().unwrap();
         let (domain, decision): (String, String) = db
             .query_row(
@@ -529,21 +543,40 @@ mod tests {
     }
 
     #[test]
-    fn inserts_reject_log_events_from_mihomo_logfmt_once() {
+    fn inserts_connection_log_events_from_mihomo_logfmt_once() {
         let state = AppState::open(":memory:").unwrap();
         let line = r#"time="2026-07-20T17:21:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:54135 --> www.baidu.com:443 match DomainSuffix(baidu.com) using REJECT""#;
-        assert_eq!(insert_reject_log_line(&state, line).unwrap(), 1);
-        assert_eq!(insert_reject_log_line(&state, line).unwrap(), 0);
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 1);
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 0);
         let db = state.db.lock().unwrap();
-        let (domain, decision): (String, String) = db
+        let (domain, decision, route): (String, String, String) = db
             .query_row(
-                "SELECT domain,decision FROM access_logs LIMIT 1",
+                "SELECT domain,decision,route FROM access_logs LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(domain, "www.baidu.com");
         assert_eq!(decision, "block");
+        assert_eq!(route, "REJECT");
+    }
+
+    #[test]
+    fn inserts_allowed_log_events_from_mihomo_logfmt() {
+        let state = AppState::open(":memory:").unwrap();
+        let line = r#"time="2026-07-20T18:20:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:54135 --> example.com:443 match Match() using DIRECT""#;
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 1);
+        let db = state.db.lock().unwrap();
+        let (domain, decision, route): (String, String, String) = db
+            .query_row(
+                "SELECT domain,decision,route FROM access_logs LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(domain, "example.com");
+        assert_eq!(decision, "allow");
+        assert_eq!(route, "DIRECT");
     }
 
     #[test]

@@ -66,19 +66,18 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "严格模式" })).toBeTruthy();
   });
 
-  it("shows protection off when auto start is cancelled on app launch", async () => {
+  it("keeps protection enabled when auto start is cancelled on app launch", async () => {
     const enabled = { ...await backend.getSettings(), protectionEnabled: true };
-    const disabled = { ...enabled, protectionEnabled: false };
     const settings = vi.spyOn(backend, "getSettings")
       .mockResolvedValueOnce(enabled)
-      .mockResolvedValueOnce(disabled);
+      .mockResolvedValueOnce(enabled);
     const autoStart = vi.spyOn(backend, "autoStartProtection")
       .mockRejectedValueOnce(new Error("已取消管理员授权，CleanWeb 未开启保护"));
 
     render(<App />);
 
     expect((await screen.findByRole("alert")).textContent).toContain("已取消管理员授权");
-    expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("true");
     settings.mockRestore();
     autoStart.mockRestore();
   });

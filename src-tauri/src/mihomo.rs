@@ -182,15 +182,11 @@ pub fn auto_start_protection(
     if !protection_enabled {
         return get_core_status(state);
     }
-    match start_inner(&app, &state) {
-        Ok(status) => Ok(status),
-        Err(reason) => {
-            if admin_authorization_cancelled(&reason) {
-                set_protection_enabled(&state, false)?;
-            }
-            Err(reason)
-        }
+    let status = core_status(&state)?;
+    if status.running {
+        return Ok(status);
     }
+    start_inner(&app, &state)
 }
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
@@ -263,22 +259,6 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
     )
     .map_err(error)?;
     core_status(state)
-}
-
-fn admin_authorization_cancelled(reason: &str) -> bool {
-    reason.contains("已取消管理员授权")
-        || reason.contains("User canceled")
-        || reason.contains("-128")
-}
-
-fn set_protection_enabled(state: &AppState, enabled: bool) -> Result<(), String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    db.execute(
-        "UPDATE settings SET value=?1 WHERE key='protection_enabled'",
-        params![if enabled { "true" } else { "false" }],
-    )
-    .map_err(error)?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -1739,16 +1719,6 @@ mod tests {
         assert!(strict_config.contains("DOMAIN-KEYWORD,91,REJECT"));
         assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
         assert!(strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"));
-    }
-
-    #[test]
-    fn detects_admin_authorization_cancellation_errors() {
-        assert!(admin_authorization_cancelled(
-            "已取消管理员授权，CleanWeb 未开启保护"
-        ));
-        assert!(admin_authorization_cancelled("User canceled."));
-        assert!(admin_authorization_cancelled("osascript failed -128"));
-        assert!(!admin_authorization_cancelled("等待 Mihomo TUN 就绪超时"));
     }
 
     #[test]

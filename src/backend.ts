@@ -87,13 +87,15 @@ function savePreviewSubscriptions() {
   try { window.localStorage.setItem(previewSubscriptionsKey, JSON.stringify(previewSubscriptions)); } catch {}
 }
 export function getStoredSessionToken(): string | null {
-  try { return window.sessionStorage.getItem(sessionTokenKey); } catch { return null; }
+  try { return window.localStorage.getItem(sessionTokenKey) ?? window.sessionStorage.getItem(sessionTokenKey); } catch { return null; }
 }
 export function storeSessionToken(sessionToken: string) {
   try { window.sessionStorage.setItem(sessionTokenKey, sessionToken); } catch {}
+  try { window.localStorage.setItem(sessionTokenKey, sessionToken); } catch {}
 }
 export function clearStoredSessionToken() {
   try { window.sessionStorage.removeItem(sessionTokenKey); } catch {}
+  try { window.localStorage.removeItem(sessionTokenKey); } catch {}
 }
 
 export async function getBootstrapState() {
