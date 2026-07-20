@@ -21,7 +21,6 @@ use uuid::Uuid;
 use crate::{
     platform::{self, NetworkConflicts},
     proxy_crypto::decrypt_proxy_payload,
-    rules::{Action, MatcherKind, RuleInput},
     storage::AppState,
 };
 
@@ -104,12 +103,6 @@ pub struct ProxyDelayResult {
     pub delays: std::collections::HashMap<String, u64>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProxySelectionResult {
-    pub requires_reload: bool,
-}
-
 #[derive(Debug, Deserialize)]
 struct SafeSearchManifest {
     version: u32,
@@ -117,9 +110,9 @@ struct SafeSearchManifest {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct SafeSearchMapping {
-    pub(crate) domain: String,
-    pub(crate) target: String,
+struct SafeSearchMapping {
+    domain: String,
+    target: String,
 }
 
 #[tauri::command]
@@ -148,10 +141,6 @@ pub fn get_core_status(state: State<'_, AppState>) -> Result<CoreStatus, String>
                 pid = Some(saved);
             }
         }
-    }
-    if running && !policy_route_is_healthy(&state) {
-        running = false;
-        pid = None;
     }
     Ok(CoreStatus {
         running,
@@ -197,33 +186,12 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
     let secret = controller_secret(state)?;
-    let proxy_enabled = proxy_enabled_setting(state)?;
-    let config = build_config(state, &secret, !cfg!(target_os = "macos"))?;
-    let tun_name = platform::xray_tun_name();
-    let policy_config = crate::xray::build_policy_config(
-        &enabled_safe_search_mappings(state)?,
-        &enabled_policy_rules(state)?,
-        proxy_enabled,
-        "cleanweb",
-        &secret,
-        &tun_name,
-    )?;
-    let config_hash = stack_config_hash(&config, &policy_config);
+    let config = build_config(state, &secret, true)?;
+    let config_hash = config_hash(&config);
     atomic_write(&runtime.join("config.yaml"), config.as_bytes()).map_err(error)?;
-    let xray_runtime = state.data_dir.join("xray");
-    fs::create_dir_all(&xray_runtime).map_err(error)?;
-    atomic_write(&xray_runtime.join("config.json"), policy_config.as_bytes()).map_err(error)?;
     let config_path = runtime.join("config.yaml");
     #[cfg(target_os = "macos")]
-    let (pid, health_log) = {
-        let xray_binary = crate::xray::ensure_binary(app, &xray_runtime)?;
-        platform::start_network_stack_privileged(
-            &binary,
-            &config_path,
-            &xray_binary,
-            &xray_runtime.join("config.json"),
-        )?
-    };
+    let (pid, health_log) = platform::start_mihomo_privileged(&binary, &config_path)?;
     #[cfg(not(target_os = "macos"))]
     let (pid, health_log) = {
         let stdout = OpenOptions::new()
@@ -247,12 +215,33 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
         (pid, runtime.join("mihomo.log"))
     };
     fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error)?;
-    wait_for_tun_ready(pid, &health_log, &runtime)?;
-    if !platform::public_route_uses(&tun_name) {
-        let _ = stop_child(state);
-        return Err(format!(
-            "Clean Web TUN {tun_name} 已创建，但系统流量未进入该接口；保护已停止以避免虚假运行状态"
-        ));
+    let mut log = String::new();
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(100));
+        log = fs::read_to_string(&health_log).unwrap_or_default();
+        if tun_startup_failed(&log) {
+            platform::kill_process(pid);
+            let _ = fs::remove_file(runtime.join("mihomo.pid"));
+            return Err(
+                last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo TUN 启动失败".into())
+            );
+        }
+        if tun_startup_ready(&log) {
+            break;
+        }
+        if !platform::pid_running(pid) {
+            let _ = fs::remove_file(runtime.join("mihomo.pid"));
+            return Err(
+                last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into())
+            );
+        }
+    }
+    if !tun_startup_ready(&log) {
+        platform::kill_process(pid);
+        let _ = fs::remove_file(runtime.join("mihomo.pid"));
+        return Err(
+            last_log_lines(&health_log, 12).unwrap_or_else(|_| "等待 Mihomo TUN 就绪超时".into())
+        );
     }
     atomic_write(
         &runtime.join("active-config"),
@@ -289,27 +278,13 @@ pub async fn reload_protection(
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(&app, &runtime)?;
     let secret = controller_secret(&state)?;
-    let proxy_enabled = proxy_enabled_setting(&state)?;
-    let new_config = build_config(&state, &secret, !cfg!(target_os = "macos"))?;
-    let tun_name = platform::xray_tun_name();
-    let policy_config = crate::xray::build_policy_config(
-        &enabled_safe_search_mappings(&state)?,
-        &enabled_policy_rules(&state)?,
-        proxy_enabled,
-        "cleanweb",
-        &secret,
-        &tun_name,
-    )?;
-    let xray_runtime = state.data_dir.join("xray");
-    fs::create_dir_all(&xray_runtime).map_err(error)?;
-    atomic_write(&xray_runtime.join("config.json"), policy_config.as_bytes()).map_err(error)?;
-    let stack_hash = stack_config_hash(&new_config, &policy_config);
-    if active_config_hash_matches(&runtime.join("active-config"), status.pid, &stack_hash) {
+    let new_config = build_config(&state, &secret, true)?;
+    if active_config_matches(&runtime.join("active-config"), status.pid, &new_config) {
         return Ok(status);
     }
     let config_path = runtime.join("config.yaml");
     atomic_write(&config_path, new_config.as_bytes()).map_err(error)?;
-    let validation = Command::new(&binary)
+    let validation = Command::new(binary)
         .args(["-t", "-f"])
         .arg(&config_path)
         .arg("-d")
@@ -323,106 +298,37 @@ pub async fn reload_protection(
         ));
     }
 
-    // The root-owned Mihomo process is intentionally restricted to the
-    // system runtime directory through SAFE_PATHS. Passing the per-user
-    // config path to its controller therefore returns HTTP 400 on macOS.
-    // Ask the already-installed privileged service to copy and apply the
-    // validated config instead. This is a normal IPC operation and does not
-    // request administrator credentials again.
-    #[cfg(target_os = "macos")]
-    {
-        let xray_binary = crate::xray::ensure_binary(&app, &xray_runtime)?;
-        let (pid, health_log) = platform::start_network_stack_privileged(
-            &binary,
-            &config_path,
-            &xray_binary,
-            &xray_runtime.join("config.json"),
-        )?;
-        fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error)?;
-        wait_for_tun_ready(pid, &health_log, &runtime)?;
-        if !platform::public_route_uses(&tun_name) {
-            let _ = stop_child(&state);
-            return Err(format!(
-                "Clean Web TUN {tun_name} 已创建，但系统流量未进入该接口；保护已停止"
-            ));
-        }
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/configs")).map_err(error)?;
+    url.query_pairs_mut().append_pair("force", "true");
+    let response = reqwest::Client::new()
+        .put(url)
+        .bearer_auth(&secret)
+        .json(&serde_json::json!({ "path": config_path }))
+        .send()
+        .await
+        .map_err(|value| format!("无法连接 Mihomo 热更新接口：{value}"))?;
+    if !response.status().is_success() {
+        let status_code = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Mihomo 热更新失败（HTTP {status_code}）：{detail}。如果这是升级前启动的内核，请关闭保护后重新开启一次。"
+        ));
+    }
+    if let Some(pid) = status.pid {
         atomic_write(
             &runtime.join("active-config"),
-            format!("{pid}\n{stack_hash}\n").as_bytes(),
+            format!("{pid}\n{}\n", config_hash(&new_config)).as_bytes(),
         )
         .map_err(error)?;
-        core_status(&state)
     }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut url = Url::parse(&format!("http://{CONTROLLER}/configs")).map_err(error)?;
-        url.query_pairs_mut().append_pair("force", "true");
-        let response = reqwest::Client::new()
-            .put(url)
-            .bearer_auth(&secret)
-            .json(&serde_json::json!({ "path": config_path }))
-            .send()
-            .await
-            .map_err(|value| format!("无法连接 Mihomo 热更新接口：{value}"))?;
-        if !response.status().is_success() {
-            let status_code = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "Mihomo 热更新失败（HTTP {status_code}）：{detail}。如果这是升级前启动的内核，请关闭保护后重新开启一次。"
-            ));
-        }
-        if let Some(pid) = status.pid {
-            atomic_write(
-                &runtime.join("active-config"),
-                format!("{pid}\n{stack_hash}\n").as_bytes(),
-            )
-            .map_err(error)?;
-        }
-        core_status(&state)
-    }
-}
-
-fn wait_for_tun_ready(pid: u32, health_log: &Path, runtime: &Path) -> Result<(), String> {
-    for _ in 0..50 {
-        std::thread::sleep(Duration::from_millis(100));
-        let log = fs::read_to_string(health_log).unwrap_or_default();
-        if tun_startup_failed(&log) {
-            platform::kill_process(pid);
-            let _ = fs::remove_file(runtime.join("mihomo.pid"));
-            return Err(
-                last_log_lines(health_log, 12).unwrap_or_else(|_| "Mihomo TUN 启动失败".into())
-            );
-        }
-        if tun_startup_ready(&log) {
-            return Ok(());
-        }
-        if !platform::pid_running(pid) {
-            let _ = fs::remove_file(runtime.join("mihomo.pid"));
-            return Err(
-                last_log_lines(health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into())
-            );
-        }
-    }
-    platform::kill_process(pid);
-    let _ = fs::remove_file(runtime.join("mihomo.pid"));
-    Err(last_log_lines(health_log, 12).unwrap_or_else(|_| "等待 Mihomo TUN 就绪超时".into()))
+    core_status(&state)
 }
 
 fn config_hash(config: &str) -> String {
     format!("{:x}", Sha256::digest(config.as_bytes()))
 }
 
-fn stack_config_hash(mihomo: &str, xray: &str) -> String {
-    config_hash(&format!("{mihomo}\n--cleanweb-xray--\n{xray}"))
-}
-
-#[cfg(test)]
 fn active_config_matches(path: &Path, running_pid: Option<u32>, config: &str) -> bool {
-    active_config_hash_matches(path, running_pid, &config_hash(config))
-}
-
-fn active_config_hash_matches(path: &Path, running_pid: Option<u32>, hash: &str) -> bool {
     let Some(running_pid) = running_pid else {
         return false;
     };
@@ -431,7 +337,7 @@ fn active_config_hash_matches(path: &Path, running_pid: Option<u32>, hash: &str)
     };
     let mut lines = marker.lines();
     lines.next().and_then(|value| value.parse::<u32>().ok()) == Some(running_pid)
-        && lines.next() == Some(hash)
+        && lines.next() == Some(config_hash(config).as_str())
 }
 
 #[tauri::command]
@@ -614,15 +520,22 @@ pub async fn select_proxy(
     name: String,
     session_token: String,
     state: State<'_, AppState>,
-) -> Result<ProxySelectionResult, String> {
+) -> Result<(), String> {
     state.require_session(&session_token)?;
-    if group != "CleanWeb" {
-        return Err("V1 只允许选择 CleanWeb 全局出口组".into());
-    }
-    let available = available_proxy_names(&state)?;
-    if !available.contains(&name) {
-        return Err("所选节点不在已启用的代理订阅中".into());
-    }
+    let secret = controller_secret(&state)?;
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
+    url.path_segments_mut()
+        .map_err(|_| "代理组名称无效")?
+        .push(&group);
+    reqwest::Client::new()
+        .put(url)
+        .bearer_auth(&secret)
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .map_err(error)?
+        .error_for_status()
+        .map_err(error)?;
     {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
         db.execute(
@@ -630,104 +543,15 @@ pub async fn select_proxy(
             params![group, name],
         )
         .map_err(error)?;
-        db.execute(
-            "UPDATE settings SET value='false' WHERE key='automatic_node_selection'",
-            [],
-        )
-        .map_err(error)?;
-    }
-
-    let running = read_pid(&state.data_dir.join("mihomo/mihomo.pid"))
-        .is_some_and(platform::cleanweb_mihomo_running);
-    if !running {
-        return Ok(ProxySelectionResult {
-            requires_reload: false,
-        });
-    }
-    let secret = controller_secret(&state)?;
-    let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
-    url.path_segments_mut()
-        .map_err(|_| "代理组名称无效")?
-        .push(&group);
-    let client = reqwest::Client::new();
-    let group_info = match client.get(url.clone()).bearer_auth(&secret).send().await {
-        Ok(response) if response.status().is_success() => response
-            .json::<serde_json::Value>()
-            .await
-            .unwrap_or_default(),
-        _ => {
-            return Ok(ProxySelectionResult {
-                requires_reload: true,
-            })
-        }
-    };
-    let selector = group_info.get("type").and_then(|value| value.as_str()) == Some("Selector");
-    if selector {
-        let applied = client
-            .put(url)
-            .bearer_auth(&secret)
-            .json(&serde_json::json!({ "name": name }))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success());
-        if !applied {
-            return Ok(ProxySelectionResult {
-                requires_reload: true,
-            });
+        if group == "CleanWeb" {
+            db.execute(
+                "UPDATE settings SET value='false' WHERE key='automatic_node_selection'",
+                [],
+            )
+            .map_err(error)?;
         }
     }
-    Ok(ProxySelectionResult {
-        requires_reload: !selector,
-    })
-}
-
-#[tauri::command]
-pub fn get_saved_proxy_selection(
-    session_token: String,
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    state.require_session(&session_token)?;
-    state
-        .db
-        .lock()
-        .map_err(|_| "数据库不可用")?
-        .query_row(
-            "SELECT proxy_name FROM proxy_selections WHERE group_name='CleanWeb'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(error)
-}
-
-fn available_proxy_names(state: &AppState) -> Result<std::collections::HashSet<String>, String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let mut statement = db
-        .prepare(
-            "SELECT pp.payload FROM proxy_payloads pp JOIN subscriptions s \
-             ON s.id=pp.subscription_id WHERE s.enabled=1 AND s.kind='proxy'",
-        )
-        .map_err(error)?;
-    let payloads = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(error)?;
-    drop(statement);
-    drop(db);
-    let mut names = std::collections::HashSet::new();
-    for envelope in payloads {
-        let plaintext = decrypt_proxy_payload(&envelope)?;
-        let value: Value = serde_yaml::from_str(&plaintext).map_err(error)?;
-        if let Some(proxies) = value.get("proxies").and_then(Value::as_sequence) {
-            names.extend(
-                proxies.iter().filter_map(|proxy| {
-                    proxy.get("name").and_then(Value::as_str).map(str::to_owned)
-                }),
-            );
-        }
-    }
-    Ok(names)
+    Ok(())
 }
 
 /// 测试指定代理组中所有节点的延迟，返回每个节点的延迟值
@@ -739,15 +563,17 @@ pub async fn test_all_proxy_delays(
 ) -> Result<ProxyDelayResult, String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
-    let client = reqwest::Client::new();
-    let mut group_url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
-    group_url
-        .path_segments_mut()
+    let mut url = Url::parse(&format!("http://{CONTROLLER}/group")).map_err(error)?;
+    url.path_segments_mut()
         .map_err(|_| "控制器地址无效")?
-        .push(&group);
-    let group_info = client
-        .get(group_url)
-        .bearer_auth(&secret)
+        .push(&group)
+        .push("delay");
+    url.query_pairs_mut()
+        .append_pair("url", "https://www.gstatic.com/generate_204")
+        .append_pair("timeout", "5000");
+    let resp = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(secret)
         .send()
         .await
         .map_err(error)?
@@ -756,78 +582,15 @@ pub async fn test_all_proxy_delays(
         .json::<serde_json::Value>()
         .await
         .map_err(error)?;
-    let expected: Vec<String> = group_info
-        .get("all")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .collect();
-    if expected.is_empty() {
-        return Err(format!("代理组 {group} 没有可测速节点"));
-    }
-
-    let mut samples = Vec::with_capacity(3);
-    for _ in 0..3 {
-        let mut url = Url::parse(&format!("http://{CONTROLLER}/group")).map_err(error)?;
-        url.path_segments_mut()
-            .map_err(|_| "控制器地址无效")?
-            .push(&group)
-            .push("delay");
-        url.query_pairs_mut()
-            .append_pair("url", "https://www.gstatic.com/generate_204")
-            .append_pair("timeout", "3000");
-        let response = client
-            .get(url)
-            .bearer_auth(&secret)
-            .send()
-            .await
-            .map_err(error)?
-            .error_for_status()
-            .map_err(error)?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(error)?;
-        let mut sample = std::collections::HashMap::new();
-        if let Some(values) = response.as_object() {
-            for (name, value) in values {
-                if let Some(delay) = value.as_u64().filter(|delay| *delay > 0) {
-                    sample.insert(name.clone(), delay);
-                }
+    let mut delays = std::collections::HashMap::new();
+    if let Some(obj) = resp.as_object() {
+        for (name, value) in obj {
+            if let Some(delay) = value.as_u64() {
+                delays.insert(name.clone(), delay);
             }
         }
-        samples.push(sample);
     }
-    let delays = aggregate_delay_samples(&expected, &samples);
     Ok(ProxyDelayResult { delays })
-}
-
-fn aggregate_delay_samples(
-    expected: &[String],
-    samples: &[std::collections::HashMap<String, u64>],
-) -> std::collections::HashMap<String, u64> {
-    expected
-        .iter()
-        .map(|name| {
-            let mut values: Vec<u64> = samples
-                .iter()
-                .filter_map(|sample| sample.get(name).copied())
-                .filter(|delay| *delay > 0)
-                .collect();
-            values.sort_unstable();
-            let median = match values.len() {
-                0 => 0,
-                length if length % 2 == 1 => values[length / 2],
-                length => {
-                    let upper = values[length / 2];
-                    let lower = values[length / 2 - 1];
-                    lower + (upper - lower) / 2
-                }
-            };
-            (name.clone(), median)
-        })
-        .collect()
 }
 
 fn stop_child(state: &AppState) -> Result<(), String> {
@@ -860,11 +623,8 @@ fn stop_child(state: &AppState) -> Result<(), String> {
 }
 
 fn core_status(state: &AppState) -> Result<CoreStatus, String> {
-    let mut pid = read_pid(&state.data_dir.join("mihomo/mihomo.pid"))
+    let pid = read_pid(&state.data_dir.join("mihomo/mihomo.pid"))
         .filter(|pid| platform::cleanweb_mihomo_running(*pid));
-    if pid.is_some() && !policy_route_is_healthy(state) {
-        pid = None;
-    }
     Ok(CoreStatus {
         running: pid.is_some(),
         pid,
@@ -876,37 +636,6 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
             .to_string(),
     })
 }
-
-fn policy_route_is_healthy(state: &AppState) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        configured_xray_tun_name(&state.data_dir.join("xray/config.json"))
-            .is_some_and(|name| platform::public_route_uses(&name))
-            && platform::system_dns_uses_cleanweb()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = state;
-        true
-    }
-}
-
-fn configured_xray_tun_name(path: &Path) -> Option<String> {
-    let config: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-    let name = config
-        .get("inbounds")?
-        .as_array()?
-        .iter()
-        .find(|inbound| {
-            inbound.get("tag").and_then(serde_json::Value::as_str) == Some("cleanweb-tun")
-        })?
-        .pointer("/settings/name")?
-        .as_str()?
-        .to_owned();
-    let suffix = name.strip_prefix("utun")?;
-    (!suffix.is_empty() && suffix.bytes().all(|value| value.is_ascii_digit())).then_some(name)
-}
-
 fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
@@ -979,21 +708,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
 
     let mut root = Mapping::new();
     insert(&mut root, "allow-lan", Value::Bool(false));
-    if !tun_enabled {
-        insert(
-            &mut root,
-            "mixed-port",
-            Value::Number(crate::xray::MIHOMO_TRANSPORT_PORT.into()),
-        );
-        insert(
-            &mut root,
-            "authentication",
-            Value::Sequence(vec![Value::String(format!("cleanweb:{secret}"))]),
-        );
-        if let Some(interface) = platform::default_network_interface() {
-            insert(&mut root, "interface-name", Value::String(interface));
-        }
-    }
     insert(&mut root, "mode", Value::String("rule".into()));
     insert(&mut root, "log-level", Value::String("info".into()));
     insert(&mut root, "ipv6", Value::Bool(true));
@@ -1010,10 +724,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut root, "secret", Value::String(secret.into()));
 
     let mut sniffer = Mapping::new();
-    // In transport mode Xray already supplies either the original domain or
-    // the SafeSearch VIP address. Re-sniffing TLS SNI here could replace the
-    // SafeSearch IP with the original Google hostname.
-    insert(&mut sniffer, "enable", Value::Bool(tun_enabled));
+    insert(&mut sniffer, "enable", Value::Bool(true));
     let mut sniff_protocols = Mapping::new();
     for (protocol, ports) in [
         ("HTTP", vec!["80", "8080-8880"]),
@@ -1048,13 +759,17 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let mut tun = Mapping::new();
     insert(&mut tun, "enable", Value::Bool(tun_enabled));
     insert(&mut tun, "stack", Value::String("mixed".into()));
-    // Windows permits a product-defined adapter name. macOS kernel TUN names
-    // must be system-assigned `utunN`; setting `cleanweb` there is ignored by
-    // Mihomo and only produces an Unsupported tunName warning.
-    #[cfg(target_os = "windows")]
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+    let dns_routes = dns_route_addresses(&platform::system_dns_servers());
+    if !dns_routes.is_empty() {
+        insert(
+            &mut tun,
+            "route-address",
+            Value::Sequence(dns_routes.into_iter().map(Value::String).collect()),
+        );
+    }
     insert(
         &mut tun,
         "dns-hijack",
@@ -1067,19 +782,13 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
 
     let mut dns = Mapping::new();
     insert(&mut dns, "enable", Value::Bool(true));
-    // 让加密 DNS 上游遵循最终代理策略。否则在代理已开启但本地网络无法
-    // 直连公共 DoH 时，Google 安全搜索等 real-IP 域名会解析超时。
-    insert(&mut dns, "respect-rules", Value::Bool(true));
-    #[cfg(target_os = "macos")]
-    if tun_enabled {
-        insert(&mut dns, "listen", Value::String("127.0.0.1:53".into()));
-    }
     insert(&mut dns, "enhanced-mode", Value::String("fake-ip".into()));
     insert(
         &mut dns,
         "fake-ip-range",
         Value::String("198.18.0.1/16".into()),
     );
+    insert(&mut dns, "respect-rules", Value::Bool(true));
     insert(&mut dns, "use-hosts", Value::Bool(true));
     insert(&mut dns, "use-system-hosts", Value::Bool(true));
     insert(
@@ -1152,7 +861,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::Sequence(fake_filter_values),
     );
     insert(&mut root, "dns", Value::Mapping(dns));
-    if safe_search_enabled && tun_enabled {
+    if safe_search_enabled {
         insert(&mut root, "hosts", safe_search_hosts(&safe_search_mappings));
     }
 
@@ -1213,21 +922,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     );
     groups.push(Value::Mapping(cleanweb_group));
     insert(&mut root, "proxy-groups", Value::Sequence(groups));
-
-    // On macOS Xray owns every policy decision. Mihomo is intentionally a
-    // transport backend only, so imported Clash routing, DIRECT exceptions,
-    // SafeSearch and content filters cannot compete with Xray policy.
-    if !tun_enabled {
-        insert(
-            &mut root,
-            "rules",
-            Value::Sequence(vec![Value::String(format!(
-                "MATCH,{}",
-                if proxy_enabled { "CleanWeb" } else { "DIRECT" }
-            ))]),
-        );
-        return serde_yaml::to_string(&root).map_err(error);
-    }
 
     let mut rules = load_filter_rules(&db)?;
     // 局域网/私有地址直连，确保内网设备（路由器等）可正常访问
@@ -1344,9 +1038,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "DOMAIN-SUFFIX,qlogo.cn,DIRECT",
         "DOMAIN-SUFFIX,tencent-cloud.com,DIRECT",
     ];
-    // 过滤策略必须先于直连/代理路由策略，否则内置的国内直连规则会吞掉
-    // 同域名的家长拦截规则（例如 baidu.com）。局域网规则属于产品完整性
-    // 策略，仍保持最高优先级。
     let mut all_rules: Vec<Value> = lan_rules
         .iter()
         .map(|r| Value::String((*r).into()))
@@ -1359,6 +1050,25 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     )));
     insert(&mut root, "rules", Value::Sequence(all_rules));
     serde_yaml::to_string(&root).map_err(error)
+}
+
+fn dns_route_addresses(servers: &[String]) -> Vec<String> {
+    if servers.is_empty() {
+        return Vec::new();
+    }
+    let mut routes = vec![
+        "0.0.0.0/1".to_owned(),
+        "128.0.0.0/1".to_owned(),
+        "::/1".to_owned(),
+        "8000::/1".to_owned(),
+    ];
+    routes.extend(servers.iter().filter_map(|server| {
+        server
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
+    }));
+    routes
 }
 
 fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
@@ -1487,145 +1197,6 @@ fn safe_search_mappings(db: &rusqlite::Connection) -> Result<Vec<SafeSearchMappi
         }
     }
     Ok(mappings)
-}
-
-fn enabled_safe_search_mappings(state: &AppState) -> Result<Vec<SafeSearchMapping>, String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    if setting_bool(&db, "safe_search_enabled")? {
-        safe_search_mappings(&db)
-    } else {
-        Ok(Vec::new())
-    }
-}
-
-fn proxy_enabled_setting(state: &AppState) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    setting_bool(&db, "proxy_enabled")
-}
-
-pub(crate) fn enabled_policy_rules(state: &AppState) -> Result<Vec<RuleInput>, String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    load_policy_rules(&db)
-}
-
-fn load_policy_rules(db: &rusqlite::Connection) -> Result<Vec<RuleInput>, String> {
-    let settings = settings_map(db)?;
-    let mut rules = Vec::new();
-
-    let mut statement = db
-        .prepare(
-            "SELECT r.subscription_id,r.rule_id,r.matcher_kind,r.pattern,r.action,r.category \
-             FROM imported_rules r JOIN subscriptions s ON s.id=r.subscription_id \
-             WHERE s.enabled=1 ORDER BY s.created_at,r.source_line",
-        )
-        .map_err(error)?;
-    let imported = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(error)?;
-    for (subscription_id, rule_id, kind, pattern, imported_action, category) in imported {
-        if settings
-            .get(&format!("category.{category}"))
-            .is_some_and(|value| value == "false")
-        {
-            continue;
-        }
-        let security = matches!(category.as_str(), "fraud" | "phishing" | "malware");
-        let core = matches!(
-            category.as_str(),
-            "pornography" | "gambling" | "drugs" | "violence" | "self_harm" | "hate_extremism"
-        );
-        let optional = matches!(category.as_str(), "ads" | "tracking");
-        let action = if security || !imported_action.eq_ignore_ascii_case("allow") {
-            Action::Block
-        } else {
-            Action::Allow
-        };
-        let base = if security {
-            20
-        } else if core {
-            50
-        } else if optional {
-            60
-        } else {
-            70
-        };
-        rules.push(RuleInput {
-            id: format!("subscription:{subscription_id}:{rule_id}"),
-            action,
-            // Subscription exceptions precede blocks inside their tier, but
-            // can never override high-risk or parent policy.
-            priority: if action == Action::Allow {
-                base - 1
-            } else {
-                base
-            },
-            kind: parse_matcher_kind(&kind)?,
-            pattern,
-            category,
-        });
-    }
-
-    let mut statement = db
-        .prepare(
-            "SELECT id,kind,pattern,action,category FROM parent_rules \
-             WHERE enabled=1 ORDER BY created_at",
-        )
-        .map_err(error)?;
-    let parents = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
-        })
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(error)?;
-    for (id, kind, pattern, action, category) in parents {
-        let (action, priority) = match action.as_str() {
-            "block" => (Action::Block, 30),
-            "allow" => (Action::Allow, 40),
-            "proxy" => (Action::Proxy, 45),
-            value => return Err(format!("家长规则 {id} 的动作无效：{value}")),
-        };
-        rules.push(RuleInput {
-            id: format!("parent:{id}"),
-            action,
-            priority,
-            kind: parse_matcher_kind(&kind)?,
-            pattern,
-            category,
-        });
-    }
-    rules.sort_by_key(|rule| rule.priority);
-    Ok(rules)
-}
-
-fn parse_matcher_kind(value: &str) -> Result<MatcherKind, String> {
-    match value {
-        "Exact" | "exact" => Ok(MatcherKind::Exact),
-        "Suffix" | "suffix" => Ok(MatcherKind::Suffix),
-        "Contains" | "contains" => Ok(MatcherKind::Contains),
-        "Wildcard" | "wildcard" => Ok(MatcherKind::Wildcard),
-        "Regex" | "regex" => Ok(MatcherKind::Regex),
-        "Ip" | "ip" => Ok(MatcherKind::Ip),
-        "Cidr" | "cidr" => Ok(MatcherKind::Cidr),
-        _ => Err(format!("未知规则类型：{value}")),
-    }
 }
 
 fn safe_search_hosts(mappings: &[SafeSearchMapping]) -> Value {
@@ -1848,15 +1419,12 @@ fn tun_startup_ready(log: &str) -> bool {
     // 新版格式: "[TUN] Tun adapter listening at: utun4(...)"
     (log.contains("tun[") && log.contains("proxy listening at:"))
         || log.contains("tun adapter listening at:")
-        || log.contains("core: xray") && log.contains("started")
 }
 
 fn tun_startup_failed(log: &str) -> bool {
     let log = log.to_ascii_lowercase();
     log.contains("start tun listening error")
         || log.contains("configure tun interface") && log.contains("operation not permitted")
-        || log.contains("failed to start:")
-        || log.contains("failed to create server")
 }
 fn error(value: impl std::fmt::Display) -> String {
     value.to_string()
@@ -1904,16 +1472,16 @@ mod tests {
         assert!(config.contains("name: node-a"));
         assert!(!config.contains("controller_secret"));
         let yaml: Value = serde_yaml::from_str(&config).unwrap();
+        assert!(
+            yaml.get("mixed-port").is_none(),
+            "TUN 模式不得向其他应用暴露本地代理端口"
+        );
         assert_eq!(
             yaml.get("dns")
                 .and_then(|dns| dns.get("respect-rules"))
                 .and_then(Value::as_bool),
             Some(true),
             "DNS 上游请求必须遵循代理规则，否则 Google 安全搜索目标可能无法解析"
-        );
-        assert!(
-            yaml.get("mixed-port").is_none(),
-            "TUN 模式不得向其他应用暴露本地代理端口"
         );
         assert_eq!(
             yaml.get("hosts")
@@ -1922,12 +1490,16 @@ mod tests {
             Some("forcesafesearch.google.com")
         );
         assert_eq!(
-            yaml.get("sniffer")
-                .and_then(|sniffer| sniffer.get("sniff"))
-                .and_then(|sniff| sniff.get("TLS"))
-                .and_then(|tls| tls.get("override-destination"))
-                .and_then(Value::as_bool),
-            Some(true)
+            yaml.get("hosts")
+                .and_then(|hosts| hosts.get("www.google.*"))
+                .and_then(Value::as_str),
+            Some("forcesafesearch.google.com")
+        );
+        assert_eq!(
+            yaml.get("hosts")
+                .and_then(|hosts| hosts.get("www.youtube-nocookie.com"))
+                .and_then(Value::as_str),
+            Some("restrictmoderate.youtube.com")
         );
         let fake_ip_filter = yaml
             .get("dns")
@@ -1937,121 +1509,6 @@ mod tests {
         assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
         assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            yaml.get("dns")
-                .and_then(|dns| dns.get("listen"))
-                .and_then(Value::as_str),
-            Some("127.0.0.1:53")
-        );
-        #[cfg(target_os = "macos")]
-        assert!(
-            yaml.get("tun").and_then(|tun| tun.get("device")).is_none(),
-            "macOS 必须由系统分配 utunN 设备名"
-        );
-        #[cfg(target_os = "windows")]
-        assert_eq!(
-            yaml.get("tun")
-                .and_then(|tun| tun.get("device"))
-                .and_then(Value::as_str),
-            Some("CleanWeb")
-        );
-
-        let transport: Value =
-            serde_yaml::from_str(&build_config(&state, "secret", false).unwrap()).unwrap();
-        assert_eq!(
-            transport.get("mixed-port").and_then(Value::as_u64),
-            Some(crate::xray::MIHOMO_TRANSPORT_PORT.into())
-        );
-        assert_eq!(
-            transport
-                .get("authentication")
-                .and_then(Value::as_sequence)
-                .and_then(|values| values.first())
-                .and_then(Value::as_str),
-            Some("cleanweb:secret")
-        );
-        assert_eq!(
-            transport
-                .get("tun")
-                .and_then(|tun| tun.get("enable"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            transport
-                .get("sniffer")
-                .and_then(|sniffer| sniffer.get("enable"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert!(transport.get("hosts").is_none());
-        assert!(transport
-            .get("dns")
-            .and_then(|dns| dns.get("listen"))
-            .is_none());
-        assert_eq!(
-            transport.get("rules").and_then(Value::as_sequence),
-            Some(&vec![Value::String("MATCH,DIRECT".into())]),
-            "Mihomo transport mode must not duplicate Xray policy"
-        );
-        std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
-    }
-
-    #[test]
-    fn xray_policy_loader_preserves_product_priority_and_forces_security_blocks() {
-        let state = AppState::open(":memory:").unwrap();
-        let db = state.db.lock().unwrap();
-        db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('r','rule','r','https://x',1)", []).unwrap();
-        db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r','security','Suffix','malware.example','Allow','malware',1)", []).unwrap();
-        db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r','adult','Suffix','adult.example','Block','pornography',2)", []).unwrap();
-        db.execute("INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('block','block','Suffix','blocked.example','custom')", []).unwrap();
-        db.execute("INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('allow','allow','Exact','allowed.example','custom')", []).unwrap();
-        let rules = load_policy_rules(&db).unwrap();
-        assert_eq!(rules[0].category, "malware");
-        assert_eq!(rules[0].action, Action::Block);
-        assert_eq!(rules[0].priority, 20);
-        assert!(rules.iter().any(|rule| {
-            rule.id == "parent:block" && rule.priority == 30 && rule.action == Action::Block
-        }));
-        assert!(rules.iter().any(|rule| {
-            rule.id == "parent:allow" && rule.priority == 40 && rule.action == Action::Allow
-        }));
-        assert!(rules
-            .iter()
-            .any(|rule| rule.category == "pornography" && rule.priority == 50));
-    }
-
-    #[test]
-    fn proxy_selection_accepts_only_nodes_from_enabled_subscriptions() {
-        let _guard = test_key_env_lock();
-        std::env::set_var("CLEANWEB_TEST_PROXY_KEY_B64", STANDARD.encode([9_u8; 32]));
-        let state = AppState::open(":memory:").unwrap();
-        let enabled = encrypt_proxy_payload(
-            "proxies:\n- name: enabled-node\n  type: ss\n  server: 127.0.0.1\n  port: 1\n",
-        )
-        .unwrap();
-        let disabled = encrypt_proxy_payload(
-            "proxies:\n- name: disabled-node\n  type: ss\n  server: 127.0.0.1\n  port: 2\n",
-        )
-        .unwrap();
-        let db = state.db.lock().unwrap();
-        db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('on','proxy','on','https://x',1)", []).unwrap();
-        db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('off','proxy','off','https://x',0)", []).unwrap();
-        db.execute(
-            "INSERT INTO proxy_payloads(subscription_id,format,payload) VALUES('on','clash',?1)",
-            params![enabled],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO proxy_payloads(subscription_id,format,payload) VALUES('off','clash',?1)",
-            params![disabled],
-        )
-        .unwrap();
-        drop(db);
-        let names = available_proxy_names(&state).unwrap();
-        assert!(names.contains("enabled-node"));
-        assert!(!names.contains("disabled-node"));
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
     }
 
@@ -2068,6 +1525,17 @@ mod tests {
 
         fs::write(&marker, format!("42\n{}\n", config_hash(config))).unwrap();
         assert!(active_config_matches(&marker, Some(42), config));
+    }
+
+    #[test]
+    fn adds_exact_tun_routes_for_lan_dns_servers() {
+        let routes =
+            dns_route_addresses(&["10.195.85.120".into(), "240e:479:4e90:3e59::19".into()]);
+
+        assert!(routes.contains(&"0.0.0.0/1".into()));
+        assert!(routes.contains(&"128.0.0.0/1".into()));
+        assert!(routes.contains(&"10.195.85.120/32".into()));
+        assert!(routes.contains(&"240e:479:4e90:3e59::19/128".into()));
     }
 
     #[test]
@@ -2095,47 +1563,8 @@ mod tests {
         let value = platform::detect_network_conflicts();
         assert_eq!(
             value.has_conflict,
-            !value.interfaces.is_empty()
-                || !value.vpn_services.is_empty()
-                || !value.system_proxies.is_empty()
+            !value.interfaces.is_empty() || !value.vpn_services.is_empty()
         );
-    }
-
-    #[test]
-    fn reads_only_a_valid_xray_tun_name_for_route_health() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = directory.path().join("xray.json");
-        fs::write(
-            &config,
-            r#"{"inbounds":[{"tag":"cleanweb-tun","settings":{"name":"utun200"}}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            configured_xray_tun_name(&config).as_deref(),
-            Some("utun200")
-        );
-
-        fs::write(
-            &config,
-            r#"{"inbounds":[{"tag":"cleanweb-tun","settings":{"name":"en0"}}]}"#,
-        )
-        .unwrap();
-        assert!(configured_xray_tun_name(&config).is_none());
-    }
-
-    #[test]
-    fn delay_results_use_median_and_mark_unreachable_nodes() {
-        let expected = vec!["fast".into(), "unstable".into(), "offline".into()];
-        let samples = vec![
-            std::collections::HashMap::from([("fast".into(), 120), ("unstable".into(), 500)]),
-            std::collections::HashMap::from([("fast".into(), 100)]),
-            std::collections::HashMap::from([("fast".into(), 140), ("unstable".into(), 300)]),
-        ];
-
-        let result = aggregate_delay_samples(&expected, &samples);
-        assert_eq!(result["fast"], 120);
-        assert_eq!(result["unstable"], 400);
-        assert_eq!(result["offline"], 0);
     }
 
     #[test]
@@ -2154,12 +1583,6 @@ mod tests {
         // 新版 mihomo 日志格式
         assert!(tun_startup_ready(
             "level=info msg=\"[TUN] Tun adapter listening at: utun4([198.18.0.1/30],[fdfe:dcba:9876::1/126]), mtu: 9000, auto route: true, auto redir: false, ip stack: Mixed\""
-        ));
-        assert!(tun_startup_ready(
-            "2026/07/18 13:25:23 [Warning] core: Xray 26.3.27 started"
-        ));
-        assert!(tun_startup_failed(
-            "Failed to start: main: failed to create server > operation not permitted"
         ));
         assert!(!tun_startup_failed(
             "level=info msg=\"Tun[0] proxy listening at: utun5\""

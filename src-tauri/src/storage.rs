@@ -25,8 +25,6 @@ pub struct AppState {
     sessions: Mutex<HashMap<String, Instant>>,
     pub(crate) data_dir: PathBuf,
     pub(crate) core_process: Mutex<Option<Child>>,
-    pub(crate) access_log_cursor: Mutex<u64>,
-    pub(crate) xray_access_log_cursor: Mutex<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,8 +259,6 @@ impl AppState {
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf(),
             core_process: Mutex::new(None),
-            access_log_cursor: Mutex::new(0),
-            xray_access_log_cursor: Mutex::new(0),
         })
     }
 

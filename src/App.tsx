@@ -32,7 +32,7 @@ export function App() {
       }
     }
     setReady(true);
-    if(current.protectionEnabled&&!core.running)void backend.autoStartProtection().then(setCoreStatus).catch(reason=>setRuntimeError(String(reason)));
+    if(current.protectionEnabled)void backend.autoStartProtection().then(setCoreStatus).catch(reason=>setRuntimeError(String(reason)));
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>void backend.refreshDueSubscriptions().then(()=>backend.reloadProtection(sessionToken)).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken]);

@@ -6,7 +6,6 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use keyring::{Entry, Error as KeyringError};
 use rand_core::{OsRng, RngCore};
 use rusqlite::{params, Connection};
-use std::sync::{Mutex, OnceLock};
 
 const ENVELOPE_PREFIX: &str = "cw1:aes-256-gcm:";
 const KEYCHAIN_SERVICE: &str = "CleanWeb";
@@ -114,27 +113,6 @@ fn load_or_create_key() -> Result<[u8; 32], String> {
         }
     }
 
-    static KEY_CACHE: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
-    cached_key(
-        KEY_CACHE.get_or_init(|| Mutex::new(None)),
-        read_or_create_keychain_key,
-    )
-}
-
-fn cached_key(
-    cache: &Mutex<Option<[u8; 32]>>,
-    loader: impl FnOnce() -> Result<[u8; 32], String>,
-) -> Result<[u8; 32], String> {
-    let mut cached = cache.lock().map_err(|_| "代理加密密钥缓存不可用")?;
-    if let Some(key) = *cached {
-        return Ok(key);
-    }
-    let key = loader()?;
-    *cached = Some(key);
-    Ok(key)
-}
-
-fn read_or_create_keychain_key() -> Result<[u8; 32], String> {
     let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
         .map_err(|value| format!("无法访问系统 Keychain：{value}"))?;
     match entry.get_secret() {
@@ -212,26 +190,5 @@ mod tests {
             "password: secret-token"
         );
         std::env::remove_var(TEST_KEY_ENV);
-    }
-
-    #[test]
-    fn keychain_loader_runs_only_once_per_process_cache() {
-        let cache = Mutex::new(None);
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-
-        let first = cached_key(&cache, || {
-            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok([9_u8; 32])
-        })
-        .unwrap();
-        let second = cached_key(&cache, || {
-            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok([3_u8; 32])
-        })
-        .unwrap();
-
-        assert_eq!(first, [9_u8; 32]);
-        assert_eq!(second, first);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
