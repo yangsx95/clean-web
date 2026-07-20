@@ -205,7 +205,11 @@ export type ProxySelectionResult={requiresReload:boolean};
 export async function getProxies(sessionToken:string):Promise<ProxyGroup[]>{return isTauri()?invoke<ProxyGroup[]>("get_proxies",{sessionToken}):[];}
 export async function getSavedProxySelection(sessionToken:string):Promise<string|undefined>{return isTauri()?invoke<string|null>("get_saved_proxy_selection",{sessionToken}).then(value=>value??undefined):undefined;}
 export async function getSubscriptionProxies(sessionToken:string,subscriptionId:string):Promise<SubscriptionProxyInfo>{if(isTauri())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{sessionToken,subscriptionId});return{proxies:[],groups:[]};}
-export async function selectProxy(sessionToken:string,group:string,name:string):Promise<ProxySelectionResult>{return isTauri()?invoke<ProxySelectionResult>("select_proxy",{sessionToken,group,name}):{requiresReload:false};}
+export async function selectProxy(sessionToken:string,group:string,name:string):Promise<ProxySelectionResult>{
+  if(!isTauri())return{requiresReload:false};
+  const result=await invoke<ProxySelectionResult|null>("select_proxy",{sessionToken,group,name});
+  return result??{requiresReload:false};
+}
 export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(isTauri())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});return{delays:{}};}
 export async function syncAccessLogs():Promise<number>{return isTauri()?invoke("sync_access_logs"):0;}
 export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return isTauri()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}

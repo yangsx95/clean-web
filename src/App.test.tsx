@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import * as backend from "./backend";
 
 beforeEach(() => {
   const values = new Map<string,string>();
@@ -30,6 +31,21 @@ describe("management actions", () => {
     render(<App />);
     expect(await screen.findByRole("button", { name: "点击解锁" })).toBeTruthy();
     await unlockManagement();
+  });
+
+  it("sets the initial parent password with matching confirmation", async () => {
+    const bootstrap = vi.spyOn(backend, "getBootstrapState").mockResolvedValueOnce({ passwordConfigured: false });
+    const initialize = vi.spyOn(backend, "initializePassword").mockResolvedValueOnce(undefined);
+
+    render(<App />);
+    await userEvent.type(await screen.findByLabelText("管理密码"), "parent123");
+    await userEvent.type(screen.getByLabelText("确认密码"), "parent123");
+    await userEvent.click(screen.getByRole("button", { name: "保存管理密码" }));
+
+    expect(initialize).toHaveBeenCalledWith("parent123");
+    expect(screen.queryByText("两次输入的密码不一致")).toBeNull();
+    bootstrap.mockRestore();
+    initialize.mockRestore();
   });
 
   it("navigates to rules and opens subscription form after unlocking", async () => {

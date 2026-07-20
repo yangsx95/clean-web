@@ -25,8 +25,8 @@ pub struct NetworkConflicts {
 }
 
 /// Returns the DNS server addresses currently configured by the operating
-/// system. On macOS these can be LAN addresses which auto-route deliberately
-/// bypasses, so the TUN config must add exact routes for them.
+/// system. On macOS these can be LAN addresses, so the TUN config may add
+/// exact routes for them without overriding the whole route table.
 pub fn system_dns_servers() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
@@ -138,12 +138,34 @@ pub fn cleanweb_mihomo_running(pid: u32) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        let expected = format!("{SYSTEM_RUNTIME_DIR}/mihomo");
         run_command("/bin/ps", &["-p", &pid.to_string(), "-o", "command="])
-            .is_some_and(|command| command.contains(&expected))
+            .is_some_and(|command| is_cleanweb_mihomo_command(&command))
     }
     #[cfg(not(target_os = "macos"))]
     true
+}
+
+/// Terminates root-owned CleanWeb Mihomo processes that may have outlived the
+/// user-scoped PID file.
+pub fn terminate_cleanweb_mihomo_processes() {
+    #[cfg(target_os = "macos")]
+    {
+        let pids = cleanweb_mihomo_pids();
+        for pid in &pids {
+            terminate_process(*pid);
+        }
+        for _ in 0..20 {
+            if pids.iter().all(|pid| !cleanweb_mihomo_running(*pid)) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        for pid in pids {
+            if cleanweb_mihomo_running(pid) {
+                kill_process(pid);
+            }
+        }
+    }
 }
 
 /// Politely requests a process to terminate (SIGTERM on Unix).
@@ -319,6 +341,32 @@ fn run_command(program: &str, args: &[&str]) -> Option<String> {
         .output()
         .ok()
         .and_then(|value| String::from_utf8(value.stdout).ok())
+}
+
+#[cfg(target_os = "macos")]
+fn cleanweb_mihomo_pids() -> Vec<u32> {
+    run_command("/bin/ps", &["-axo", "pid=,command="])
+        .map(|output| {
+            output
+                .lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim_start();
+                    let (pid, command) = trimmed.split_once(char::is_whitespace)?;
+                    if is_cleanweb_mihomo_command(command) {
+                        pid.parse().ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn is_cleanweb_mihomo_command(command: &str) -> bool {
+    let expected = format!("{SYSTEM_RUNTIME_DIR}/mihomo");
+    command.contains(&expected)
 }
 
 #[cfg(test)]

@@ -103,6 +103,12 @@ pub struct ProxyDelayResult {
     pub delays: std::collections::HashMap<String, u64>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxySelectionResult {
+    pub requires_reload: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct SafeSearchManifest {
     version: u32,
@@ -520,7 +526,7 @@ pub async fn select_proxy(
     name: String,
     session_token: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<ProxySelectionResult, String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
     let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
@@ -551,7 +557,9 @@ pub async fn select_proxy(
             .map_err(error)?;
         }
     }
-    Ok(())
+    Ok(ProxySelectionResult {
+        requires_reload: false,
+    })
 }
 
 /// 测试指定代理组中所有节点的延迟，返回每个节点的延迟值
@@ -619,6 +627,7 @@ fn stop_child(state: &AppState) -> Result<(), String> {
         }
     }
     let _ = fs::remove_file(pid_path);
+    platform::terminate_cleanweb_mihomo_processes();
     Ok(())
 }
 
@@ -788,6 +797,14 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "fake-ip-range",
         Value::String("198.18.0.1/16".into()),
     );
+    insert(
+        &mut dns,
+        "default-nameserver",
+        Value::Sequence(vec![
+            Value::String("223.5.5.5".into()),
+            Value::String("119.29.29.29".into()),
+        ]),
+    );
     insert(&mut dns, "respect-rules", Value::Bool(true));
     insert(&mut dns, "use-hosts", Value::Bool(true));
     insert(&mut dns, "use-system-hosts", Value::Bool(true));
@@ -795,8 +812,8 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         &mut dns,
         "nameserver",
         Value::Sequence(vec![
-            Value::String("https://1.1.1.1/dns-query".into()),
-            Value::String("https://8.8.8.8/dns-query".into()),
+            Value::String("223.5.5.5".into()),
+            Value::String("119.29.29.29".into()),
         ]),
     );
     insert(
@@ -826,8 +843,8 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         ]),
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
-    // 排除本地域名、Windows 网络检测域名和搜索引擎域名，使其不走 fake-ip
-    let mut fake_filter: Vec<String> = vec![
+    // 排除本地域名和系统网络检测域名，使其不走 fake-ip。
+    let fake_filter: Vec<String> = vec![
         "+.home",
         "+.local",
         "+.lan",
@@ -844,13 +861,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     .into_iter()
     .map(str::to_owned)
     .collect();
-    // 安全搜索需要真实 DNS 解析，将搜索引擎域名加入 fake-ip-filter
-    if safe_search_enabled {
-        for mapping in &safe_search_mappings {
-            fake_filter.push(mapping.domain.clone());
-            fake_filter.push(mapping.target.clone());
-        }
-    }
     let fake_filter_values: Vec<Value> = fake_filter
         .iter()
         .map(|s| Value::String(s.clone()))
@@ -927,6 +937,10 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     // 局域网/私有地址直连，确保内网设备（路由器等）可正常访问
     // 注意：不包含 198.18.0.0/16（fake-ip 范围），否则会拦截所有域名规则
     let lan_rules = [
+        "IP-CIDR,1.1.1.1/32,DIRECT,no-resolve",
+        "IP-CIDR,8.8.8.8/32,DIRECT,no-resolve",
+        "IP-CIDR,223.5.5.5/32,DIRECT,no-resolve",
+        "IP-CIDR,119.29.29.29/32,DIRECT,no-resolve",
         "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
         "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
@@ -1053,22 +1067,14 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
 }
 
 fn dns_route_addresses(servers: &[String]) -> Vec<String> {
-    if servers.is_empty() {
-        return Vec::new();
-    }
-    let mut routes = vec![
-        "0.0.0.0/1".to_owned(),
-        "128.0.0.0/1".to_owned(),
-        "::/1".to_owned(),
-        "8000::/1".to_owned(),
-    ];
-    routes.extend(servers.iter().filter_map(|server| {
-        server
-            .parse::<std::net::IpAddr>()
-            .ok()
-            .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
-    }));
-    routes
+    std::iter::once("198.18.0.0/16".to_owned())
+        .chain(servers.iter().filter_map(|server| {
+            server
+                .parse::<std::net::IpAddr>()
+                .ok()
+                .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
+        }))
+        .collect()
 }
 
 fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
@@ -1484,6 +1490,24 @@ mod tests {
             "DNS 上游请求必须遵循代理规则，否则 Google 安全搜索目标可能无法解析"
         );
         assert_eq!(
+            yaml.get("dns")
+                .and_then(|dns| dns.get("default-nameserver"))
+                .and_then(Value::as_sequence)
+                .map(|values| values.contains(&Value::String("223.5.5.5".into()))),
+            Some(true),
+            "代理节点域名和 DNS 上游需要直连 bootstrap DNS，避免启动时解析自举死锁"
+        );
+        let config_rules = yaml
+            .get("rules")
+            .and_then(Value::as_sequence)
+            .expect("generated rules");
+        assert!(config_rules.contains(&Value::String(
+            "IP-CIDR,1.1.1.1/32,DIRECT,no-resolve".into()
+        )));
+        assert!(config_rules.contains(&Value::String(
+            "IP-CIDR,8.8.8.8/32,DIRECT,no-resolve".into()
+        )));
+        assert_eq!(
             yaml.get("hosts")
                 .and_then(|hosts| hosts.get("www.google.com"))
                 .and_then(Value::as_str),
@@ -1506,8 +1530,8 @@ mod tests {
             .and_then(|dns| dns.get("fake-ip-filter"))
             .and_then(Value::as_sequence)
             .unwrap();
-        assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
-        assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
+        assert!(!fake_ip_filter.contains(&Value::String("www.google.*".into())));
+        assert!(!fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
     }
@@ -1532,8 +1556,9 @@ mod tests {
         let routes =
             dns_route_addresses(&["10.195.85.120".into(), "240e:479:4e90:3e59::19".into()]);
 
-        assert!(routes.contains(&"0.0.0.0/1".into()));
-        assert!(routes.contains(&"128.0.0.0/1".into()));
+        assert!(!routes.contains(&"0.0.0.0/1".into()));
+        assert!(!routes.contains(&"128.0.0.0/1".into()));
+        assert!(routes.contains(&"198.18.0.0/16".into()));
         assert!(routes.contains(&"10.195.85.120/32".into()));
         assert!(routes.contains(&"240e:479:4e90:3e59::19/128".into()));
     }
