@@ -1,4 +1,4 @@
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
 fn ensure_admin() {
     use std::os::windows::ffi::OsStrExt;
     use std::process::exit;
