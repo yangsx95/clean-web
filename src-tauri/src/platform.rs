@@ -7,15 +7,27 @@
 //! "fail-open" policy in docs/architecture.md).
 
 use serde::Serialize;
+use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::{
-    fs,
+    fs::{self, File},
+    io::{BufRead, BufReader, Write},
+    os::unix::fs::PermissionsExt,
+    os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
+    time::Duration,
 };
-use std::process::Command;
 
 #[cfg(target_os = "macos")]
 const SYSTEM_RUNTIME_DIR: &str = "/Library/Application Support/CleanWeb";
+#[cfg(target_os = "macos")]
+const HELPER_LABEL: &str = "app.cleanweb.helper";
+#[cfg(target_os = "macos")]
+const HELPER_BINARY: &str = "/Library/Application Support/CleanWeb/CleanWebHelper";
+#[cfg(target_os = "macos")]
+const HELPER_PLIST: &str = "/Library/LaunchDaemons/app.cleanweb.helper.plist";
+#[cfg(target_os = "macos")]
+const HELPER_SOCKET: &str = "/var/run/cleanweb-helper.sock";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,33 +227,331 @@ fn signal_process(pid: u32, signal: i32) -> bool {
 /// then starts it with the privileges required to create a macOS TUN device.
 #[cfg(target_os = "macos")]
 pub fn start_mihomo_privileged(binary: &Path, config: &Path) -> Result<(u32, PathBuf), String> {
+    ensure_privileged_helper()?;
+    let request = HelperRequest::Start {
+        binary: binary.display().to_string(),
+        config: config.display().to_string(),
+    };
+    let response = call_helper(&request)?;
+    if !response.ok {
+        return Err(response
+            .message
+            .unwrap_or_else(|| "CleanWeb 特权服务启动 Mihomo 失败".into()));
+    }
+    let pid = response.pid.ok_or("CleanWeb 特权服务未返回 Mihomo PID")?;
+    Ok((
+        pid,
+        PathBuf::from(
+            response
+                .log
+                .unwrap_or_else(|| format!("{SYSTEM_RUNTIME_DIR}/mihomo.log")),
+        ),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn stop_mihomo_privileged() -> Result<(), String> {
+    ensure_privileged_helper()?;
+    let response = call_helper(&HelperRequest::Stop)?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response
+            .message
+            .unwrap_or_else(|| "CleanWeb 特权服务关闭 Mihomo 失败".into()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn run_privileged_helper() -> Result<(), String> {
+    let _ = fs::remove_file(HELPER_SOCKET);
+    let listener = UnixListener::bind(HELPER_SOCKET)
+        .map_err(|value| format!("无法创建 CleanWeb 特权服务 socket：{value}"))?;
+    fs::set_permissions(HELPER_SOCKET, fs::Permissions::from_mode(0o666))
+        .map_err(|value| format!("无法设置 CleanWeb 特权服务 socket 权限：{value}"))?;
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                if let Err(reason) = handle_helper_client(stream) {
+                    write_helper_log(&format!("client error: {reason}"));
+                }
+            }
+            Err(reason) => write_helper_log(&format!("accept error: {reason}")),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
+    let mut line = String::new();
+    {
+        let mut reader = BufReader::new(
+            stream
+                .try_clone()
+                .map_err(|value| format!("无法读取特权服务请求：{value}"))?,
+        );
+        reader
+            .read_line(&mut line)
+            .map_err(|value| format!("无法读取特权服务请求：{value}"))?;
+    }
+    let request: HelperRequest = serde_json::from_str(&line)
+        .map_err(|value| format!("CleanWeb 特权服务请求格式无效：{value}"))?;
+    let response = match request {
+        HelperRequest::Ping => HelperResponse::ok(),
+        HelperRequest::Stop => match helper_stop_mihomo() {
+            Ok(()) => HelperResponse::ok(),
+            Err(reason) => HelperResponse::err(reason),
+        },
+        HelperRequest::Start { binary, config } => match helper_start_mihomo(&binary, &config) {
+            Ok((pid, log)) => HelperResponse {
+                ok: true,
+                message: None,
+                pid: Some(pid),
+                log: Some(log.display().to_string()),
+            },
+            Err(reason) => HelperResponse::err(reason),
+        },
+    };
+    let body = serde_json::to_string(&response).map_err(|value| value.to_string())?;
+    stream
+        .write_all(format!("{body}\n").as_bytes())
+        .map_err(|value| format!("无法写入特权服务响应：{value}"))
+}
+
+#[cfg(target_os = "macos")]
+fn helper_start_mihomo(binary: &str, config: &str) -> Result<(u32, PathBuf), String> {
+    let source_binary = validate_user_mihomo_path(Path::new(binary))?;
+    let source_config = validate_user_config_path(Path::new(config))?;
     let system_dir = PathBuf::from(SYSTEM_RUNTIME_DIR);
     let installed_binary = system_dir.join("mihomo");
     let installed_config = system_dir.join("config.yaml");
     let log = system_dir.join("mihomo.log");
-    let safe_paths = config.parent().ok_or("无法定位 CleanWeb 配置目录")?;
-    let command = format!(
-        "/bin/mkdir -p {dir} && /usr/bin/install -o root -g wheel -m 700 {source_binary} {binary} && /usr/bin/install -o root -g wheel -m 600 {source_config} {config} && /usr/bin/touch {log} && /bin/chmod 644 {log} && : > {log} && {{ /usr/bin/env SAFE_PATHS={safe_paths} {binary} -d {dir} -f {config} >> {log} 2>&1 & echo $!; }}",
-        dir = shell_quote(&system_dir),
-        safe_paths = shell_quote(safe_paths),
-        source_binary = shell_quote(binary),
-        binary = shell_quote(&installed_binary),
-        source_config = shell_quote(config),
-        config = shell_quote(&installed_config),
-        log = shell_quote(&log),
-    );
-    let output = run_admin_shell(&command)?;
-    let pid = output
-        .lines()
-        .rev()
-        .find_map(|line| line.trim().parse::<u32>().ok())
-        .ok_or_else(|| format!("管理员启动未返回 Mihomo PID：{output}"))?;
+    let safe_paths = source_config.parent().ok_or("无法定位 CleanWeb 配置目录")?;
+
+    helper_stop_mihomo()?;
+    fs::create_dir_all(&system_dir).map_err(|value| format!("无法创建系统运行目录：{value}"))?;
+    fs::copy(&source_binary, &installed_binary)
+        .map_err(|value| format!("无法安装 Mihomo 内核：{value}"))?;
+    fs::set_permissions(&installed_binary, fs::Permissions::from_mode(0o700))
+        .map_err(|value| format!("无法设置 Mihomo 权限：{value}"))?;
+    fs::copy(&source_config, &installed_config)
+        .map_err(|value| format!("无法安装 Mihomo 配置：{value}"))?;
+    fs::set_permissions(&installed_config, fs::Permissions::from_mode(0o600))
+        .map_err(|value| format!("无法设置 Mihomo 配置权限：{value}"))?;
+    File::create(&log).map_err(|value| format!("无法创建 Mihomo 日志：{value}"))?;
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o644))
+        .map_err(|value| format!("无法设置 Mihomo 日志权限：{value}"))?;
+
+    let stdout = fs::OpenOptions::new()
+        .append(true)
+        .open(&log)
+        .map_err(|value| format!("无法打开 Mihomo 日志：{value}"))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|value| format!("无法复制 Mihomo 日志句柄：{value}"))?;
+    let child = Command::new(&installed_binary)
+        .arg("-d")
+        .arg(&system_dir)
+        .arg("-f")
+        .arg(&installed_config)
+        .env("SAFE_PATHS", safe_paths)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::from(stderr))
+        .spawn()
+        .map_err(|value| format!("无法启动 Mihomo：{value}"))?;
+    let pid = child.id();
+    std::mem::forget(child);
     Ok((pid, log))
+}
+
+#[cfg(target_os = "macos")]
+fn helper_stop_mihomo() -> Result<(), String> {
+    let pids = cleanweb_mihomo_pids();
+    for pid in &pids {
+        let _ = unsafe { libc::kill(*pid as i32, libc::SIGTERM) };
+    }
+    for _ in 0..20 {
+        if pids.iter().all(|pid| !pid_running(*pid)) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    for pid in &pids {
+        if pid_running(*pid) {
+            let _ = unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_privileged_helper() -> Result<(), String> {
+    if call_helper(&HelperRequest::Ping).is_ok_and(|response| response.ok) {
+        return Ok(());
+    }
+    install_privileged_helper()?;
+    for _ in 0..30 {
+        if call_helper(&HelperRequest::Ping).is_ok_and(|response| response.ok) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err("CleanWeb 特权服务安装后未就绪".into())
+}
+
+#[cfg(target_os = "macos")]
+fn install_privileged_helper() -> Result<(), String> {
+    let helper_source = prepare_helper_install_source()?;
+    let plist = helper_plist();
+    let temp_plist = helper_source.with_file_name("app.cleanweb.helper.plist");
+    fs::write(&temp_plist, plist).map_err(|value| format!("无法写入特权服务配置：{value}"))?;
+    let command = format!(
+        "set -e; /bin/mkdir -p {dir}; /usr/bin/install -o root -g wheel -m 755 {source} {helper}; /usr/bin/install -o root -g wheel -m 644 {plist_source} {plist}; /bin/launchctl bootout system/{label} >/dev/null 2>&1 || true; /bin/launchctl bootstrap system {plist}; /bin/launchctl kickstart -k system/{label}",
+        dir = shell_quote(Path::new(SYSTEM_RUNTIME_DIR)),
+        source = shell_quote(&helper_source),
+        helper = shell_quote(Path::new(HELPER_BINARY)),
+        plist_source = shell_quote(&temp_plist),
+        plist = shell_quote(Path::new(HELPER_PLIST)),
+        label = HELPER_LABEL,
+    );
+    run_admin_shell(&command).map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_helper_install_source() -> Result<PathBuf, String> {
+    let executable =
+        std::env::current_exe().map_err(|value| format!("无法定位 CleanWeb：{value}"))?;
+    let directory = std::env::temp_dir().join("cleanweb-helper-install");
+    fs::create_dir_all(&directory).map_err(|value| format!("无法创建 helper 安装缓存：{value}"))?;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755))
+        .map_err(|value| format!("无法设置 helper 安装缓存权限：{value}"))?;
+    let helper_source = directory.join("CleanWebHelper");
+    fs::copy(&executable, &helper_source)
+        .map_err(|value| format!("无法准备 helper 安装源：{value}"))?;
+    fs::set_permissions(&helper_source, fs::Permissions::from_mode(0o755))
+        .map_err(|value| format!("无法设置 helper 安装源权限：{value}"))?;
+    Ok(helper_source)
+}
+
+#[cfg(target_os = "macos")]
+fn helper_plist() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{helper}</string><string>--cleanweb-privileged-helper</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>{dir}/helper.log</string><key>StandardErrorPath</key><string>{dir}/helper.log</string></dict></plist>\n",
+        label = HELPER_LABEL,
+        helper = xml_escape(HELPER_BINARY),
+        dir = xml_escape(SYSTEM_RUNTIME_DIR),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn call_helper(request: &HelperRequest) -> Result<HelperResponse, String> {
+    let mut stream = UnixStream::connect(HELPER_SOCKET)
+        .map_err(|value| format!("无法连接 CleanWeb 特权服务：{value}"))?;
+    let body = serde_json::to_string(request).map_err(|value| value.to_string())?;
+    stream
+        .write_all(format!("{body}\n").as_bytes())
+        .map_err(|value| format!("无法发送特权服务请求：{value}"))?;
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .map_err(|value| format!("无法读取特权服务响应：{value}"))?;
+    serde_json::from_str(&response).map_err(|value| format!("特权服务响应无效：{value}"))
+}
+
+#[cfg(target_os = "macos")]
+fn validate_user_mihomo_path(path: &Path) -> Result<PathBuf, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|value| format!("无法验证 Mihomo 路径：{value}"))?;
+    if canonical.file_name().and_then(|value| value.to_str()) != Some("mihomo") {
+        return Err("特权服务拒绝非 Mihomo 内核路径".into());
+    }
+    validate_cleanweb_user_runtime_path(&canonical)?;
+    Ok(canonical)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_user_config_path(path: &Path) -> Result<PathBuf, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|value| format!("无法验证 Mihomo 配置路径：{value}"))?;
+    if canonical.file_name().and_then(|value| value.to_str()) != Some("config.yaml") {
+        return Err("特权服务拒绝非 CleanWeb 配置路径".into());
+    }
+    validate_cleanweb_user_runtime_path(&canonical)?;
+    Ok(canonical)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_cleanweb_user_runtime_path(path: &Path) -> Result<(), String> {
+    let value = path.to_string_lossy();
+    if value.starts_with("/Users/")
+        && value.contains("/Library/Application Support/")
+        && value.contains("/mihomo/")
+    {
+        Ok(())
+    } else {
+        Err("特权服务拒绝 CleanWeb 数据目录外的路径".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_helper_log(message: &str) {
+    let _ = fs::create_dir_all(SYSTEM_RUNTIME_DIR);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("{SYSTEM_RUNTIME_DIR}/helper.log"))
+    {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+enum HelperRequest {
+    Ping,
+    Start { binary: String, config: String },
+    Stop,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize, serde::Serialize)]
+struct HelperResponse {
+    ok: bool,
+    message: Option<String>,
+    pid: Option<u32>,
+    log: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl HelperResponse {
+    fn ok() -> Self {
+        Self {
+            ok: true,
+            message: None,
+            pid: None,
+            log: None,
+        }
+    }
+
+    fn err(message: String) -> Self {
+        Self {
+            ok: false,
+            message: Some(message),
+            pid: None,
+            log: None,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn run_admin_shell(command: &str) -> Result<String, String> {
     let output = Command::new("/usr/bin/osascript")
+        .current_dir("/")
         .args([
             "-e",
             "on run argv",
@@ -396,5 +706,22 @@ mod tests {
             parse_macos_dns_servers(output),
             vec!["10.195.85.120", "240e:479::19"]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_rejects_paths_outside_cleanweb_user_runtime() {
+        assert!(validate_cleanweb_user_runtime_path(Path::new(
+            "/Users/alice/Library/Application Support/app.cleanweb.desktop/mihomo/config.yaml"
+        ))
+        .is_ok());
+        assert!(
+            validate_cleanweb_user_runtime_path(Path::new("/Users/alice/Desktop/config.yaml"))
+                .is_err()
+        );
+        assert!(validate_cleanweb_user_runtime_path(Path::new(
+            "/Library/Application Support/CleanWeb/config.yaml"
+        ))
+        .is_err());
     }
 }

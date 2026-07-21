@@ -634,23 +634,32 @@ fn stop_child(state: &AppState) -> Result<(), String> {
         let _ = child.kill();
         let _ = child.wait();
     }
-    if let Some(pid) = read_pid(&pid_path) {
-        if platform::cleanweb_mihomo_running(pid) {
-            platform::terminate_process(pid);
-            for _ in 0..20 {
-                if !platform::cleanweb_mihomo_running(pid) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
+    #[cfg(target_os = "macos")]
+    {
+        platform::stop_mihomo_privileged()?;
+        let _ = fs::remove_file(pid_path);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(pid) = read_pid(&pid_path) {
             if platform::cleanweb_mihomo_running(pid) {
-                platform::kill_process(pid);
+                platform::terminate_process(pid);
+                for _ in 0..20 {
+                    if !platform::cleanweb_mihomo_running(pid) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if platform::cleanweb_mihomo_running(pid) {
+                    platform::kill_process(pid);
+                }
             }
         }
+        let _ = fs::remove_file(pid_path);
+        platform::terminate_cleanweb_mihomo_processes();
+        Ok(())
     }
-    let _ = fs::remove_file(pid_path);
-    platform::terminate_cleanweb_mihomo_processes();
-    Ok(())
 }
 
 fn core_status(state: &AppState) -> Result<CoreStatus, String> {
@@ -1742,9 +1751,7 @@ mod tests {
         assert!(strict_config.contains("DOMAIN-KEYWORD,91,REJECT"));
         assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
         assert!(
-            !strict_config.contains(
-                "DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"
-            ),
+            !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
             "strict mode must not block broad random-looking domain labels by default"
         );
     }

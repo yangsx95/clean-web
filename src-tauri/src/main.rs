@@ -92,6 +92,15 @@ fn ensure_admin() {
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|argument| argument == "--cleanweb-privileged-helper") {
+        if let Err(reason) = cleanweb_lib::platform::run_privileged_helper() {
+            eprintln!("{reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Release 构建自动请求管理员权限（TUN 需要）；
     // Debug/Dev 模式跳过，请用管理员终端运行 `npm run tauri dev`。
     #[cfg(all(target_os = "windows", not(debug_assertions)))]

@@ -2,55 +2,54 @@
 
 English | [简体中文](README.zh-CN.md)
 
-CleanWeb is a local-first desktop app for network filtering, safe-search enforcement, proxy subscription import, routing policy, and access logs. It is built with Tauri, React, TypeScript, and Rust, and uses Mihomo as the controlled TUN/DNS/proxy execution core.
+CleanWeb is a local-first desktop app for content filtering, safe-search enforcement, proxy subscription management, routing policy, and local access logs.
 
-CleanWeb does not sell or provide proxy nodes. Users import their own proxy subscriptions, while CleanWeb keeps filtering rules, DNS, TUN, routing, and logs under the app's local policy model.
+- Website: [https://yangsx95.github.io/clean-web/](https://yangsx95.github.io/clean-web/)
+- Download: [GitHub Releases](https://github.com/yangsx95/clean-web/releases/latest)
+- Current version: `0.1.0` beta
+- Platforms: macOS 13+ first, Windows 10 22H2 / Windows 11 in validation
 
-> Status: `0.1.0` beta. The app is suitable for development and real-network testing. Signed notarized macOS builds, Windows service hardening, full release license notices, and broader device validation are still in progress.
+> Beta notice: current builds are for testing and real-network validation. macOS signing/notarization, Windows service hardening, complete license notices, and broader device testing are still in progress.
 
-## Features
+## What It Does
 
-- Local content filtering with built-in rules, custom block/allow rules, and rule subscriptions.
-- Safe-search enforcement for supported search providers through controlled DNS and host mappings.
-- Proxy subscription import for Clash/Mihomo-style subscriptions, single-node links, and QR-code images.
-- Proxy subscription sanitization: imported subscriptions keep proxy nodes and groups, while DNS, TUN, scripts, routing rules, local ports, and controller settings are discarded.
-- User-defined routing rules for direct or proxied traffic.
-- Locked mode that hides configuration and shows only running status and counters.
-- Local access logs with retention, filtering, clearing, and CSV export.
-- macOS and Windows desktop build workflows.
-- Static product website under `website/`, deployable with GitHub Pages.
+CleanWeb helps families and self-control users manage device network access from one desktop app:
+
+- Block unwanted domains, IPs, and rule subscription entries.
+- Enforce safe-search mode for supported search providers.
+- Import your own proxy subscriptions and proxy nodes.
+- Decide which allowed traffic goes direct or through a proxy.
+- Keep a local access log with counters, filtering, export, and retention.
+- Lock sensitive settings behind a management password.
+
+CleanWeb does **not** sell proxy nodes, host proxy services, or decrypt HTTPS traffic.
+
+## How It Works
+
+CleanWeb uses a local policy engine and Mihomo as a controlled TUN/DNS/proxy execution core. Filtering rules are applied before proxy routing, so a proxy subscription cannot bypass CleanWeb's content policy.
+
+When a proxy subscription is imported, CleanWeb keeps only proxy nodes and proxy groups. DNS, TUN, scripts, routing rules, local ports, and controller settings from the subscription are discarded.
 
 ## Product Boundaries
 
-CleanWeb V1 observes domains, DNS queries, target IPs, IPv4/IPv6 CIDR ranges, and Mihomo network events. It does not decrypt HTTPS traffic and does not inspect page text, images, videos, AI conversations, or full HTTPS URL paths.
+CleanWeb V1 can observe domains, DNS queries, target IPs, IPv4/IPv6 CIDR ranges, and Mihomo network events. It does not inspect page text, images, videos, AI conversations, or full HTTPS URL paths.
 
-Filtering decisions must run before proxy routing. Proxy subscriptions are input data, not policy authority.
-
-Read the product and architecture documents before changing behavior:
+For detailed product and architecture boundaries, see:
 
 - [Product spec](docs/product-spec.md)
 - [Architecture](docs/architecture.md)
 - [Implementation status](docs/implementation-status.md)
 
-## Tech Stack
+## For Developers
 
-- Desktop shell: Tauri 2
-- Frontend: React 19, TypeScript, Vite
-- Backend: Rust
-- Network core: Mihomo, distributed as a separate executable resource
-- Storage: SQLite through the Rust backend
-- Tests: Vitest and Rust tests
+CleanWeb is built with:
 
-## Requirements
-
-- Node.js 22+
-- npm
-- Rust stable toolchain
-- Tauri 2 system dependencies for your platform
-- macOS 13+ for the primary development target
-- Windows 10 22H2 / Windows 11 for Windows validation
-
-## Development
+- Tauri 2
+- React 19, TypeScript, Vite
+- Rust
+- Mihomo as a separate executable resource
+- SQLite through the Rust backend
+- Vitest and Rust tests
 
 Install dependencies:
 
@@ -58,13 +57,7 @@ Install dependencies:
 npm install
 ```
 
-Run the frontend dev server:
-
-```bash
-npm run dev
-```
-
-Run the Tauri desktop app:
+Run the desktop app:
 
 ```bash
 npm run tauri dev
@@ -81,7 +74,7 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings
 
 ## Build
 
-Build the desktop app locally:
+Build locally:
 
 ```bash
 npm run tauri -- build
@@ -99,30 +92,11 @@ Build Windows NSIS installer on Windows:
 npm run tauri -- build --bundles nsis
 ```
 
-The GitHub Actions workflow in [.github/workflows/desktop-build.yml](.github/workflows/desktop-build.yml) builds unsigned Windows and macOS artifacts. Pushing a `v*` tag publishes those artifacts to GitHub Releases.
+GitHub Actions builds unsigned Windows and macOS artifacts. Pushing a `v*` tag publishes those artifacts to GitHub Releases.
 
 ## Website
 
-The product website lives in [website](website).
-
-Preview it locally:
-
-```bash
-cd website
-python3 -m http.server 1432 --bind 127.0.0.1
-```
-
-GitHub Pages deployment is configured in [.github/workflows/pages.yml](.github/workflows/pages.yml). In the repository settings, set Pages source to GitHub Actions.
-
-## Release Notes
-
-Current build artifacts are unsigned. Before public production distribution, complete:
-
-- macOS Developer ID signing and notarization.
-- Windows signing and Windows Service hardening.
-- Real network validation for TUN, DNS, proxy routing, safe search, access logs, crash recovery, and uninstall recovery.
-- Third-party notices and corresponding source obligations for Mihomo.
-- License and redistribution review for bundled and official rule sources.
+The product website source lives in [website](website). GitHub Pages deployment is configured in [.github/workflows/pages.yml](.github/workflows/pages.yml). In repository settings, set Pages source to GitHub Actions.
 
 ## License
 
