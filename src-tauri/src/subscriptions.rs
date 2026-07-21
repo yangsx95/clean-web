@@ -72,7 +72,11 @@ pub fn import_text(
             Ok(Some((kind, pattern, action))) => report.rules.push(ImportedRule {
                 rule: RuleInput {
                     id: format!("{subscription_id}:{line_number}"),
-                    action,
+                    action: if category == "direct" {
+                        Action::Allow
+                    } else {
+                        action
+                    },
                     priority: 70,
                     kind,
                     pattern,
@@ -277,5 +281,19 @@ mod tests {
         );
         assert_eq!(report.rules.len(), 3);
         assert_eq!(report.rules[2].rule.kind, MatcherKind::Cidr);
+    }
+
+    #[test]
+    fn direct_category_imports_cidr_rules_as_allow_rules() {
+        let report = import_text(
+            SubscriptionFormat::Clash,
+            "IP-CIDR,47.103.0.0/16",
+            "direct-cn",
+            "https://example.test/cn.txt",
+            "direct",
+        );
+        assert_eq!(report.rules.len(), 1);
+        assert_eq!(report.rules[0].rule.kind, MatcherKind::Cidr);
+        assert_eq!(report.rules[0].rule.action, Action::Allow);
     }
 }

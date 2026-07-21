@@ -966,6 +966,11 @@ h1 {
 .proxy-select-node b { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .proxy-select-node small { color: var(--color-text-muted); font-size: 10px; }
 .proxy-select-status { flex-shrink: 0; color: var(--color-primary); font-size: 11px; font-weight: 600; }
+.proxy-select-status.fast { color: var(--color-success); }
+.proxy-select-status.medium,
+.proxy-select-status.testing { color: var(--color-warning); }
+.proxy-select-status.slow,
+.proxy-select-status.timeout { color: var(--color-danger); }
 
 /* ===== SUB PROXY LAYOUT ===== */
 .sub-proxy-layout { display: flex; gap: 0; min-height: 200px; }

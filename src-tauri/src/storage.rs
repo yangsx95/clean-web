@@ -196,9 +196,9 @@ pub fn get_recommended_rule_sources() -> Vec<RecommendedSource> {
         // ── ip-list 格式 ──
         RecommendedSource {
             name: "中国 IP 地址段".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/cncidr.txt".into(),
-            format: "ip-list".into(),
-            category: "custom".into(),
+            url: "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt".into(),
+            format: "clash".into(),
+            category: "direct".into(),
             description: "中国大陆 IP 地址段，用于直连或分流策略".into(),
         },
         RecommendedSource {
@@ -393,7 +393,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
 }
 
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
-    const SEED_MARKER: &str = "builtin_rule_sources_v4_seeded";
+    const SEED_MARKER: &str = "builtin_rule_sources_v5_seeded";
     db.execute(
         "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%'",
         [],
@@ -455,11 +455,18 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
             "clash",
             "phishing",
         ),
+        (
+            "default:loyalsoldier:cncidr",
+            "内置路由 · 中国 IP 直连",
+            "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",
+            "clash",
+            "direct",
+        ),
     ];
-    for (id, name, _, _, _) in sources {
+    for (id, name, url, format, category) in sources {
         db.execute(
-            "UPDATE subscriptions SET name=?2 WHERE id=?1 AND kind='rule'",
-            params![id, name],
+            "UPDATE subscriptions SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=CASE WHEN ?3 LIKE 'builtin://%' THEN NULL ELSE 24 END WHERE id=?1 AND kind='rule'",
+            params![id, name, url, format, category],
         )?;
     }
 
@@ -1062,7 +1069,7 @@ mod tests {
     fn recommended_sources_have_valid_fields() {
         let sources = get_recommended_rule_sources();
         assert!(!sources.is_empty(), "推荐源列表不应为空");
-        let valid_categories = ["ads", "pornography", "gambling", "malware", "custom"];
+        let valid_categories = ["ads", "pornography", "gambling", "malware", "custom", "direct"];
         let valid_formats = ["hosts", "adblock", "domain-list", "ip-list", "clash"];
         for src in &sources {
             assert!(!src.name.is_empty(), "名称不应为空");
@@ -1095,7 +1102,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 6);
+            assert_eq!(count, 7);
             assert!(delete_subscription_inner(&db, "default:blocklistproject:fraud").is_err());
         }
 
@@ -1108,7 +1115,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 8, "内置规则必须始终存在");
+        assert_eq!(count, 9, "内置规则必须始终存在");
         let builtin_count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:cleanweb:%' AND enabled=1 AND update_interval_hours IS NULL",
@@ -1137,6 +1144,11 @@ mod tests {
         )
         .unwrap();
         db.execute(
+            "UPDATE subscriptions SET url='https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/cncidr.txt',format='ip-list',category='custom' WHERE id='default:loyalsoldier:cncidr'",
+            [],
+        )
+        .unwrap();
+        db.execute(
             "DELETE FROM settings WHERE key='builtin_rule_sources_v4_seeded'",
             [],
         )
@@ -1150,6 +1162,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(enabled, 1, "内置规则必须恢复启用");
+        let (url, format, category): (String, String, String) = db
+            .query_row(
+                "SELECT url,format,category FROM subscriptions WHERE id='default:loyalsoldier:cncidr'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt"
+        );
+        assert_eq!(format, "clash");
+        assert_eq!(category, "direct");
         assert!(delete_subscription_inner(&db, "default:stevenblack:porn").is_err());
     }
 

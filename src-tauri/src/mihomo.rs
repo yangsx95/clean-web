@@ -975,8 +975,8 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "DOMAIN-SUFFIX,lan,DIRECT",
         "DOMAIN-SUFFIX,internal,DIRECT",
     ];
-    // 系统服务与国内直连域名，避免系统级与国内流量误走代理
-    // 不依赖 GEOIP（需要 MMDB 文件），纯域名匹配确保国内常见服务直连
+    // 系统服务与国内直连域名，避免系统级与国内流量误走代理。
+    // 未覆盖的国内公网地址由“内置路由 · 中国 IP 直连”订阅提供 CIDR 兜底。
     let direct_rules = [
         // Apple 系统服务（推送通知、iCloud、App Store 等）
         "DOMAIN-SUFFIX,apple.com,DIRECT",
@@ -1337,7 +1337,13 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
         "Contains" => format!("DOMAIN-KEYWORD,{pattern},{target}"),
         "Wildcard" => format!("DOMAIN-WILDCARD,{pattern},{target}"),
         "Regex" => format!("DOMAIN-REGEX,{pattern},{target}"),
-        "Ip" | "Cidr" if pattern.contains(':') => format!("IP-CIDR6,{pattern},{target},no-resolve"),
+        "Ip" | "Cidr" if pattern.contains(':') && target == "DIRECT" => {
+            format!("IP-CIDR6,{pattern},{target}")
+        }
+        "Ip" | "Cidr" if pattern.contains(':') => {
+            format!("IP-CIDR6,{pattern},{target},no-resolve")
+        }
+        "Ip" | "Cidr" if target == "DIRECT" => format!("IP-CIDR,{pattern},{target}"),
         "Ip" | "Cidr" => format!("IP-CIDR,{pattern},{target},no-resolve"),
         _ => return None,
     })
@@ -1629,6 +1635,8 @@ mod tests {
             let db = state.db.lock().unwrap();
             db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('r','rule','r','https://x',1)",[]).unwrap();
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r','1','Suffix','bad.example','Block','pornography',1)",[]).unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('direct-cn','rule','cn','https://x/cn.txt',1)",[]).unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('direct-cn','1','Cidr','47.103.0.0/16','Allow','direct',1)",[]).unwrap();
             db.execute(
                 "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('parent-block','block','Suffix','baidu.com','custom')",
                 [],
@@ -1683,6 +1691,18 @@ mod tests {
         assert!(config_rules.contains(&Value::String(
             "IP-CIDR,8.8.8.8/32,DIRECT,no-resolve".into()
         )));
+        let cn_direct = config_rules
+            .iter()
+            .position(|rule| rule == &Value::String("IP-CIDR,47.103.0.0/16,DIRECT".into()))
+            .expect("CN IP direct CIDR rule");
+        let fallback_match = config_rules
+            .iter()
+            .position(|rule| rule.as_str().is_some_and(|text| text.starts_with("MATCH,")))
+            .expect("fallback match rule");
+        assert!(
+            cn_direct < fallback_match,
+            "国内公网 IP 直连规则必须先于代理兜底"
+        );
         assert_eq!(
             yaml.get("hosts")
                 .and_then(|hosts| hosts.get("www.google.com"))

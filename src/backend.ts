@@ -182,7 +182,7 @@ const previewRecommendedSources:RecommendedSource[]=[
   {name:"GFW 域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt",format:"domain-list",category:"custom",description:"常见被封锁域名列表，用于精确代理"},
   {name:"广告域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt",format:"domain-list",category:"ads",description:"广告与跟踪域名列表，纯域名格式"},
   // ip-list
-  {name:"中国 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/cncidr.txt",format:"ip-list",category:"custom",description:"中国大陆 IP 地址段，用于直连或分流策略"},
+  {name:"中国 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",format:"clash",category:"direct",description:"中国大陆 IP 地址段，用于直连或分流策略"},
   {name:"恶意 IP 地址段",url:"https://www.spamhaus.org/drop/drop.txt",format:"ip-list",category:"malware",description:"Spamhaus DROP 列表，已知恶意网络地址段"},
   {name:"私有 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/private.txt",format:"ip-list",category:"custom",description:"私有与保留 IP 地址段，确保内网流量直连"},
   // clash
