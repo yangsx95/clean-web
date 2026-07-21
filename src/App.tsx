@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Gauge, LockKeyhole, Network, Plus, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
 import * as backend from "./backend";
 
+type PolicyApplyStatus = {
+  state: "applying" | "applied" | "failed";
+  message: string;
+};
+
 export function App() {
   const [page, setPage] = useState<"overview" | "rules" | "proxy">("overview");
   const [locked, setLocked] = useState(true);
@@ -17,6 +22,8 @@ export function App() {
   const [runtimeError,setRuntimeError]=useState("");
   const [operationBusy,setOperationBusy]=useState(false);
   const operationBusyRef = useRef(false);
+  const [policyApplyStatus,setPolicyApplyStatus]=useState<PolicyApplyStatus|null>(null);
+  const policyStatusTimerRef=useRef<number|null>(null);
   const [accessLogs,setAccessLogs]=useState<backend.AccessLog[]>([]);
   const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>({block:0,allow:0,warning:0,total:0});
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
@@ -29,6 +36,9 @@ export function App() {
     try { await operation(); }
     finally { operationBusyRef.current = false; setOperationBusy(false); }
   };
+  const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
+  const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
+  useEffect(()=>()=>clearPolicyStatusTimer(),[]);
   useEffect(() => { void (async () => {
     const [bootstrap,current,core,publicStats] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats()]);
     setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);
@@ -46,31 +56,43 @@ export function App() {
     if(current.protectionEnabled)void backend.autoStartProtection().then(setCoreStatus).catch(async reason=>{setRuntimeError(String(reason));try{setSettings(await backend.getSettings());}catch{}});
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
-  useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(operationBusy)return;void backend.refreshDueSubscriptions().then(()=>reloadRuntime(sessionToken)).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,operationBusy]);
+  useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(operationBusy)return;void backend.refreshDueSubscriptions().then(()=>reloadRuntime(sessionToken,{silent:true})).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,operationBusy]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,100),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
   const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats({block:0,allow:0,warning:0,total:0}); setLocked(true); };
-  const reloadRuntime=async(token:string)=>{const current=await backend.getCoreStatus();setCoreStatus(current);if(!current.running)return current;const core=await backend.reloadProtection(token);setCoreStatus(core);return core;};
+  const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
+    if(!options.silent)showPolicyStatus({state:"applying",message:options.applyingMessage??"正在应用网络策略…"});
+    try{
+      const current=await backend.getCoreStatus();setCoreStatus(current);
+      if(!current.running){if(!options.silent)showPolicyStatus({state:"applied",message:options.idleMessage??"设置已保存，保护启动后生效"});return current;}
+      const core=await backend.reloadProtection(token);setCoreStatus(core);
+      if(!options.silent)showPolicyStatus({state:"applied",message:"网络策略已生效"});
+      return core;
+    }catch(reason){
+      if(!options.silent)showPolicyStatus({state:"failed",message:`网络策略应用失败：${String(reason)}`});
+      throw reason;
+    }
+  };
   const setValue = async (key: string, value: string) => {
     if (!sessionToken) { setDialog("unlock"); return; }
     setRuntimeError("");
     await runOperation(async()=>{try {
-      if(key==="protection_enabled"){const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);setSettings(await backend.updateSetting(sessionToken,key,value));}
-      else {setSettings(await backend.updateSetting(sessionToken,key,value));await reloadRuntime(sessionToken);}
-    } catch(reason) { setRuntimeError(String(reason)); }});
+      if(key==="protection_enabled"){showPolicyStatus({state:"applying",message:value==="true"?"正在启动保护…":"正在关闭保护…"});const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);setSettings(await backend.updateSetting(sessionToken,key,value));showPolicyStatus({state:"applied",message:value==="true"?"保护已开启":"保护已关闭"});}
+      else {showPolicyStatus({state:"applying",message:"正在保存并应用设置…"});setSettings(await backend.updateSetting(sessionToken,key,value));await reloadRuntime(sessionToken,{applyingMessage:"正在应用设置到运行内核…"});}
+    } catch(reason) { showPolicyStatus({state:"failed",message:`操作失败：${String(reason)}`});setRuntimeError(String(reason)); }});
   };
   const toggle = (key: string, enabled: boolean) => setValue(key, String(enabled));
   const createSubscription = async (input: backend.NewSubscription) => {
     if (!sessionToken) throw new Error("请先解锁管理台");
-    await runOperation(async()=>{const item=await backend.createSubscription(sessionToken, input);
+    await runOperation(async()=>{showPolicyStatus({state:"applying",message:"正在导入并应用订阅…"});const item=await backend.createSubscription(sessionToken, input);
     try { await backend.refreshSubscription(sessionToken,item.id); } catch(reason) { await backend.deleteSubscription(sessionToken,item.id); throw reason; }
     setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); setDialog(null);});
   };
-  const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await runOperation(async()=>{await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}); };
+  const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await runOperation(async()=>{showPolicyStatus({state:"applying",message:"正在更新订阅状态…"});await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}); };
   const removeSubscription = async (id: string) => {
     if (!sessionToken) { setDialog("unlock"); return; }
     setRuntimeError("");
     try {
-      await runOperation(async()=>{await backend.deleteSubscription(sessionToken,id);
+      await runOperation(async()=>{showPolicyStatus({state:"applying",message:"正在删除订阅并应用配置…"});await backend.deleteSubscription(sessionToken,id);
       setSubscriptions(await backend.listSubscriptions(sessionToken));
       try { await reloadRuntime(sessionToken); }
       catch (reason) { setRuntimeError(`订阅已删除，但保护配置重载失败：${String(reason)}`); }});
@@ -78,13 +100,13 @@ export function App() {
       setRuntimeError(`删除订阅失败：${String(reason)}`);
     }
   };
-  const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{setRefreshingId(id);try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}});};
+  const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{setRefreshingId(id);showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}});};
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats({block:0,allow:0,warning:0,total:0});});};
   const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{const csv=await backend.exportAccessLogsCsv(sessionToken);const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="cleanweb-access-logs.csv";link.click();URL.revokeObjectURL(url);});};
-  const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runOperation(async()=>{setRuntimeError("");await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){setRuntimeError(`规则已添加，但保护配置重载失败：${String(reason)}`);}});};
-  const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
-  const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
-  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{setRuntimeError("");try{const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken);setSettings(await backend.getSettings());}catch(reason){setRuntimeError(String(reason));throw reason;}});};
+  const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runOperation(async()=>{setRuntimeError("");showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){setRuntimeError(`规则已添加，但保护配置重载失败：${String(reason)}`);}});};
+  const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
+  const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
+  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}await runOperation(async()=>{setRuntimeError("");try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){showPolicyStatus({state:"failed",message:`代理节点切换失败：${String(reason)}`});setRuntimeError(String(reason));throw reason;}});};
   useEffect(()=>{if(!sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.syncAccessLogs().catch(()=>0).then(()=>Promise.all([backend.listAccessLogs(sessionToken,undefined,undefined,100),backend.getAccessLogStats(sessionToken)])).then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
   useEffect(()=>{if(sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.getPublicAccessLogStats().then(stats=>{if(!cancelled)setAccessLogStats(stats);});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
@@ -103,6 +125,7 @@ export function App() {
     <main>
       <header><div><span className="eyebrow">网络保护</span><h1>{titles[page]}</h1></div></header>
       {runtimeError&&<div className="runtime-error" role="alert">{runtimeError}</div>}
+      {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus}/>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} locked={locked} busy={operationBusy} logs={accessLogs} logStats={accessLogStats} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} busy={operationBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("rules")} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} busy={operationBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("proxy")} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
@@ -112,6 +135,15 @@ export function App() {
     {dialog === "rules" && <SubscriptionDialog kind="规则" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
     {dialog === "proxy" && <SubscriptionDialog kind="代理" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
     {dialog === "custom" && <ParentRuleDialog mode={parentRuleMode} onClose={()=>setDialog(null)} onSubmit={createParentRule}/>}
+  </div>;
+}
+
+function PolicyApplyBanner({status}:{status:PolicyApplyStatus}) {
+  const label = status.state === "applying" ? "应用中" : status.state === "applied" ? "已生效" : "应用失败";
+  return <div className={`policy-apply-banner ${status.state}`} role={status.state === "failed" ? "alert" : "status"} aria-live="polite">
+    <span className="policy-apply-dot" />
+    <b>{label}</b>
+    <span>{status.message}</span>
   </div>;
 }
 

@@ -184,7 +184,7 @@ describe("management actions", () => {
 
     expect(screen.queryByRole("dialog", { name: "添加拦截规则" })).toBeNull();
     expect(await screen.findByText("blocked.example")).toBeTruthy();
-    expect((await screen.findByRole("alert")).textContent).toContain("规则已添加，但保护配置重载失败");
+    expect(await screen.findByText(/规则已添加，但保护配置重载失败/)).toBeTruthy();
     reload.mockRestore();
     coreStatus.mockRestore();
   });
@@ -218,5 +218,29 @@ describe("management actions", () => {
       category: "routing",
     });
     create.mockRestore();
+  });
+
+  it("shows an applying state while runtime policy reload is pending", async () => {
+    const coreStatus = vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+    let resolveReload: (value: backend.CoreStatus) => void = () => {};
+    const reload = vi.spyOn(backend, "reloadProtection")
+      .mockImplementation(() => new Promise<backend.CoreStatus>((resolve) => { resolveReload = resolve; }));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("button", { name: "添加拦截" }));
+    await userEvent.type(screen.getByLabelText("规则内容"), "pending.example");
+    await userEvent.click(screen.getByRole("button", { name: "验证并保存" }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("应用中");
+    expect(status.textContent).toContain("正在应用网络策略");
+
+    resolveReload({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+    expect(await screen.findByText("网络策略已生效")).toBeTruthy();
+    reload.mockRestore();
+    coreStatus.mockRestore();
   });
 });

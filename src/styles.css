@@ -336,6 +336,53 @@ h1 {
   font-size: 12px;
 }
 
+.policy-apply-banner {
+  margin-bottom: var(--spacing-md);
+  padding: 11px 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-md);
+  background: #eff6ff;
+  color: #1e3a8a;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+}
+
+.policy-apply-banner b {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.policy-apply-banner.applied {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.policy-apply-banner.failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.policy-apply-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.policy-apply-banner.applying .policy-apply-dot {
+  animation: status-dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes status-dot-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
 /* ===== HERO / STATUS SECTION ===== */
 .hero {
   background: var(--color-bg-card);
