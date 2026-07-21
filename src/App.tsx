@@ -227,6 +227,7 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
   const [selectedGroup, setSelectedGroup] = useState<string|null>(null);
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [testingSpeed, setTestingSpeed] = useState(false);
+  const [testingNodeName, setTestingNodeName] = useState<string>();
   const [delayError,setDelayError]=useState("");
   const [savedSelection,setSavedSelection]=useState<string>();
   const [runtimeSelection,setRuntimeSelection]=useState<string>();
@@ -253,13 +254,32 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
   };
   const handleSpeedTest = async () => {
     if (!running || testingSpeed || !sessionToken) return;
+    const nodes = selectableNodes;
+    if (nodes.length === 0) { setDelayError("没有可检测的启用节点"); return; }
     setTestingSpeed(true);
     setDelayError("");
+    setDelays(previous => {
+      const next = { ...previous };
+      for (const node of nodes) delete next[node.name];
+      return next;
+    });
+    let failedCount = 0;
     try {
-      const result = await backend.testAllProxyDelays(sessionToken);
-      setDelays(result.delays);
-    } catch (reason) { setDelayError(String(reason)); }
-    finally { setTestingSpeed(false); }
+      for (const node of nodes) {
+        setTestingNodeName(node.name);
+        try {
+          const delay = await backend.testProxyGroup(sessionToken, node.name);
+          setDelays(previous => ({ ...previous, [node.name]: delay }));
+        } catch {
+          failedCount += 1;
+          setDelays(previous => ({ ...previous, [node.name]: 0 }));
+        }
+      }
+      if (failedCount > 0) setDelayError(`部分节点检测失败：${failedCount}/${nodes.length}`);
+    } finally {
+      setTestingNodeName(undefined);
+      setTestingSpeed(false);
+    }
   };
   const delayLabel = (d: number | undefined) => {
     if (d == null) return null;
@@ -278,13 +298,13 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
     return undefined;
   };
   const selectableNodes=Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>subProxies[item.id]?.proxies??[]).map(node=>[node.name,node])).values());
-  const chooseNode=async(name:string)=>{if(selecting||busy)return;setSelecting(name);try{await onSelectNode(name);setSavedSelection(name);setRuntimeSelection(name);}finally{setSelecting(undefined);}};
+  const chooseNode=async(name:string)=>{if(selecting||busy||testingSpeed)return;setSelecting(name);try{await onSelectNode(name);setSavedSelection(name);setRuntimeSelection(name);}finally{setSelecting(undefined);}};
   return <>
     <section className="toolbar"><div><h2>家长管理的代理</h2><p>导入代理订阅，仅提取节点和代理组，自动过滤不相关的网络配置。</p></div><button className="primary" disabled={busy} onClick={onAdd}><Plus size={16}/>导入订阅</button></section>
     {subscriptions.length>0&&<section className="proxy-selector-card">
       <div className="proxy-selector-head"><div><span className="eyebrow">全局出口</span><h3>{automatic?"自动选择节点":savedSelection??"尚未选择节点"}</h3><p>{running?`当前实际使用：${runtimeSelection??"正在读取…"}`:"保护启动后应用所选节点"}</p></div><div className="proxy-selector-actions"><button className="secondary" disabled={busy||!running||testingSpeed} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button><button className={`secondary${automatic?" selected":""}`} disabled={busy||automatic||Boolean(selecting)} onClick={()=>void onAutomatic()}>自动选择</button></div></div>
       {delayError&&<div className="proxy-delay-error">{delayError}</div>}
-      <div className="proxy-selector-grid">{selectableNodes.map(node=>{const selected=!automatic&&savedSelection===node.name;const delay=delayLabel(findDelay(node.name));return <button key={node.name} className={`proxy-select-node${selected?" selected":""}`} disabled={busy||Boolean(selecting)} aria-pressed={selected} onClick={()=>void chooseNode(node.name)}><span><b>{node.name}</b><small>{node.nodeType.toUpperCase()}</small></span><span className="proxy-select-status">{selecting===node.name?"切换中…":selected?"已选择":delay?.text??"选择"}</span></button>;})}</div>
+      <div className="proxy-selector-grid">{selectableNodes.map(node=>{const selected=!automatic&&savedSelection===node.name;const delay=delayLabel(findDelay(node.name));const isTesting=testingNodeName===node.name;const status=selecting===node.name?"切换中…":isTesting?"检测中…":selected&&delay?`已选择 · ${delay.text}`:selected?"已选择":delay?.text??(testingSpeed?"等待检测":"选择");return <button key={node.name} className={`proxy-select-node${selected?" selected":""}${isTesting?" testing":""}`} disabled={busy||Boolean(selecting)||testingSpeed} aria-pressed={selected} onClick={()=>void chooseNode(node.name)}><span><b>{node.name}</b><small>{node.nodeType.toUpperCase()}</small></span><span className="proxy-select-status">{status}</span></button>;})}</div>
       {selectableNodes.length===0&&<div className="sub-proxy-empty">正在读取已启用订阅中的节点…</div>}
     </section>}
     {subscriptions.length===0 ? <section className="proxy-card empty-proxy">尚未导入代理订阅</section> : subscriptions.map((item)=>{
@@ -332,11 +352,12 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
                     {info.proxies.map(p => {
                       const isMember = memberSet ? memberSet.has(p.name) : true;
                       const dl = delayLabel(findDelay(p.name));
+                      const isTesting = testingNodeName === p.name;
                       return <div className={`sub-proxy-node${isMember ? "" : " dimmed"}`} key={p.name}>
                         <span className="sub-proxy-node-name">{p.name}</span>
                         <span className="sub-proxy-node-meta">
                           <span className="sub-proxy-node-type">{p.nodeType}</span>
-                          {dl && <span className={`sub-proxy-delay ${dl.cls}`}>{dl.text}</span>}
+                          {isTesting ? <span className="sub-proxy-delay testing">检测中…</span> : dl && <span className={`sub-proxy-delay ${dl.cls}`}>{dl.text}</span>}
                         </span>
                       </div>;
                     })}

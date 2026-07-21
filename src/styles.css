@@ -960,6 +960,7 @@ h1 {
 
 .proxy-select-node:hover { border-color: var(--color-primary); background: #f8fffb; }
 .proxy-select-node.selected { border-color: var(--color-primary); background: var(--color-primary-light); box-shadow: inset 3px 0 0 var(--color-primary); }
+.proxy-select-node.testing { border-color: var(--color-warning); background: #fffbeb; }
 .proxy-select-node:disabled { cursor: wait; opacity: 0.65; }
 .proxy-select-node > span:first-child { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .proxy-select-node b { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -1102,6 +1103,7 @@ h1 {
 .sub-proxy-delay.medium { color: var(--color-warning); background: #fffbeb; }
 .sub-proxy-delay.slow { color: var(--color-danger); background: #fef2f2; }
 .sub-proxy-delay.timeout { color: var(--color-danger); background: #fef2f2; }
+.sub-proxy-delay.testing { color: var(--color-warning); background: #fffbeb; }
 
 .sub-proxy-empty { padding: 20px; text-align: center; color: var(--color-text-muted); font-size: 12px; }
 
