@@ -7,11 +7,12 @@
 //! "fail-open" policy in docs/architecture.md).
 
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 const SYSTEM_RUNTIME_DIR: &str = "/Library/Application Support/CleanWeb";

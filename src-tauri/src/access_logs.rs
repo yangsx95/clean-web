@@ -15,6 +15,7 @@ use crate::{mihomo::controller_secret, platform, storage::AppState};
 const CONTROLLER_CONNECTIONS: &str = "http://127.0.0.1:19090/connections";
 const CONTROLLER_LOGS: &str = "http://127.0.0.1:19090/logs";
 const ACCESS_LOGS_UPDATED_EVENT: &str = "access-logs-updated";
+#[cfg(target_os = "macos")]
 const MACOS_PRIVILEGED_LOG: &str = "/Library/Application Support/CleanWeb/mihomo.log";
 
 #[derive(Debug, Deserialize)]
@@ -248,7 +249,9 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
 }
 
 fn mihomo_log_paths(state: &AppState) -> Vec<PathBuf> {
-    let mut paths = vec![state.data_dir.join("mihomo/mihomo.log")];
+    let paths = vec![state.data_dir.join("mihomo/mihomo.log")];
+    #[cfg(target_os = "macos")]
+    let mut paths = paths;
     #[cfg(target_os = "macos")]
     paths.push(PathBuf::from(MACOS_PRIVILEGED_LOG));
     paths
