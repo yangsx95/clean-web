@@ -214,6 +214,7 @@ function Switch({ checked, label, disabled = false, onChange }: { checked: boole
 }
 
 function Rules({ parentRules, subscriptions, refreshingId, busy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; busy:boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void }) {
+  const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
   const builtinSubscriptions = subscriptions.filter((item) => item.id.startsWith("default:"));
   const externalSubscriptions = subscriptions.filter((item) => !item.id.startsWith("default:"));
   const blockRules = parentRules.filter((item) => item.action === "block");
@@ -224,11 +225,17 @@ function Rules({ parentRules, subscriptions, refreshingId, busy, onRefresh, onTo
   const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : "直连";
   const renderParentRule = (item: backend.ParentRule) => <div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{matchKindLabel(item.kind)} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{ruleActionLabel(item.action)}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} disabled={busy} onChange={value=>onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} disabled={busy} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>;
   return <>
-    <section className="toolbar"><div><h2>访问拦截</h2><p>手动阻止指定域名、关键词、IP 或网段，优先于普通内容和路由规则。</p></div><button className="primary" disabled={busy} onClick={()=>onAddParentRule("block")}><Plus size={16}/>添加拦截</button></section>
-    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{blockRules.length===0&&<div className="table-empty">尚未添加拦截规则</div>}{blockRules.map(renderParentRule)}</section>
-    <section className="toolbar route-toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连或走代理；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={busy} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
-    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>出口</span><span>状态</span><span>操作</span></div>{routeRules.length===0&&<div className="table-empty">尚未添加路由规则</div>}{routeRules.map(renderParentRule)}</section>
-    <section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
+    <section className="rules-tabs" role="tablist" aria-label="规则管理分类">
+      <button role="tab" aria-selected={tab==="block"} className={tab==="block"?"active":""} onClick={()=>setTab("block")}>访问拦截 <span>{blockRules.length}</span></button>
+      <button role="tab" aria-selected={tab==="route"} className={tab==="route"?"active":""} onClick={()=>setTab("route")}>路由设置 <span>{routeRules.length}</span></button>
+      <button role="tab" aria-selected={tab==="builtin"} className={tab==="builtin"?"active":""} onClick={()=>setTab("builtin")}>内置规则 <span>{builtinSubscriptions.length}</span></button>
+      <button role="tab" aria-selected={tab==="external"} className={tab==="external"?"active":""} onClick={()=>setTab("external")}>外部订阅 <span>{externalSubscriptions.length}</span></button>
+    </section>
+    {tab==="block"&&<><section className="toolbar"><div><h2>访问拦截</h2><p>手动阻止指定域名、关键词、IP 或网段，优先于普通内容和路由规则。</p></div><button className="primary" disabled={busy} onClick={()=>onAddParentRule("block")}><Plus size={16}/>添加拦截</button></section>
+    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{blockRules.length===0&&<div className="table-empty">尚未添加拦截规则</div>}{blockRules.map(renderParentRule)}</section></>}
+    {tab==="route"&&<><section className="toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连或走代理；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={busy} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
+    <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>出口</span><span>状态</span><span>操作</span></div>{routeRules.length===0&&<div className="table-empty">尚未添加路由规则</div>}{routeRules.map(renderParentRule)}</section></>}
+    {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
       {builtinSubscriptions.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
@@ -243,8 +250,8 @@ function Rules({ parentRules, subscriptions, refreshingId, busy, onRefresh, onTo
           <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={busy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button></div>
         </div>
       ))}
-    </section>
-    <section className="toolbar subscription-toolbar"><div><h2>外部订阅</h2><p>用户导入的第三方规则来源，更新失败时保留最后一次有效规则。</p></div><button className="primary" disabled={busy} onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
+    </section></>}
+    {tab==="external"&&<><section className="toolbar"><div><h2>外部订阅</h2><p>用户导入的第三方规则来源，更新失败时保留最后一次有效规则。</p></div><button className="primary" disabled={busy} onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
       {externalSubscriptions.length === 0 && <div className="table-empty">尚未添加外部规则订阅</div>}
@@ -256,7 +263,7 @@ function Rules({ parentRules, subscriptions, refreshingId, busy, onRefresh, onTo
           <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={busy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} disabled={busy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div>
         </div>
       ))}
-    </section>
+    </section></>}
   </>;
 }
 

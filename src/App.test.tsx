@@ -55,7 +55,11 @@ describe("management actions", () => {
     render(<App />);
     await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
-    expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /访问拦截/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /路由设置/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /内置规则/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /外部订阅/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
     expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "添加订阅" }));
     expect(screen.getByRole("dialog", { name: "添加规则订阅" })).toBeTruthy();
@@ -140,6 +144,7 @@ describe("management actions", () => {
     await unlockManagement();
 
     await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
     await userEvent.click(screen.getByRole("button", { name: "添加订阅" }));
     expect(screen.getByRole("dialog", { name: "添加规则订阅" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
@@ -158,12 +163,14 @@ describe("management actions", () => {
     await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
 
+    await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
     expect(screen.getByText("内置启用")).toBeTruthy();
     expect(screen.queryByText("https://example.test/default")).toBeNull();
     expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除内置规则 · 色情内容" })).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
+    expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
@@ -203,8 +210,9 @@ describe("management actions", () => {
     await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
     expect(screen.getByRole("heading", { name: "访问拦截" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "路由设置" })).toBeTruthy();
 
+    await userEvent.click(screen.getByRole("tab", { name: /路由设置/ }));
+    expect(screen.getByRole("heading", { name: "路由设置" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "添加路由" }));
     expect(screen.getByRole("dialog", { name: "添加路由规则" })).toBeTruthy();
     await userEvent.selectOptions(screen.getByLabelText("出口"), "proxy");
