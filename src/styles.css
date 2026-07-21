@@ -1024,10 +1024,36 @@ h1 {
 .proxy-toolbar-actions { display: flex; align-items: center; gap: 8px; }
 .proxy-toolbar-actions .secondary { display: inline-flex; align-items: center; gap: 6px; }
 .proxy-toolbar-actions .secondary.selected { color: var(--color-primary); border-color: var(--color-primary); background: var(--color-primary-light); }
+.import-dropdown { position: relative; display: inline-flex; align-items: stretch; }
+.import-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.import-menu-trigger { width: 38px; padding-inline: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid rgba(255,255,255,0.35); justify-content: center; }
+.import-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 50;
+  width: 156px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-card);
+  box-shadow: var(--shadow-md);
+}
+.import-menu button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-align: left;
+}
+.import-menu button:hover { color: var(--color-text); background: #f3f4f6; }
 .proxy-delay-error { margin: 0 0 var(--spacing-md); color: var(--color-danger); background: #fef2f2; border-radius: var(--radius-sm); padding: 9px 12px; font-size: 12px; }
 
 /* ===== SUB PROXY LAYOUT ===== */
-.sub-proxy-layout { display: flex; gap: 0; min-height: 200px; }
+.sub-proxy-layout { display: flex; gap: 0; min-height: 0; }
 
 .sub-proxy-sidebar {
   width: 180px;
@@ -1080,7 +1106,8 @@ h1 {
 
 .sub-proxy-group-btn-meta { font-size: 10px; color: var(--color-text-muted); }
 
-.sub-proxy-main { flex: 1; padding-left: var(--spacing-md); display: flex; flex-direction: column; }
+.sub-proxy-main { flex: 1; min-width: 0; padding-left: var(--spacing-md); display: flex; flex-direction: column; }
+.sub-proxy-layout.no-groups .sub-proxy-main { padding-left: 0; }
 
 .sub-proxy-main-head {
   display: flex;
@@ -1116,10 +1143,13 @@ h1 {
 
 .sub-proxy-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(190px, 240px));
+  grid-auto-rows: minmax(54px, auto);
+  align-items: start;
+  justify-content: start;
   gap: 8px;
   overflow-y: auto;
-  flex: 1;
+  flex: none;
   max-height: 400px;
 }
 
@@ -1127,7 +1157,8 @@ h1 {
   background: var(--color-bg-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  padding: 10px 12px;
+  min-height: 54px;
+  padding: 9px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1277,7 +1308,7 @@ h1 {
   margin-top: 6px;
 }
 
-.modal input, .modal select {
+.modal input, .modal select, .modal textarea {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   padding: 11px 14px;
@@ -1287,9 +1318,63 @@ h1 {
   transition: all var(--transition-fast);
 }
 
-.modal input:focus, .modal select:focus {
+.modal textarea {
+  min-height: 132px;
+  resize: vertical;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.modal input:focus, .modal select:focus, .modal textarea:focus {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(45, 134, 89, 0.1);
+}
+
+.inline-form-action { justify-self: start; margin-top: 4px; }
+
+.qr-dropzone {
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: #f8fafc;
+  min-height: 154px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--transition-fast);
+}
+
+.qr-dropzone:hover,
+.qr-dropzone.dragging {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.qr-dropzone.decoding {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.qr-dropzone input { display: none; }
+.qr-dropzone strong { font-size: 13px; color: var(--color-text); }
+.qr-dropzone span { font-size: 12px; color: var(--color-text-muted); }
+
+.qr-decoded-preview {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 10px 12px;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 76px;
+  overflow: hidden;
+  word-break: break-all;
 }
 
 .modal > small {

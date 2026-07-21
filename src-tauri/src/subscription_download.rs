@@ -9,11 +9,12 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use tauri::State;
+use uuid::Uuid;
 
 use crate::{
     builtin_rules,
     proxy_crypto::encrypt_proxy_payload,
-    storage::AppState,
+    storage::{AppState, SubscriptionRecord},
     subscriptions::{import_text, SubscriptionFormat},
 };
 
@@ -39,6 +40,13 @@ struct SafeSearchManifest {
 struct SafeSearchMapping {
     domain: String,
     target: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualProxyImport {
+    name: String,
+    content: String,
 }
 
 #[tauri::command]
@@ -120,6 +128,39 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
     Ok(report)
 }
 
+#[tauri::command]
+pub fn import_proxy_payload(
+    input: ManualProxyImport,
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<SubscriptionRecord, String> {
+    state.require_session(&session_token)?;
+    import_proxy_payload_inner(input, &state)
+}
+
+fn import_proxy_payload_inner(
+    input: ManualProxyImport,
+    state: &AppState,
+) -> Result<SubscriptionRecord, String> {
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("代理名称无效".into());
+    }
+    let content = input.content.trim();
+    if content.is_empty() {
+        return Err("代理内容不能为空".into());
+    }
+    let (report, payload) = parse_proxy_payload(content)?;
+    let id = Uuid::new_v4().to_string();
+    let url = format!("manual://proxy/{id}");
+    {
+        let db = state.db.lock().map_err(|_| "数据库不可用")?;
+        db.execute("INSERT INTO subscriptions(id,kind,name,url,format,update_interval_hours,last_updated_at,last_error) VALUES(?1,'proxy',?2,?3,?4,NULL,CURRENT_TIMESTAMP,NULL)",params![id,name,url,report.detected_format]).map_err(error)?;
+    }
+    store_proxy_payload(state, &id, &report.detected_format, &payload)?;
+    subscription_record(state, &id)
+}
+
 fn store_proxy_payload(
     state: &AppState,
     id: &str,
@@ -130,6 +171,29 @@ fn store_proxy_payload(
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.execute("INSERT INTO proxy_payloads(subscription_id,format,payload,updated_at) VALUES(?1,?2,?3,CURRENT_TIMESTAMP) ON CONFLICT(subscription_id) DO UPDATE SET format=excluded.format,payload=excluded.payload,updated_at=CURRENT_TIMESTAMP",params![id,detected_format,encrypted_payload]).map_err(error)?;
     Ok(())
+}
+
+fn subscription_record(state: &AppState, id: &str) -> Result<SubscriptionRecord, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    db.query_row(
+        "SELECT id, kind, name, url, format, category, update_interval_hours, enabled, last_updated_at, last_error FROM subscriptions WHERE id=?1",
+        params![id],
+        |row| {
+            Ok(SubscriptionRecord {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                name: row.get(2)?,
+                url: row.get(3)?,
+                format: row.get(4)?,
+                category: row.get(5)?,
+                update_interval_hours: row.get(6)?,
+                enabled: row.get::<_, i64>(7)? != 0,
+                last_updated_at: row.get(8)?,
+                last_error: row.get(9)?,
+            })
+        },
+    )
+    .map_err(error)
 }
 
 #[tauri::command]
@@ -1001,6 +1065,42 @@ mod tests {
         assert!(decrypt_proxy_payload(&stored)
             .unwrap()
             .contains("secret-token"));
+        std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
+    }
+
+    #[test]
+    fn imports_manual_proxy_payload_without_refresh_interval() {
+        let _guard = test_key_env_lock();
+        std::env::set_var(
+            "CLEANWEB_TEST_PROXY_KEY_B64",
+            base64::engine::general_purpose::STANDARD.encode([8_u8; 32]),
+        );
+        let state = AppState::open(":memory:").unwrap();
+        let item = import_proxy_payload_inner(
+            ManualProxyImport {
+                name: "手动节点".into(),
+                content: "ss://YWVzLTEyOC1nY206dGVzdA==@example.com:8388#my-ss".into(),
+            },
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(item.kind, "proxy");
+        assert_eq!(item.name, "手动节点");
+        assert_eq!(item.update_interval_hours, None);
+        assert!(item.url.starts_with("manual://proxy/"));
+        let stored: String = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM proxy_payloads WHERE subscription_id=?1",
+                params![item.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(is_encrypted_proxy_payload(&stored));
+        assert!(decrypt_proxy_payload(&stored).unwrap().contains("my-ss"));
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
     }
 

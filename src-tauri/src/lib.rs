@@ -55,6 +55,7 @@ pub fn run() {
             storage::create_parent_rule,
             storage::set_parent_rule_enabled,
             storage::delete_parent_rule,
+            subscription_download::import_proxy_payload,
             subscription_download::refresh_subscription,
             subscription_download::refresh_due_subscriptions,
             mihomo::get_core_status,

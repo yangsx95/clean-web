@@ -9,7 +9,7 @@
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
-  "app": { "windows": [{ "title": "CleanWeb", "width": 1180, "height": 760, "minWidth": 980, "minHeight": 680 }] },
+  "app": { "windows": [{ "title": "CleanWeb", "width": 1180, "height": 760, "minWidth": 980, "minHeight": 680, "dragDropEnabled": false }] },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],

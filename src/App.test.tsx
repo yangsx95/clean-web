@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -151,8 +151,64 @@ describe("management actions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
     expect(screen.getByRole("heading", { name: "代理订阅" })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "导入订阅" }));
-    expect(screen.getByRole("dialog", { name: "添加代理订阅" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "导入代理" }));
+    expect(screen.getByRole("dialog", { name: "导入代理订阅" })).toBeTruthy();
+  });
+
+  it("imports a manual proxy node from the proxy import menu", async () => {
+    const importProxy = vi.spyOn(backend, "importProxyPayload").mockResolvedValue({
+      id: "manual-proxy",
+      kind: "proxy",
+      name: "手动节点",
+      url: "manual://preview",
+      format: "clash",
+      enabled: true,
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(screen.getByRole("button", { name: "选择代理导入方式" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "单节点链接" }));
+    await userEvent.type(screen.getByLabelText("名称"), "手动节点");
+    await userEvent.type(screen.getByLabelText("代理内容"), "ss://YWVzLTEyOC1nY206dGVzdA==@example.com:8388#my-ss");
+    await userEvent.click(screen.getByRole("button", { name: "验证并添加" }));
+
+    expect(importProxy).toHaveBeenCalledWith("browser-preview", {
+      name: "手动节点",
+      content: "ss://YWVzLTEyOC1nY206dGVzdA==@example.com:8388#my-ss",
+    });
+    importProxy.mockRestore();
+  });
+
+  it("uses a file drop area for QR proxy import", async () => {
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(screen.getByRole("button", { name: "选择代理导入方式" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "二维码导入" }));
+
+    expect(screen.getByRole("dialog", { name: "导入二维码" })).toBeTruthy();
+    expect(screen.getByLabelText("二维码图片")).toBeTruthy();
+    expect(screen.queryByLabelText("代理内容")).toBeNull();
+  });
+
+  it("handles dropped files in QR proxy import", async () => {
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(screen.getByRole("button", { name: "选择代理导入方式" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "二维码导入" }));
+
+    const dropzone = screen.getByText("拖入二维码图片").closest(".qr-dropzone");
+    expect(dropzone).toBeTruthy();
+    fireEvent.drop(dropzone!, {
+      dataTransfer: {
+        files: [new File(["not-image"], "proxy.txt", { type: "text/plain" })],
+      },
+    });
+
+    await waitFor(() => expect(screen.getByText("Error: 请选择图片文件")).toBeTruthy());
   });
 
   it("selects proxy nodes from an expanded subscription", async () => {

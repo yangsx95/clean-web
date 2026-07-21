@@ -12,6 +12,7 @@ export type Settings = {
 };
 export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string };
 export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|"lastError">;
+export type ManualProxyImport = { name:string; content:string };
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
 export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string};
@@ -154,6 +155,13 @@ export async function listSubscriptions(sessionToken:string,kind?: "rule"|"proxy
 export async function createSubscription(sessionToken: string, input: NewSubscription): Promise<Subscription> {
   if (isTauri()) return invoke("create_subscription", { sessionToken, input });
   const item: Subscription = { ...input, id: crypto.randomUUID(), enabled: true }; previewSubscriptions.unshift(item); savePreviewSubscriptions(); return item;
+}
+export async function importProxyPayload(sessionToken: string, input: ManualProxyImport): Promise<Subscription> {
+  if (isTauri()) return invoke("import_proxy_payload", { sessionToken, input });
+  const item: Subscription = { id: crypto.randomUUID(), kind: "proxy", name: input.name, url: "manual://preview", format: "clash", enabled: true, lastUpdatedAt: new Date().toISOString() };
+  previewSubscriptions.unshift(item);
+  savePreviewSubscriptions();
+  return item;
 }
 export async function setSubscriptionEnabled(sessionToken:string,id:string,enabled:boolean) {
   if (isTauri()) return invoke("set_subscription_enabled", { sessionToken,id,enabled });
