@@ -1266,21 +1266,6 @@ fn append_strict_mode_rules(result: &mut Vec<Value>) {
     for cidr in STRICT_CIDRS {
         result.push(Value::String(format!("IP-CIDR,{cidr},REJECT,no-resolve")));
     }
-    result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])[a-z0-9-]*[0-9]{5}[0-9]*[a-z0-9-]*([.]|$),REJECT".into(),
-    ));
-    result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])[0-9a-f]{8}[0-9a-f]*([.]|$),REJECT".into(),
-    ));
-    result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])[bcdfghjklmnpqrstvwxyz0-9]{7}[bcdfghjklmnpqrstvwxyz0-9]*([.]|$),REJECT".into(),
-    ));
-    result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])[a-z][a-z]*[0-9]{4}[0-9]*[a-z][a-z]*([.]|$),REJECT".into(),
-    ));
-    result.push(Value::String(
-        "DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT".into(),
-    ));
 }
 
 fn append_imported_rules(
@@ -1733,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_mode_adds_heuristic_reject_rules_only_when_enabled() {
+    fn strict_mode_adds_explicit_reject_rules_without_random_domain_heuristics() {
         let state = AppState::open(":memory:").unwrap();
         let default_config = build_config(&state, "secret", true).unwrap();
         assert!(!default_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
@@ -1756,7 +1741,12 @@ mod tests {
         assert!(strict_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
         assert!(strict_config.contains("DOMAIN-KEYWORD,91,REJECT"));
         assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
-        assert!(strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"));
+        assert!(
+            !strict_config.contains(
+                "DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"
+            ),
+            "strict mode must not block broad random-looking domain labels by default"
+        );
     }
 
     #[test]

@@ -29,6 +29,7 @@ Before writing new parsing, networking, cryptography, storage, UI, validation, o
 - Keep user-facing behavior aligned with the V1 product boundary.
 - Avoid broad refactors unless they directly reduce risk for the requested change.
 - Do not overwrite unrelated local changes.
+- Do not fix routing or filtering false positives by hardcoding one-off vendor, cloud-provider, or user-specific allow rules. Prefer a general rule-priority, rule-model, or user-configurable routing solution, and document the reasoning in tests when behavior changes.
 
 ## Validation
 

@@ -644,6 +644,10 @@ h1 {
   margin-top: var(--spacing-xl);
 }
 
+.route-toolbar {
+  margin-top: var(--spacing-lg);
+}
+
 .toolbar h2 {
   font-size: 17px;
   font-weight: 600;
@@ -815,6 +819,15 @@ h1 {
 
 /* ===== PARENT RULES ===== */
 .parent-rules { margin-bottom: var(--spacing-lg); }
+
+.readonly-field {
+  border: 1px solid var(--color-border);
+  background: #f9fafb;
+  border-radius: var(--radius-md);
+  padding: 11px 12px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
 
 /* ===== PROXY CARD ===== */
 .proxy-card {

@@ -178,14 +178,45 @@ describe("management actions", () => {
     render(<App />);
     await unlockManagement();
     await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
-    await userEvent.click(screen.getByRole("button", { name: "添加规则" }));
+    await userEvent.click(screen.getByRole("button", { name: "添加拦截" }));
     await userEvent.type(screen.getByLabelText("规则内容"), "blocked.example");
     await userEvent.click(screen.getByRole("button", { name: "验证并保存" }));
 
-    expect(screen.queryByRole("dialog", { name: "添加规则" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "添加拦截规则" })).toBeNull();
     expect(await screen.findByText("blocked.example")).toBeTruthy();
     expect((await screen.findByRole("alert")).textContent).toContain("规则已添加，但保护配置重载失败");
     reload.mockRestore();
     coreStatus.mockRestore();
+  });
+
+  it("adds routing rules separately from blocking rules", async () => {
+    const create = vi.spyOn(backend, "createParentRule").mockResolvedValueOnce({
+      id: "route-1",
+      action: "proxy",
+      kind: "suffix",
+      pattern: "chatgpt.com",
+      category: "routing",
+      enabled: true,
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    expect(screen.getByRole("heading", { name: "访问拦截" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "路由设置" })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "添加路由" }));
+    expect(screen.getByRole("dialog", { name: "添加路由规则" })).toBeTruthy();
+    await userEvent.selectOptions(screen.getByLabelText("出口"), "proxy");
+    await userEvent.type(screen.getByLabelText("规则内容"), "chatgpt.com");
+    await userEvent.click(screen.getByRole("button", { name: "验证并保存" }));
+
+    expect(create).toHaveBeenCalledWith("browser-preview", {
+      action: "proxy",
+      kind: "suffix",
+      pattern: "chatgpt.com",
+      category: "routing",
+    });
+    create.mockRestore();
   });
 });
