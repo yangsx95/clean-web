@@ -138,14 +138,19 @@ function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComp
 
 function Overview({ settings, coreStatus, locked, busy, logs, logStats, onClear, onExport, onToggle, onRetention }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;locked:boolean;busy:boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats;onClear:()=>Promise<void>;onExport:()=>Promise<void>; onToggle: (key: string, enabled: boolean) => Promise<void>; onRetention: (value: string) => Promise<void> }) {
   const running=coreStatus?.running===true;
+  const protectionMessage = running
+    ? `保护服务 PID ${coreStatus?.pid} · 安全 DNS 已配置`
+    : settings.protectionEnabled
+      ? "配置要求保护开启，但服务当前未运行；点击开关重新启动保护"
+      : "当前网络未被 Clean Web 接管";
   const blockedCount = logStats.block;
   const allowedCount = logStats.allow;
   const totalCount = logStats.total;
   return <>
       <section className={running ? "hero" : "hero off"}>
         <div className={running ? "pulse" : "pulse off"}><ShieldCheck size={34}/>{!running&&<X className="pulse-x" size={19}/>}</div>
-        <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Clean Web 正在执行网络策略" : "开启后将启动保护并接管网络"}</h2><p>{running?`保护服务 PID ${coreStatus?.pid} · 安全 DNS 已配置`:settings.protectionEnabled?"配置要求保护开启，但服务当前未运行":"当前网络未被 Clean Web 接管"}</p></div>
-        <Switch checked={settings.protectionEnabled} label="总保护" disabled={busy} onChange={(value) => onToggle("protection_enabled", value)} />
+        <div className="hero-copy"><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h2>{running ? "Clean Web 正在执行网络策略" : "开启后将启动保护并接管网络"}</h2><p>{protectionMessage}</p></div>
+        <Switch checked={running} label="总保护" disabled={busy} onChange={(value) => onToggle("protection_enabled", value)} />
       </section>
       <section className="stats">
         <article><span>已拦截</span><strong>{blockedCount}</strong><small>访问日志总计</small></article>

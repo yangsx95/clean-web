@@ -69,6 +69,19 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "严格模式" })).toBeTruthy();
   });
 
+  it("shows the protection switch as off when protection is configured but not running", async () => {
+    const settings = { ...await backend.getSettings(), protectionEnabled: true };
+    window.localStorage.setItem("cleanweb.preview.settings", JSON.stringify(settings));
+    window.localStorage.setItem("cleanweb.preview.coreStatus", JSON.stringify({ running: false, controller: "127.0.0.1:19090", configPath: "preview" }));
+
+    render(<App />);
+    await unlockManagement();
+
+    expect(screen.getByText("保护未运行")).toBeTruthy();
+    expect(screen.getByText("配置要求保护开启，但服务当前未运行；点击开关重新启动保护")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("false");
+  });
+
   it("keeps protection enabled when auto start is cancelled on app launch", async () => {
     const enabled = { ...await backend.getSettings(), protectionEnabled: true };
     const settings = vi.spyOn(backend, "getSettings")
