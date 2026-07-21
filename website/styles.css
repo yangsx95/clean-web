@@ -191,8 +191,6 @@ h1 {
   border-color: var(--line);
 }
 
-.button[aria-disabled="true"] { cursor: not-allowed; opacity: 0.68; }
-
 .hero-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
