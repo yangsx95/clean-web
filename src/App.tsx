@@ -347,13 +347,8 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
   const selectableNodes=Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>subProxies[item.id]?.proxies??[]).map(node=>[node.name,node])).values());
   const chooseNode=async(name:string)=>{if(selecting||busy||testingSpeed)return;setSelecting(name);try{await onSelectNode(name);setSavedSelection(name);setRuntimeSelection(name);}finally{setSelecting(undefined);}};
   return <>
-    <section className="toolbar"><div><h2>管理代理节点</h2><p>导入代理订阅，仅提取节点和代理组，自动过滤不相关的网络配置。</p></div><button className="primary" disabled={busy} onClick={onAdd}><Plus size={16}/>导入订阅</button></section>
-    {subscriptions.length>0&&<section className="proxy-selector-card">
-      <div className="proxy-selector-head"><div><span className="eyebrow">全局出口</span><h3>{automatic?"自动选择节点":savedSelection??"尚未选择节点"}</h3><p>{running?`当前实际使用：${runtimeSelection??"正在读取…"}`:"保护启动后应用所选节点"}</p></div><div className="proxy-selector-actions"><button className="secondary" disabled={busy||!running||testingSpeed} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button><button className={`secondary${automatic?" selected":""}`} disabled={busy||automatic||Boolean(selecting)} onClick={()=>void onAutomatic()}>自动选择</button></div></div>
-      {delayError&&<div className="proxy-delay-error">{delayError}</div>}
-      <div className="proxy-selector-grid">{selectableNodes.map(node=>{const selected=!automatic&&savedSelection===node.name;const delay=delayLabel(findDelay(node.name));const isTesting=testingNodeName===node.name;const status=selecting===node.name?"切换中…":isTesting?"检测中…":selected&&delay?`已选择 · ${delay.text}`:selected?"已选择":delay?.text??(testingSpeed?"等待检测":"选择");const statusClass=isTesting?" testing":delay?` ${delay.cls}`:"";return <button key={node.name} className={`proxy-select-node${selected?" selected":""}${isTesting?" testing":""}`} disabled={busy||Boolean(selecting)||testingSpeed} aria-pressed={selected} onClick={()=>void chooseNode(node.name)}><span><b>{node.name}</b><small>{node.nodeType.toUpperCase()}</small></span><span className={`proxy-select-status${statusClass}`}>{status}</span></button>;})}</div>
-      {selectableNodes.length===0&&<div className="sub-proxy-empty">正在读取已启用订阅中的节点…</div>}
-    </section>}
+    <section className="toolbar"><div><h2>代理订阅</h2><p>{subscriptions.length>0?`当前出口：${automatic?"自动选择节点":runtimeSelection??savedSelection??"尚未选择节点"}`:"导入订阅后，展开订阅并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={busy||!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={busy||automatic||Boolean(selecting)||subscriptions.length===0} onClick={()=>void onAutomatic()}>自动选择</button><button className="primary" disabled={busy} onClick={onAdd}><Plus size={16}/>导入订阅</button></div></section>
+    {delayError&&<div className="proxy-delay-error">{delayError}</div>}
     {subscriptions.length===0 ? <section className="proxy-card empty-proxy">尚未导入代理订阅</section> : subscriptions.map((item)=>{
       const expanded = expandedId === item.id;
       const info = subProxies[item.id];
@@ -365,7 +360,7 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
           <div className="proxy-icon"><Network/></div>
           <div className="proxy-info">
             <div className="proxy-meta-row">
-              <span className="status">代理订阅{info ? ` · ${info.proxies.length} 节点${info.groups.length > 0 ? ` · ${info.groups.length} 组` : ""}` : ""}</span>
+              <span className="status">节点来源{info ? ` · ${info.proxies.length} 节点${info.groups.length > 0 ? ` · ${info.groups.length} 组` : ""}` : ""}</span>
               {typeSummary.length > 0 && <div className="proxy-type-badges">{typeSummary.map(t => <span className="proxy-type-badge" key={t.type}><span className="proxy-type-name">{t.type.toUpperCase()}</span><span className="proxy-type-count">{t.count}</span></span>)}</div>}
             </div>
             <h3>{item.name}</h3><p className={item.lastError?"error-text":""}>{item.lastError??item.url}</p></div>
@@ -392,21 +387,23 @@ function Proxy({ subscriptions, refreshingId, busy, onRefresh, onToggleSubscript
                 </div>}
                 <div className="sub-proxy-main">
                   <div className="sub-proxy-main-head">
-                    <h4>{currentGroup ? `${currentGroup.name} 节点` : "节点列表"}</h4>
-                    {running && <button className={`speed-test-btn${testingSpeed ? " testing" : ""}`} disabled={busy||testingSpeed} onClick={handleSpeedTest} title="通过代理执行3次 HTTP 往返测试并显示中位延迟，不代表下载带宽"><Gauge size={14}/>{testingSpeed ? "延迟检测中…" : "延迟检测"}</button>}
+                    <h4>{currentGroup ? `${currentGroup.name} 节点` : "来源节点"}</h4>
                   </div>
                   <div className="sub-proxy-grid">
                     {info.proxies.map(p => {
                       const isMember = memberSet ? memberSet.has(p.name) : true;
                       const dl = delayLabel(findDelay(p.name));
                       const isTesting = testingNodeName === p.name;
-                      return <div className={`sub-proxy-node${isMember ? "" : " dimmed"}`} key={p.name}>
+                      const isCurrent = p.name === runtimeSelection || (!running && !automatic && p.name === savedSelection);
+                      const isChoosing = selecting === p.name;
+                      return <button type="button" className={`sub-proxy-node${isMember ? "" : " dimmed"}${isCurrent ? " current" : ""}${isTesting ? " testing" : ""}`} key={p.name} disabled={!isMember||busy||Boolean(selecting)||testingSpeed} aria-pressed={isCurrent} onClick={()=>void chooseNode(p.name)}>
                         <span className="sub-proxy-node-name">{p.name}</span>
                         <span className="sub-proxy-node-meta">
+                          {isChoosing ? <span className="sub-proxy-current">切换中</span> : isCurrent ? <span className="sub-proxy-current">当前使用</span> : <span className="sub-proxy-choose">选择</span>}
                           <span className="sub-proxy-node-type">{p.nodeType}</span>
                           {isTesting ? <span className="sub-proxy-delay testing">检测中…</span> : dl && <span className={`sub-proxy-delay ${dl.cls}`}>{dl.text}</span>}
                         </span>
-                      </div>;
+                      </button>;
                     })}
                   </div>
                 </div>

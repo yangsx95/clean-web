@@ -150,8 +150,30 @@ describe("management actions", () => {
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
 
     await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    expect(screen.getByRole("heading", { name: "代理订阅" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "导入订阅" }));
     expect(screen.getByRole("dialog", { name: "添加代理订阅" })).toBeTruthy();
+  });
+
+  it("selects proxy nodes from an expanded subscription", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    const proxies = vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }],
+      groups: [],
+    });
+    const select = vi.spyOn(backend, "selectProxy").mockResolvedValue({ requiresReload: false });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByText("我的代理"));
+    await userEvent.click(await screen.findByRole("button", { name: /node-a/ }));
+
+    expect(select).toHaveBeenCalledWith("browser-preview", "CleanWeb", "node-a");
+    proxies.mockRestore();
+    select.mockRestore();
   });
 
   it("does not allow default rule sources to be disabled or deleted", async () => {
