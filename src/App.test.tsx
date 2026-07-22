@@ -76,6 +76,19 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "严格模式" })).toBeTruthy();
   });
 
+  it("keeps unrelated settings interactive while one setting is applying", async () => {
+    const update = vi.spyOn(backend, "updateSetting")
+      .mockImplementation(() => new Promise<backend.Settings>(() => {}));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("switch", { name: "安全搜索" }));
+
+    await waitFor(() => expect((screen.getByRole("switch", { name: "安全搜索" }) as HTMLButtonElement).disabled).toBe(true));
+    expect((screen.getByRole("switch", { name: "严格模式" }) as HTMLButtonElement).disabled).toBe(false);
+    update.mockRestore();
+  });
+
   it("shows the protection switch as off when protection is configured but not running", async () => {
     const settings = { ...await backend.getSettings(), protectionEnabled: true };
     window.localStorage.setItem("cleanweb.preview.settings", JSON.stringify(settings));
@@ -284,6 +297,46 @@ describe("management actions", () => {
     expect(select).toHaveBeenCalledWith("browser-preview", "CleanWeb", "node-a");
     proxies.mockRestore();
     select.mockRestore();
+  });
+
+  it("keeps other proxy nodes interactive while one node is switching", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }, { name: "node-b", nodeType: "vmess" }],
+      groups: [],
+    });
+    const select = vi.spyOn(backend, "selectProxy").mockReturnValue(new Promise(() => {}));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByText("我的代理"));
+    await userEvent.click(await screen.findByRole("button", { name: /node-a/ }));
+
+    expect(await screen.findByText("切换中")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /node-b/ }) as HTMLButtonElement).disabled).toBe(false);
+    select.mockRestore();
+  });
+
+  it("keeps other subscription rows interactive while one subscription is updating", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"source-a",kind:"rule",name:"规则源 A",url:"https://example.test/a",format:"hosts",enabled:true},
+      {id:"source-b",kind:"rule",name:"规则源 B",url:"https://example.test/b",format:"hosts",enabled:true},
+    ]));
+    const toggle = vi.spyOn(backend, "setSubscriptionEnabled")
+      .mockImplementation(() => new Promise<void>(() => {}));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
+    await userEvent.click(await screen.findByRole("switch", { name: "规则源 A订阅" }));
+
+    await waitFor(() => expect((screen.getByRole("switch", { name: "规则源 A订阅" }) as HTMLButtonElement).disabled).toBe(true));
+    expect((screen.getByRole("switch", { name: "规则源 B订阅" }) as HTMLButtonElement).disabled).toBe(false);
+    toggle.mockRestore();
   });
 
   it("does not allow default rule sources to be disabled or deleted", async () => {

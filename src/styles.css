@@ -576,7 +576,7 @@ h1 {
 }
 
 .switch:disabled {
-  cursor: wait;
+  cursor: default;
 }
 
 .switch span {
@@ -588,24 +588,29 @@ h1 {
   background: white;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   transition: transform var(--transition-normal);
+  position: relative;
 }
 
 .switch.on { background: var(--color-primary); }
 .switch.on span { transform: translateX(20px); }
 .switch.pending {
-  background: #9ca3af;
+  background: #64748b;
 }
 .switch.pending span {
-  transform: translateX(10px) scale(0.86);
+  transform: translateX(10px);
 }
 .switch.pending span::after {
   content: "";
-  display: block;
-  width: 6px;
-  height: 6px;
-  margin: 6px;
+  position: absolute;
+  inset: 4px;
   border-radius: 50%;
-  background: #9ca3af;
+  border: 2px solid #cbd5e1;
+  border-top-color: #475569;
+  animation: switch-progress 0.75s linear infinite;
+}
+
+@keyframes switch-progress {
+  to { transform: rotate(360deg); }
 }
 
 /* ===== PANELS ===== */
@@ -769,7 +774,7 @@ h1 {
   font-size: 13px;
   font-weight: 500;
   box-shadow: var(--shadow-sm);
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .primary:hover {
@@ -780,8 +785,6 @@ h1 {
 .primary.danger { background: var(--color-danger); }
 .primary.danger:hover { background: #b91c1c; }
 
-.primary:active { transform: scale(0.98); }
-
 .secondary {
   border: 1px solid var(--color-border);
   background: var(--color-bg-card);
@@ -790,7 +793,7 @@ h1 {
   color: var(--color-text-secondary);
   font-size: 13px;
   font-weight: 500;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .secondary:hover {
@@ -889,7 +892,7 @@ h1 {
   color: var(--color-text-secondary);
   display: grid;
   place-items: center;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .row-action:hover {
@@ -1133,7 +1136,7 @@ h1 {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .speed-test-btn:hover {
@@ -1142,7 +1145,7 @@ h1 {
   background: var(--color-primary-light);
 }
 
-.speed-test-btn.testing { opacity: 0.6; cursor: wait; }
+.speed-test-btn.testing { opacity: 0.6; cursor: default; }
 
 .sub-proxy-grid {
   display: grid;
@@ -1165,7 +1168,7 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
   text-align: left;
 }
 
@@ -1173,7 +1176,7 @@ h1 {
 .sub-proxy-node.current { border-color: var(--color-primary); background: var(--color-primary-light); }
 .sub-proxy-node.testing { border-color: var(--color-warning); background: #fffbeb; }
 .sub-proxy-node.dimmed { opacity: 0.4; border-style: dashed; }
-.sub-proxy-node:disabled { cursor: wait; }
+.sub-proxy-node:disabled { cursor: default; }
 
 .sub-proxy-node-name {
   font-size: 12px;
@@ -1363,7 +1366,7 @@ h1 {
 }
 
 .qr-dropzone.decoding {
-  cursor: wait;
+  cursor: default;
   opacity: 0.75;
 }
 

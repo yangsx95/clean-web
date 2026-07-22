@@ -162,32 +162,35 @@ pub fn get_core_status(state: State<'_, AppState>) -> Result<CoreStatus, String>
 }
 
 #[tauri::command]
-pub fn start_protection(
-    session_token: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<CoreStatus, String> {
-    state.require_session(&session_token)?;
-    start_inner(&app, &state)
+pub async fn start_protection(session_token: String, app: AppHandle) -> Result<CoreStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.require_session(&session_token)?;
+        start_inner(&app, &state)
+    })
+    .await
+    .map_err(error)?
 }
 
 #[tauri::command]
-pub fn auto_start_protection(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<CoreStatus, String> {
-    let protection_enabled = {
-        let db = state.db.lock().map_err(|_| "数据库不可用")?;
-        setting_bool(&db, "protection_enabled")?
-    };
-    if !protection_enabled {
-        return get_core_status(state);
-    }
-    let status = core_status(&state)?;
-    if status.running {
-        return Ok(status);
-    }
-    start_inner(&app, &state)
+pub async fn auto_start_protection(app: AppHandle) -> Result<CoreStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let protection_enabled = {
+            let db = state.db.lock().map_err(|_| "数据库不可用")?;
+            setting_bool(&db, "protection_enabled")?
+        };
+        if !protection_enabled {
+            return core_status(&state);
+        }
+        let status = core_status(&state)?;
+        if status.running {
+            return Ok(status);
+        }
+        start_inner(&app, &state)
+    })
+    .await
+    .map_err(error)?
 }
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
@@ -263,13 +266,15 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
 }
 
 #[tauri::command]
-pub fn stop_protection(
-    session_token: String,
-    state: State<'_, AppState>,
-) -> Result<CoreStatus, String> {
-    state.require_session(&session_token)?;
-    stop_child(&state)?;
-    core_status(&state)
+pub async fn stop_protection(session_token: String, app: AppHandle) -> Result<CoreStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.require_session(&session_token)?;
+        stop_child(&state)?;
+        core_status(&state)
+    })
+    .await
+    .map_err(error)?
 }
 
 #[tauri::command]
