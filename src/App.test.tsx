@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -17,7 +17,10 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("management actions", () => {
   async function unlockManagement() {
@@ -113,9 +116,62 @@ describe("management actions", () => {
     subscribe.mockRestore();
   });
 
+  it("confirms app quit requests while protection keeps running", async () => {
+    let requestQuit = () => {};
+    const coreStatus = vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+    const subscribe = vi.spyOn(backend, "onQuitRequested")
+      .mockImplementation(async (callback) => { requestQuit = callback; return () => {}; });
+
+    render(<App />);
+    expect(await screen.findByLabelText("CleanWeb 锁定状态")).toBeTruthy();
+    act(() => requestQuit());
+
+    expect(await screen.findByRole("dialog", { name: "保护仍会在后台运行" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("后台保护运行中");
+    expect(screen.getByText("退出应用后，代理和过滤仍可能继续生效。")).toBeTruthy();
+    subscribe.mockRestore();
+    coreStatus.mockRestore();
+  });
+
+  it("requires the management password before quitting", async () => {
+    let requestQuit = () => {};
+    const subscribe = vi.spyOn(backend, "onQuitRequested")
+      .mockImplementation(async (callback) => { requestQuit = callback; return () => {}; });
+    const verify = vi.spyOn(backend, "verifyPassword").mockRejectedValueOnce(new Error("管理密码错误")).mockResolvedValueOnce(undefined);
+    const quit = vi.spyOn(backend, "confirmedQuit").mockResolvedValue(undefined);
+
+    render(<App />);
+    await screen.findByLabelText("CleanWeb 锁定状态");
+    act(() => requestQuit());
+
+    await userEvent.type(await screen.findByLabelText("管理密码"), "wrongpass");
+    await userEvent.click(screen.getByRole("button", { name: "退出" }));
+    expect(await screen.findByText("Error: 管理密码错误")).toBeTruthy();
+    expect(quit).not.toHaveBeenCalled();
+
+    await userEvent.clear(screen.getByLabelText("管理密码"));
+    await userEvent.type(screen.getByLabelText("管理密码"), "parent123");
+    await userEvent.click(screen.getByRole("button", { name: "退出" }));
+    expect(verify).toHaveBeenLastCalledWith("parent123");
+    expect(quit).toHaveBeenCalled();
+    subscribe.mockRestore();
+  });
+
+  it("disables the default browser context menu", async () => {
+    render(<App />);
+    await screen.findByLabelText("CleanWeb 锁定状态");
+
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    const allowed = window.dispatchEvent(event);
+
+    expect(allowed).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it("uses access log stats instead of the recent log list for counters", async () => {
-    const logs = Array.from({ length: 100 }, (_, index) => ({
-      id: `allow-${index}`,
+    const logs = Array.from({ length: 2 }, (_, index) => ({
+      id: `recent-${index}`,
       observedAt: "2026-01-01T00:00:00Z",
       decision: "allow" as const,
       operatingSystem: "test",
@@ -135,8 +191,6 @@ describe("management actions", () => {
     expect(await screen.findByText("150")).toBeTruthy();
     expect(screen.getByText("152")).toBeTruthy();
     expect(screen.getByText("2")).toBeTruthy();
-    listLogs.mockRestore();
-    stats.mockRestore();
   });
 
   it("opens both subscription forms when unlocked", async () => {

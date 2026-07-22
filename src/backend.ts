@@ -107,6 +107,11 @@ export async function initializePassword(password: string) {
   if (isTauri()) await invoke("initialize_password", { password });
 }
 
+export async function verifyPassword(password: string) {
+  if (isTauri()) await invoke("verify_password", { password });
+  else if (password.length < 8) throw new Error("管理密码错误");
+}
+
 export async function unlock(password: string) {
   const result = isTauri()
     ? await invoke<{ sessionToken: string; expiresInSeconds: number }>("unlock", { password })
@@ -248,6 +253,13 @@ export async function onAccessLogsUpdated(callback:()=>void):Promise<()=>void>{
   const { listen } = await import("@tauri-apps/api/event");
   return listen("access-logs-updated", callback);
 }
+export async function onQuitRequested(callback:()=>void):Promise<()=>void>{
+  if(!isTauri())return()=>{};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("cleanweb-quit-requested", callback);
+}
+export async function hideMainWindow():Promise<void>{if(isTauri())await invoke("hide_main_window");}
+export async function confirmedQuit():Promise<void>{if(isTauri())await invoke("confirmed_quit");}
 export async function listParentRules(sessionToken:string):Promise<ParentRule[]>{if(isTauri())return invoke("list_parent_rules",{sessionToken});previewParentRules=loadPreviewParentRules();return structuredClone(previewParentRules);}
 export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(isTauri())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:crypto.randomUUID(),enabled:true};previewParentRules.unshift(item);savePreviewParentRules();return item;}
 export async function setParentRuleEnabled(sessionToken:string,id:string,enabled:boolean):Promise<void>{if(isTauri())return invoke("set_parent_rule_enabled",{sessionToken,id,enabled});const item=previewParentRules.find(value=>value.id===id);if(item){item.enabled=enabled;savePreviewParentRules();}}

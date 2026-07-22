@@ -777,6 +777,9 @@ h1 {
   box-shadow: var(--shadow-md);
 }
 
+.primary.danger { background: var(--color-danger); }
+.primary.danger:hover { background: #b91c1c; }
+
 .primary:active { transform: scale(0.98); }
 
 .secondary {
@@ -1282,6 +1285,11 @@ h1 {
   place-items: center;
 }
 
+.modal-symbol.warning {
+  color: var(--color-warning);
+  background: #fffbeb;
+}
+
 .icon-button {
   position: absolute;
   right: 16px;
@@ -1388,8 +1396,29 @@ h1 {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: var(--spacing-md);
+}
+
+.quit-modal { width: min(460px, 100%); }
+.quit-status {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 var(--spacing-md);
+  padding: 12px 14px;
+  border: 1px solid #fed7aa;
+  border-radius: var(--radius-md);
+  background: #fff7ed;
+}
+.quit-status b {
+  color: #9a3412;
+  font-size: 13px;
+}
+.quit-status span {
+  color: #c2410c;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .full { justify-content: center; margin-top: 8px; width: 100%; }

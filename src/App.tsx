@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Gauge, LockKeyhole, Network, Plus, RefreshCw, ScanQrCode, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
 
 type ProxyImportMode = "subscription" | "node" | "qr" | "clipboard";
+type AppDialog = "unlock" | "rules" | "proxy" | "custom" | "quit" | null;
 
 async function decodeQrImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
@@ -40,7 +41,7 @@ type PolicyApplyStatus = {
 export function App() {
   const [page, setPage] = useState<"overview" | "rules" | "proxy">("overview");
   const [locked, setLocked] = useState(true);
-  const [dialog, setDialog] = useState<"unlock" | "rules" | "proxy" | "custom" | null>(null);
+  const [dialog, setDialog] = useState<AppDialog>(null);
   const [parentRuleMode, setParentRuleMode] = useState<"block" | "route">("block");
   const [proxyImportMode, setProxyImportMode] = useState<ProxyImportMode>("subscription");
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -60,6 +61,8 @@ export function App() {
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const titles = { overview: "网络环境安全", rules: "规则管理", proxy: "代理节点" };
   const requestAction = (action: "rules" | "proxy", mode: ProxyImportMode = "subscription") => { if (action === "proxy") setProxyImportMode(mode); setDialog(locked ? "unlock" : action); };
+  const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
+  const quitApp = async () => { setDialog(null); await backend.confirmedQuit(); };
   const runOperation = async (operation: () => Promise<void>) => {
     if (operationBusyRef.current) return;
     operationBusyRef.current = true;
@@ -70,6 +73,8 @@ export function App() {
   const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
   const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
+  useEffect(()=>{const preventContextMenu=(event:MouseEvent)=>event.preventDefault();window.addEventListener("contextmenu",preventContextMenu);return()=>window.removeEventListener("contextmenu",preventContextMenu);},[]);
+  useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;void backend.onQuitRequested(()=>setDialog("quit")).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[]);
   useEffect(() => { void (async () => {
     const [bootstrap,current,core,publicStats] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats()]);
     setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);
@@ -142,7 +147,7 @@ export function App() {
   useEffect(()=>{if(!sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.syncAccessLogs().catch(()=>0).then(()=>Promise.all([backend.listAccessLogs(sessionToken,undefined,undefined,100),backend.getAccessLogStats(sessionToken)])).then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
   useEffect(()=>{if(sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.getPublicAccessLogStats().then(stats=>{if(!cancelled)setAccessLogStats(stats);});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
-  if (locked) return <LockedStatus coreStatus={coreStatus} stats={accessLogStats} runtimeError={runtimeError} needsSetup={needsSetup} onSetupComplete={() => setNeedsSetup(false)} onUnlock={handleUnlock} dialog={dialog} setDialog={setDialog} />;
+  if (locked) return <LockedStatus coreStatus={coreStatus} stats={accessLogStats} runtimeError={runtimeError} needsSetup={needsSetup} onSetupComplete={() => setNeedsSetup(false)} onUnlock={handleUnlock} dialog={dialog} setDialog={setDialog} onHideToBackground={hideToBackground} onQuitApp={quitApp} />;
   return <div className="shell">
     <aside>
       <div className="brand"><ShieldCheck size={25}/><strong>CleanWeb</strong></div>
@@ -167,6 +172,7 @@ export function App() {
     {dialog === "rules" && <SubscriptionDialog kind="规则" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
     {dialog === "proxy" && <ProxyImportDialog mode={proxyImportMode} onClose={() => setDialog(null)} onSubscriptionSubmit={createSubscription} onPayloadSubmit={importProxyPayload} />}
     {dialog === "custom" && <ParentRuleDialog mode={parentRuleMode} onClose={()=>setDialog(null)} onSubmit={createParentRule}/>}
+    {dialog === "quit" && <QuitConfirmDialog running={coreStatus?.running===true} onClose={()=>setDialog(null)} onHideToBackground={hideToBackground} onQuitApp={quitApp}/>}
   </div>;
 }
 
@@ -179,7 +185,7 @@ function PolicyApplyBanner({status}:{status:PolicyApplyStatus}) {
   </div>;
 }
 
-function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:string;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:"unlock"|"rules"|"proxy"|"custom"|null;setDialog:(dialog:"unlock"|"rules"|"proxy"|"custom"|null)=>void }) {
+function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog, onHideToBackground, onQuitApp }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:string;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:AppDialog;setDialog:(dialog:AppDialog)=>void;onHideToBackground:()=>Promise<void>;onQuitApp:()=>Promise<void> }) {
   const running = coreStatus?.running === true;
   return <div className="locked-shell">
     <section className="locked-status-card" aria-label="CleanWeb 锁定状态">
@@ -198,6 +204,46 @@ function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComp
     <div className="locked-version">CleanWeb v0.1.0</div>
     {needsSetup && <SetupDialog onComplete={onSetupComplete} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={onUnlock} />}
+    {dialog === "quit" && <QuitConfirmDialog running={running} onClose={()=>setDialog(null)} onHideToBackground={onHideToBackground} onQuitApp={onQuitApp}/>}
+  </div>;
+}
+
+function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: { running:boolean; onClose:()=>void; onHideToBackground:()=>Promise<void>; onQuitApp:()=>Promise<void> }) {
+  const [error,setError]=useState("");
+  const [submitting,setSubmitting]=useState(false);
+  const submitQuit=async(event:FormEvent<HTMLFormElement>)=>{
+    event.preventDefault();
+    if(submitting)return;
+    setSubmitting(true);
+    setError("");
+    try{
+      const password=String(new FormData(event.currentTarget).get("password")??"");
+      await backend.verifyPassword(password);
+      await onQuitApp();
+    }catch(reason){
+      setError(String(reason));
+    }finally{
+      setSubmitting(false);
+    }
+  };
+  return <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&onClose()}>
+    <section className="modal quit-modal" role="dialog" aria-modal="true" aria-labelledby="quit-title">
+      <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
+      <div className={running?"modal-symbol":"modal-symbol warning"}><ShieldCheck/></div>
+      <h2 id="quit-title">{running?"保护仍会在后台运行":"确认关闭 CleanWeb"}</h2>
+      <p>{running?"当前保护和代理由后台服务继续执行。关闭窗口或退出管理界面不会自动停止网络接管；如需停止，请先解锁并关闭总保护。":"当前没有运行中的保护服务。你可以关闭窗口到后台，或退出 CleanWeb 管理界面。"}</p>
+      {running&&<div className="quit-status" role="status"><b>后台保护运行中</b><span>退出应用后，代理和过滤仍可能继续生效。</span></div>}
+      <form onSubmit={submitQuit}>
+        <label htmlFor="quit-password">管理密码</label>
+        <input id="quit-password" name="password" type="password" placeholder="输入管理密码后退出" required autoFocus autoComplete="current-password" onKeyDown={(e) => { if (e.nativeEvent.isComposing || e.keyCode === 229) e.preventDefault(); }} onCompositionEnd={(e) => { const el = e.currentTarget; el.value = el.value.replace(/[^\x20-\x7E]/g, ""); }} onInput={(e) => { const el = e.currentTarget; el.value = el.value.replace(/[^\x20-\x7E]/g, ""); }} />
+        {error&&<span className="form-error">{error}</span>}
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>取消</button>
+          <button type="button" className="secondary" onClick={()=>void onHideToBackground()}>继续后台运行</button>
+          <button type="submit" className="primary danger" disabled={submitting}>{submitting?"验证中…":"退出"}</button>
+        </div>
+      </form>
+    </section>
   </div>;
 }
 

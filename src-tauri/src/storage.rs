@@ -21,6 +21,8 @@ use crate::builtin_rules::{
     CLEANWEB_SECURITY_SUPPLEMENT_URL,
 };
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
+#[cfg(debug_assertions)]
+use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
 use crate::subscriptions::{import_text, SubscriptionFormat};
 
@@ -258,6 +260,9 @@ impl AppState {
         let path = path.as_ref();
         let mut connection = Connection::open(path)?;
         initialize_schema(&connection)?;
+        #[cfg(debug_assertions)]
+        migrate_legacy_keychain_payloads_to_debug_key(&mut connection)
+            .map_err(std::io::Error::other)?;
         encrypt_existing_proxy_payloads(&mut connection).map_err(std::io::Error::other)?;
         Ok(Self {
             db: Mutex::new(connection),
@@ -606,8 +611,7 @@ pub fn initialize_password(password: String, state: State<'_, AppState>) -> Resu
     Ok(())
 }
 
-#[tauri::command]
-pub fn unlock(password: String, state: State<'_, AppState>) -> Result<UnlockResult, String> {
+fn verify_management_password(password: &str, state: &State<'_, AppState>) -> Result<(), String> {
     let hash = {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
         db.query_row(
@@ -622,7 +626,17 @@ pub fn unlock(password: String, state: State<'_, AppState>) -> Result<UnlockResu
     let parsed = PasswordHash::new(&hash).map_err(error)?;
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
-        .map_err(|_| "管理密码错误".to_string())?;
+        .map_err(|_| "管理密码错误".to_string())
+}
+
+#[tauri::command]
+pub fn verify_password(password: String, state: State<'_, AppState>) -> Result<(), String> {
+    verify_management_password(&password, &state)
+}
+
+#[tauri::command]
+pub fn unlock(password: String, state: State<'_, AppState>) -> Result<UnlockResult, String> {
+    verify_management_password(&password, &state)?;
     let token = Uuid::new_v4().to_string();
     state
         .sessions
@@ -1069,7 +1083,14 @@ mod tests {
     fn recommended_sources_have_valid_fields() {
         let sources = get_recommended_rule_sources();
         assert!(!sources.is_empty(), "推荐源列表不应为空");
-        let valid_categories = ["ads", "pornography", "gambling", "malware", "custom", "direct"];
+        let valid_categories = [
+            "ads",
+            "pornography",
+            "gambling",
+            "malware",
+            "custom",
+            "direct",
+        ];
         let valid_formats = ["hosts", "adblock", "domain-list", "ip-list", "clash"];
         for src in &sources {
             assert!(!src.name.is_empty(), "名称不应为空");
