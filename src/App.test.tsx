@@ -147,6 +147,16 @@ describe("management actions", () => {
     coreStatus.mockRestore();
   });
 
+  it("opens the quit password dialog from a pending native quit request", async () => {
+    const pendingQuit = vi.spyOn(backend, "takePendingQuitRequest").mockResolvedValueOnce(true);
+
+    render(<App />);
+
+    expect(await screen.findByRole("dialog", { name: "确认关闭 CleanWeb" })).toBeTruthy();
+    expect(screen.getByLabelText("管理密码")).toBeTruthy();
+    pendingQuit.mockRestore();
+  });
+
   it("requires the management password before quitting", async () => {
     let requestQuit = () => {};
     const subscribe = vi.spyOn(backend, "onQuitRequested")

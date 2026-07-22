@@ -258,6 +258,7 @@ export async function onQuitRequested(callback:()=>void):Promise<()=>void>{
   const { listen } = await import("@tauri-apps/api/event");
   return listen("cleanweb-quit-requested", callback);
 }
+export async function takePendingQuitRequest():Promise<boolean>{return isTauri()?invoke("take_pending_quit_request"):false;}
 export async function hideMainWindow():Promise<void>{if(isTauri())await invoke("hide_main_window");}
 export async function confirmedQuit():Promise<void>{if(isTauri())await invoke("confirmed_quit");}
 export async function listParentRules(sessionToken:string):Promise<ParentRule[]>{if(isTauri())return invoke("list_parent_rules",{sessionToken});previewParentRules=loadPreviewParentRules();return structuredClone(previewParentRules);}

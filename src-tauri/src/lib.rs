@@ -23,6 +23,7 @@ const TRAY_ID: &str = "cleanweb-tray";
 #[derive(Default)]
 struct AppLifecycle {
     confirmed_exit: AtomicBool,
+    quit_requested: AtomicBool,
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -33,6 +34,9 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 fn request_quit_confirmation(app: &tauri::AppHandle) {
+    app.state::<AppLifecycle>()
+        .quit_requested
+        .store(true, Ordering::SeqCst);
     show_main_window(app);
     let _ = app.emit(QUIT_REQUESTED_EVENT, ());
 }
@@ -50,8 +54,14 @@ fn hide_main_window(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn confirmed_quit(app: tauri::AppHandle, lifecycle: tauri::State<'_, AppLifecycle>) {
+    lifecycle.quit_requested.store(false, Ordering::SeqCst);
     lifecycle.confirmed_exit.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+#[tauri::command]
+fn take_pending_quit_request(lifecycle: tauri::State<'_, AppLifecycle>) -> bool {
+    lifecycle.quit_requested.swap(false, Ordering::SeqCst)
 }
 
 #[cfg(target_os = "macos")]
@@ -170,6 +180,7 @@ pub fn run() {
             storage::get_bootstrap_state,
             hide_main_window,
             confirmed_quit,
+            take_pending_quit_request,
             storage::initialize_password,
             storage::verify_password,
             storage::unlock,
