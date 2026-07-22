@@ -17,6 +17,7 @@ use tauri::{Emitter, Manager};
 const QUIT_REQUESTED_EVENT: &str = "cleanweb-quit-requested";
 const SHOW_WINDOW_MENU_ID: &str = "cleanweb-show-window";
 const QUIT_MENU_ID: &str = "cleanweb-quit";
+#[cfg(target_os = "macos")]
 const TRAY_ID: &str = "cleanweb-tray";
 
 #[derive(Default)]
