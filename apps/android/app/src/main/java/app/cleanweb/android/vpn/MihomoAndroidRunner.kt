@@ -30,10 +30,10 @@ class MihomoAndroidRunner(private val context: Context) {
     private fun installedBinary(): File {
         val binary = File(context.applicationInfo.nativeLibraryDir, "libmihomo.so")
         require(binary.exists() && binary.length() > 0) {
-            "Bundled Mihomo Android binary is missing for this device ABI"
+            "当前设备 ABI 缺少随包分发的 Mihomo 安卓内核。"
         }
         require(sha256(binary) == MIHOMO_ANDROID_ARM64_SHA256) {
-            "Mihomo Android binary checksum mismatch"
+            "Mihomo 安卓内核校验失败。"
         }
         return binary
     }

@@ -30,13 +30,17 @@ class CleanWebVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> stopVpn()
-            else -> startVpn()
+            else -> {
+                currentStatus = VpnStatus.Starting
+                lastError = null
+                startVpn()
+            }
         }
         return Service.START_STICKY
     }
 
     override fun onDestroy() {
-        stopVpn()
+        stopVpn(updateStatus = currentStatus != VpnStatus.Failed)
         super.onDestroy()
     }
 
@@ -55,71 +59,85 @@ class CleanWebVpnService : VpnService() {
         val logFile = try {
             runner.start(state)
         } catch (error: Exception) {
+            val message = "安卓内核启动失败：${error.message}"
             repository.appendLog(
                 accessLog(
                     target = "Mihomo",
                     decision = LogDecision.Warning,
-                    reason = "Failed to start Android core: ${error.message}"
+                    reason = message
                 )
             )
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            failVpn(message)
             return
         }
         mihomoRunner = runner
 
-        tunInterface = Builder()
-            .setSession(getString(R.string.app_name))
-            .setMtu(VPN_MTU)
-            .addAddress("172.19.0.1", 30)
-            .addDnsServer("223.5.5.5")
-            .addDnsServer("119.29.29.29")
-            .addRoute("0.0.0.0", 0)
-            .apply {
-                runCatching { addDisallowedApplication(packageName) }
-            }
-            .establish()
+        tunInterface = try {
+            Builder()
+                .setSession(getString(R.string.app_name))
+                .setMtu(VPN_MTU)
+                .addAddress("172.19.0.1", 30)
+                .addDnsServer("223.5.5.5")
+                .addDnsServer("119.29.29.29")
+                .addRoute("0.0.0.0", 0)
+                .apply {
+                    runCatching { addDisallowedApplication(packageName) }
+                }
+                .establish()
+        } catch (error: Exception) {
+            val message = "安卓 VPN 接口创建失败：${error.message}"
+            repository.appendLog(
+                accessLog(
+                    target = "安卓 VPN",
+                    decision = LogDecision.Warning,
+                    reason = message
+                )
+            )
+            failVpn(message)
+            return
+        }
 
-        isRunning = tunInterface != null
         tunInterface?.let { descriptor ->
             running.set(true)
             val fd = descriptor.detachFd()
             try {
                 startTun2Socks(fd)
+                isRunning = true
+                currentStatus = VpnStatus.Running
+                lastError = null
                 repository.appendLog(
                     accessLog(
                         target = "Mihomo",
                         decision = LogDecision.Allowed,
-                        reason = "Full-device tunnel started. Logs: ${logFile.name}"
+                        reason = "全设备隧道已启动。日志：${logFile.name}"
                     )
                 )
             } catch (error: Exception) {
+                val message = "全设备隧道启动失败：${error.message}"
                 repository.appendLog(
                     accessLog(
                         target = "tun2socks",
                         decision = LogDecision.Warning,
-                        reason = "Failed to start full-device tunnel: ${error.message}"
+                        reason = message
                     )
                 )
-                stopVpn()
+                failVpn(message)
             }
         }
         if (tunInterface == null) {
+            val message = "安卓 VPN 接口创建失败。"
             repository.appendLog(
                 accessLog(
-                    target = "Android VPN",
+                    target = "安卓 VPN",
                     decision = LogDecision.Warning,
-                    reason = "Failed to establish Android VPN interface."
+                    reason = message
                 )
             )
-            mihomoRunner?.stop()
-            mihomoRunner = null
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            failVpn(message)
         }
     }
 
-    private fun stopVpn() {
+    private fun failVpn(message: String) {
         running.set(false)
         runCatching { Engine.stop() }
         mihomoRunner?.stop()
@@ -127,6 +145,24 @@ class CleanWebVpnService : VpnService() {
         tunInterface?.close()
         tunInterface = null
         isRunning = false
+        currentStatus = VpnStatus.Failed
+        lastError = message
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun stopVpn(updateStatus: Boolean = true) {
+        running.set(false)
+        runCatching { Engine.stop() }
+        mihomoRunner?.stop()
+        mihomoRunner = null
+        tunInterface?.close()
+        tunInterface = null
+        isRunning = false
+        if (updateStatus) {
+            currentStatus = VpnStatus.Idle
+            lastError = null
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -195,7 +231,17 @@ class CleanWebVpnService : VpnService() {
         var isRunning: Boolean = false
             private set
 
+        @Volatile
+        var currentStatus: VpnStatus = VpnStatus.Idle
+            private set
+
+        @Volatile
+        var lastError: String? = null
+            private set
+
         fun start(context: Context) {
+            currentStatus = VpnStatus.Starting
+            lastError = null
             val intent = Intent(context, CleanWebVpnService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

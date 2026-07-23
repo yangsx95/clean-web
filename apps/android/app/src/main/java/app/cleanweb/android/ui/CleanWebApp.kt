@@ -50,6 +50,7 @@ import app.cleanweb.android.vpn.VpnStatus
 fun CleanWebApp(
     appState: CleanWebState,
     status: VpnStatus,
+    vpnError: String?,
     onStartProtection: () -> Unit,
     onStopProtection: () -> Unit,
     onSettingsChange: (ProtectionSettings) -> Unit,
@@ -99,6 +100,7 @@ fun CleanWebApp(
                             ProtectionPanel(
                                 state = appState,
                                 status = status,
+                                vpnError = vpnError,
                                 onStartProtection = onStartProtection,
                                 onStopProtection = onStopProtection,
                                 onSettingsChange = onSettingsChange,
@@ -133,7 +135,7 @@ fun CleanWebApp(
                         }
                         if (appState.proxySubscriptions.isEmpty()) {
                             item {
-                                EmptyState("No proxy subscriptions imported.")
+                                EmptyState("还没有导入代理订阅。")
                             }
                         }
                     }
@@ -150,7 +152,7 @@ fun CleanWebApp(
                         }
                         if (appState.logs.isEmpty()) {
                             item {
-                                EmptyState("No local access events yet.")
+                                EmptyState("还没有本地访问事件。")
                             }
                         }
                     }
@@ -189,6 +191,7 @@ private fun Header(status: VpnStatus) {
 private fun ProtectionPanel(
     state: CleanWebState,
     status: VpnStatus,
+    vpnError: String?,
     onStartProtection: () -> Unit,
     onStopProtection: () -> Unit,
     onSettingsChange: (ProtectionSettings) -> Unit,
@@ -203,9 +206,15 @@ private fun ProtectionPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Total protection", style = MaterialTheme.typography.titleMedium)
+                Text("总保护", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = if (protectionEnabled) "Android VPN service is active." else "VPN service is stopped.",
+                    text = when (status) {
+                        VpnStatus.Starting -> "安卓 VPN 正在启动。"
+                        VpnStatus.Running -> "安卓 VPN 服务正在运行。"
+                        VpnStatus.Failed -> vpnError ?: "启动失败，请查看日志中的失败原因。"
+                        VpnStatus.PermissionDenied -> "未获得安卓 VPN 权限。"
+                        VpnStatus.Idle -> "VPN 服务已停止。"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -225,43 +234,43 @@ private fun ProtectionPanel(
                 enabled = !protectionEnabled,
                 onClick = onStartProtection
             ) {
-                Text("Start")
+                Text("开启")
             }
             OutlinedButton(
                 enabled = protectionEnabled,
                 onClick = onStopProtection
             ) {
-                Text("Stop")
+                Text("关闭")
             }
         }
     }
 
     SectionCard {
-        Text("Policy summary", style = MaterialTheme.typography.titleMedium)
+        Text("策略概览", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(10.dp))
-        SummaryRow("Enabled rules", state.rules.count { it.enabled }.toString())
-        SummaryRow("Proxy sources", state.proxySubscriptions.count { it.enabled }.toString())
-        SummaryRow("Access logs", state.logs.size.toString())
-        SummaryRow("Filtering engine", "Mihomo + tun2socks")
+        SummaryRow("已启用规则", state.rules.count { it.enabled }.toString())
+        SummaryRow("代理来源", state.proxySubscriptions.count { it.enabled }.toString())
+        SummaryRow("访问日志", state.logs.size.toString())
+        SummaryRow("过滤内核", "Mihomo + tun2socks")
     }
 
     if (!state.settings.alwaysOnVpnGuidanceSeen) {
         SectionCard {
-            Text("Always-on VPN", style = MaterialTheme.typography.titleMedium)
+            Text("始终开启 VPN", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "Use Android system VPN settings to enable always-on VPN and block connections without VPN after full-tunnel filtering is validated.",
+                text = "真机验证全流量过滤稳定后，可在安卓系统 VPN 设置里开启始终开启 VPN 和无 VPN 时阻止连接。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             TextButton(onClick = onAcknowledgeAlwaysOnGuidance) {
-                Text("Got it")
+                Text("知道了")
             }
         }
     }
 
     ToggleRow(
-        title = "Safe search",
-        subtitle = "Prepare DNS safe-search mapping state for the Android data path.",
+        title = "安全搜索",
+        subtitle = "为安卓数据通道准备 DNS 安全搜索映射。",
         checked = state.settings.safeSearchEnabled,
         onCheckedChange = {
             onSettingsChange(state.settings.copy(safeSearchEnabled = it))
@@ -275,18 +284,18 @@ private fun RulesEditor(onAddRule: (String, RuleCategory, RuleAction) -> Unit) {
     var allowRule by remember { mutableStateOf(false) }
 
     SectionCard {
-        Text("Add rule", style = MaterialTheme.typography.titleMedium)
+        Text("添加规则", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
             modifier = Modifier.fillMaxWidth(),
             value = pattern,
             onValueChange = { pattern = it.trim() },
-            label = { Text("Domain or CIDR") },
+            label = { Text("域名或 CIDR") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
         )
         ToggleRow(
-            title = "Allow rule",
-            subtitle = "Use for explicit parent allowlist entries.",
+            title = "放行规则",
+            subtitle = "用于明确的管理者白名单条目。",
             checked = allowRule,
             onCheckedChange = { allowRule = it }
         )
@@ -302,7 +311,7 @@ private fun RulesEditor(onAddRule: (String, RuleCategory, RuleAction) -> Unit) {
                 allowRule = false
             }
         ) {
-            Text("Add")
+            Text("添加")
         }
     }
 }
@@ -334,7 +343,7 @@ private fun RuleRow(
         }
         if (!rule.id.startsWith("core-")) {
             TextButton(onClick = { onRemoveRule(rule.id) }) {
-                Text("Remove")
+                Text("删除")
             }
         }
     }
@@ -346,19 +355,19 @@ private fun ProxyEditor(onAddProxySubscription: (String, String) -> Unit) {
     var url by remember { mutableStateOf("") }
 
     SectionCard {
-        Text("Import proxy subscription", style = MaterialTheme.typography.titleMedium)
+        Text("导入代理订阅", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
             modifier = Modifier.fillMaxWidth(),
             value = name,
             onValueChange = { name = it },
-            label = { Text("Name") },
+            label = { Text("名称") },
             singleLine = true
         )
         OutlinedTextField(
             modifier = Modifier.fillMaxWidth(),
             value = url,
             onValueChange = { url = it.trim() },
-            label = { Text("Subscription URL") },
+            label = { Text("订阅链接") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
         )
@@ -370,10 +379,10 @@ private fun ProxyEditor(onAddProxySubscription: (String, String) -> Unit) {
                 url = ""
             }
         ) {
-            Text("Import")
+            Text("导入")
         }
         Text(
-            text = "Proxy subscriptions are routed by the local Android Mihomo data path.",
+            text = "代理订阅会由本机安卓 Mihomo 数据通道处理。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -406,7 +415,7 @@ private fun ProxyRow(
             )
         }
         TextButton(onClick = { onRemoveProxySubscription(subscription.id) }) {
-            Text("Remove")
+            Text("删除")
         }
     }
 }
@@ -420,15 +429,15 @@ private fun LogsHeader(enabled: Boolean, onClearLogs: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Access logs", style = MaterialTheme.typography.titleMedium)
+                Text("访问日志", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (enabled) "Local logging is enabled." else "Local logging is disabled.",
+                    if (enabled) "本地日志已开启。" else "本地日志已关闭。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             OutlinedButton(onClick = onClearLogs) {
-                Text("Clear")
+                Text("清空")
             }
         }
     }
@@ -462,32 +471,32 @@ private fun SettingsPanel(
     onSettingsChange: (ProtectionSettings) -> Unit
 ) {
     ToggleRow(
-        title = "Proxy routing",
-        subtitle = "Allowed traffic uses imported proxy nodes when the Android engine is connected.",
+        title = "代理路由",
+        subtitle = "安卓内核连接后，允许的流量会使用导入的代理节点。",
         checked = settings.proxyEnabled,
         onCheckedChange = { onSettingsChange(settings.copy(proxyEnabled = it)) }
     )
     ToggleRow(
-        title = "Strict mode",
-        subtitle = "Prepare stricter high-risk domain and CIDR policy state.",
+        title = "严格模式",
+        subtitle = "准备更严格的高风险域名和 CIDR 策略。",
         checked = settings.strictModeEnabled,
         onCheckedChange = { onSettingsChange(settings.copy(strictModeEnabled = it)) }
     )
     ToggleRow(
-        title = "Ads and tracking",
-        subtitle = "Optional ad and tracker category.",
+        title = "广告与跟踪",
+        subtitle = "可选的广告和跟踪器类别。",
         checked = settings.adsTrackingEnabled,
         onCheckedChange = { onSettingsChange(settings.copy(adsTrackingEnabled = it)) }
     )
     ToggleRow(
-        title = "Access logs",
-        subtitle = "Store local access decisions on this device.",
+        title = "访问日志",
+        subtitle = "在本机保存访问决策记录。",
         checked = settings.accessLogsEnabled,
         onCheckedChange = { onSettingsChange(settings.copy(accessLogsEnabled = it)) }
     )
     ToggleRow(
-        title = "Auto select node",
-        subtitle = "Prefer healthy proxy nodes after latency testing is available.",
+        title = "自动选择节点",
+        subtitle = "延迟检测可用后优先选择健康代理节点。",
         checked = settings.autoSelectNode,
         onCheckedChange = { onSettingsChange(settings.copy(autoSelectNode = it)) }
     )
@@ -559,17 +568,18 @@ private fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
 
 private fun statusLabel(status: VpnStatus): String {
     return when (status) {
-        VpnStatus.Idle -> "Not running"
-        VpnStatus.Starting -> "Starting VPN"
-        VpnStatus.Running -> "VPN running"
-        VpnStatus.PermissionDenied -> "VPN permission denied"
+        VpnStatus.Idle -> "未运行"
+        VpnStatus.Starting -> "正在启动 VPN"
+        VpnStatus.Running -> "VPN 运行中"
+        VpnStatus.Failed -> "VPN 启动失败"
+        VpnStatus.PermissionDenied -> "VPN 权限被拒绝"
     }
 }
 
 private enum class AppTab(val label: String, val icon: String) {
-    Protection("Protect", "P"),
-    Rules("Rules", "R"),
-    Proxy("Proxy", "X"),
-    Logs("Logs", "L"),
-    Settings("Settings", "S")
+    Protection("防护", "防"),
+    Rules("规则", "规"),
+    Proxy("代理", "代"),
+    Logs("日志", "志"),
+    Settings("设置", "设")
 }

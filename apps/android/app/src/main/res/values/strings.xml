@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">CleanWeb</string>
-    <string name="vpn_notification_channel">CleanWeb protection</string>
-    <string name="vpn_notification_title">CleanWeb protection is active</string>
-    <string name="vpn_notification_text">Device traffic is routed through the local CleanWeb VPN.</string>
+    <string name="vpn_notification_channel">CleanWeb 防护</string>
+    <string name="vpn_notification_title">CleanWeb 防护运行中</string>
+    <string name="vpn_notification_text">设备流量正在经过本机 CleanWeb VPN。</string>
 </resources>

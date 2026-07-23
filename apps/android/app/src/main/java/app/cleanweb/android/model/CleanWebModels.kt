@@ -26,15 +26,15 @@ data class RuleEntry(
 )
 
 enum class RuleCategory(val label: String) {
-    Core("Core"),
-    AdsTracking("Ads"),
-    CustomBlock("Block"),
-    CustomAllow("Allow")
+    Core("核心"),
+    AdsTracking("广告"),
+    CustomBlock("拦截"),
+    CustomAllow("放行")
 }
 
 enum class RuleAction(val label: String) {
-    Block("Block"),
-    Allow("Allow")
+    Block("拦截"),
+    Allow("放行")
 }
 
 data class ProxySubscription(
@@ -54,9 +54,9 @@ data class AccessLogEntry(
 )
 
 enum class LogDecision(val label: String) {
-    Allowed("Allowed"),
-    Blocked("Blocked"),
-    Warning("Warning")
+    Allowed("允许"),
+    Blocked("拦截"),
+    Warning("警告")
 }
 
 val defaultRules = listOf(

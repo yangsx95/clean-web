@@ -38,57 +38,61 @@ class MainActivity : ComponentActivity() {
                 val repository = remember { CleanWebRepository(applicationContext) }
                 var appState by remember { mutableStateOf(repository.load()) }
                 var status by remember { mutableStateOf(VpnStatus.Idle) }
+                var vpnError by remember { mutableStateOf<String?>(null) }
                 val vpnPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     if (result.resultCode == RESULT_OK) {
                         CleanWebVpnService.start(this)
                         status = VpnStatus.Starting
+                        vpnError = null
                         appState = appState.withLog(
-                            target = "Android VPN",
+                            target = "安卓 VPN",
                             decision = LogDecision.Warning,
-                            reason = "Full-device tunnel is starting."
+                            reason = "全设备隧道正在启动。"
                         )
                     } else {
                         status = VpnStatus.PermissionDenied
                     }
                 }
 
-                LaunchedEffect(Unit) {
-                    status = if (CleanWebVpnService.isRunning) VpnStatus.Running else VpnStatus.Idle
-                }
-
                 LaunchedEffect(appState) {
                     repository.save(appState)
                 }
 
-                LaunchedEffect(status) {
+                LaunchedEffect(Unit) {
                     while (true) {
-                        delay(2_000)
-                        status = when {
-                            CleanWebVpnService.isRunning -> VpnStatus.Running
+                        val serviceStatus = when {
+                            CleanWebVpnService.currentStatus == VpnStatus.Running -> VpnStatus.Running
+                            CleanWebVpnService.currentStatus == VpnStatus.Starting -> VpnStatus.Starting
+                            CleanWebVpnService.currentStatus == VpnStatus.Failed -> VpnStatus.Failed
                             status == VpnStatus.PermissionDenied -> VpnStatus.PermissionDenied
                             else -> VpnStatus.Idle
                         }
+                        status = serviceStatus
+                        vpnError = CleanWebVpnService.lastError
                         val latest = repository.load()
                         if (latest != appState) {
                             appState = latest
                         }
+                        delay(2_000)
                     }
                 }
 
                 CleanWebApp(
                     appState = appState,
                     status = status,
+                    vpnError = vpnError,
                     onStartProtection = {
                         val permissionIntent: Intent? = VpnService.prepare(this)
                         if (permissionIntent == null) {
                             CleanWebVpnService.start(this)
                             status = VpnStatus.Starting
+                            vpnError = null
                             appState = appState.withLog(
-                                target = "Android VPN",
+                                target = "安卓 VPN",
                                 decision = LogDecision.Warning,
-                                reason = "Full-device tunnel is starting."
+                                reason = "全设备隧道正在启动。"
                             )
                         } else {
                             vpnPermissionLauncher.launch(permissionIntent)
@@ -97,10 +101,11 @@ class MainActivity : ComponentActivity() {
                     onStopProtection = {
                         CleanWebVpnService.stop(this)
                         status = VpnStatus.Idle
+                        vpnError = null
                         appState = appState.withLog(
-                            target = "Android VPN",
+                            target = "安卓 VPN",
                             decision = LogDecision.Allowed,
-                            reason = "VPN service stopped by administrator."
+                            reason = "管理员已停止 VPN 服务。"
                         )
                     },
                     onSettingsChange = { settings ->
