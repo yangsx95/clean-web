@@ -48,8 +48,8 @@ apps/desktop/src-tauri/
     storage.rs                   # SQLite 设置、规则、订阅、日志存储
     rules.rs                     # re-export cleanweb-rules，兼容桌面现有调用
     builtin_rules.rs             # 内置规则源加载
-    subscriptions.rs             # 规则和代理订阅解析清洗
-    subscription_download.rs     # 订阅下载
+    subscriptions.rs             # re-export cleanweb-subscriptions，兼容桌面现有调用
+    subscription_download.rs     # 订阅下载、代理 payload 加密入库和安全搜索导入
     mihomo.rs                    # Mihomo 配置生成、启动和日志消费
     access_logs.rs               # 访问日志模型、保留和导出
     proxy_crypto.rs              # 代理敏感数据加密
@@ -129,6 +129,8 @@ resources/
 ```text
 crates/
   cleanweb-rules/                # 共享规则标准化、验证、匹配和优先级
+  cleanweb-subscriptions/        # 规则订阅文本解析和导入报告
+  cleanweb-proxy-import/         # 代理订阅 URI/YAML 清洗为受控 Clash payload
 ```
 
 后续当 Android 的 VPN 数据路径验证通过后，再考虑新增：
@@ -136,7 +138,6 @@ crates/
 ```text
 crates/
   cleanweb-core/                 # 未来：共享设置、分类、动作和日志字段
-  cleanweb-subscriptions/        # 共享订阅解析和清洗
   cleanweb-policy/               # 共享策略合并和动作判定
   cleanweb-mihomo-config/        # 共享 Mihomo 配置模型和生成
   cleanweb-ffi/                  # Android/iOS 绑定层，确认需要后再建

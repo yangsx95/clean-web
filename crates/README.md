@@ -9,6 +9,8 @@ Current crates:
 ```text
 crates/
   cleanweb-rules/            # Rule validation, normalization, matching, priority
+  cleanweb-subscriptions/    # Rule subscription text parsing and import reports
+  cleanweb-proxy-import/     # Proxy subscription URI/YAML cleanup into locked Clash payloads
 ```
 
 Expected future crates:
@@ -16,7 +18,6 @@ Expected future crates:
 ```text
 crates/
   cleanweb-core/             # Shared settings, categories, actions, log fields
-  cleanweb-subscriptions/    # Rule/proxy/safe-search subscription parsing
   cleanweb-policy/           # Policy merge and action decisions
   cleanweb-mihomo-config/    # Mihomo config model and generation
   cleanweb-ffi/              # Android/iOS binding layer, only if needed

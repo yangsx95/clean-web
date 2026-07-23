@@ -1,0 +1,9 @@
+[package]
+name = "cleanweb-proxy-import"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22"
+serde_json = "1"
+serde_yaml = "0.9"

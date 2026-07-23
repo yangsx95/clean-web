@@ -17,8 +17,8 @@
 | 单 Mihomo TUN 启停 | 部分完成 | CleanWeb 生成锁定的 Mihomo 配置并启动唯一 TUN；macOS/Windows 的特权安装、升级、异常恢复和卸载仍需真实设备验收。 |
 | DNS 接管与安全搜索 | 部分完成 | Mihomo 配置启用 `dns.use-hosts`、`dns.respect-rules`、TUN `dns-hijack`、顶层 `hosts`、`fake-ip-filter` 和 `sniffer.skip-domain`；配置解析测试已通过，Google/Bing/YouTube/百度等真实矩阵仍需验收。 |
 | 内容过滤优先于代理路由 | 已完成 | 过滤规则排在内置 `DIRECT` 路由前，覆盖 `baidu.com` 这类国内直连域名被家长规则拦截的回归场景。 |
-| 跨平台规则核心 | 部分完成 | 规则标准化、匹配、优先级和基础测试已抽到 `crates/cleanweb-rules`；桌面端通过 `crate::rules` 兼容层复用。订阅解析、策略合并和 Mihomo 配置生成尚未抽取。 |
-| Clash/Mihomo 代理订阅清洗 | 已完成 | 只保留节点和允许的代理组；订阅里的 DNS、TUN、规则、脚本、本地端口和控制器不会进入受控配置。 |
+| 跨平台规则核心 | 部分完成 | 规则标准化、匹配、优先级和基础测试已抽到 `crates/cleanweb-rules`；规则订阅文本解析已抽到 `crates/cleanweb-subscriptions`；代理订阅 URI/YAML 清洗已抽到 `crates/cleanweb-proxy-import`；桌面端通过兼容层复用。策略合并和 Mihomo 配置生成尚未抽取。 |
+| Clash/Mihomo 代理订阅清洗 | 已完成 | 只保留节点和允许的代理组；订阅里的 DNS、TUN、规则、脚本、本地端口和控制器不会进入受控配置。纯解析和清洗逻辑已在 `cleanweb-proxy-import` 中覆盖测试，桌面端只负责下载、加密和存储。 |
 | 规则订阅导入 | 已完成 | Clash、Adblock、hosts、域名、IP/CIDR 和安全搜索 YAML 均有解析路径和测试。 |
 | 内置规则包 | 部分完成 | 共享规则和安全搜索资源已移动到根 `resources/`；有内置规则源、默认启用、不可删除和启动恢复逻辑；缺少许可证、归属、版本、校验和、签名包以及商业再分发审计字段。 |
 | 访问日志 | 部分完成 | 日志模型、保留期、清空和 CSV 导出存在；拦截事件已从 Mihomo 日志流写入 SQLite 并通过 Tauri event 驱动前端刷新；仍需真实设备验证 DNS、连接和规则命中事件覆盖率。 |

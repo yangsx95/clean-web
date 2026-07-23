@@ -621,7 +621,9 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.22.1",
+ "cleanweb-proxy-import",
  "cleanweb-rules",
+ "cleanweb-subscriptions",
  "flate2",
  "ipnet",
  "keyring",
@@ -641,6 +643,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cleanweb-proxy-import"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "cleanweb-rules"
 version = "0.1.0"
 dependencies = [
@@ -649,6 +660,15 @@ dependencies = [
  "regex",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cleanweb-subscriptions"
+version = "0.1.0"
+dependencies = [
+ "cleanweb-rules",
+ "ipnet",
+ "serde",
 ]
 
 [[package]]

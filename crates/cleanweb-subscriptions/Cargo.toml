@@ -1,0 +1,9 @@
+[package]
+name = "cleanweb-subscriptions"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cleanweb-rules = { path = "../cleanweb-rules" }
+ipnet = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
