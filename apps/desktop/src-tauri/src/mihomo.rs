@@ -1350,7 +1350,7 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
 
 fn safe_search_manifest() -> Result<SafeSearchManifest, String> {
     let manifest: SafeSearchManifest =
-        serde_yaml::from_str(include_str!("../resources/safe-search/defaults.yaml"))
+        serde_yaml::from_str(include_str!("../../../../resources/safe-search/defaults.yaml"))
             .map_err(|value| format!("内置安全搜索规则无效：{value}"))?;
     if manifest.version != 1 || manifest.mappings.is_empty() {
         return Err("内置安全搜索规则版本无效".into());

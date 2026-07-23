@@ -621,13 +621,12 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.22.1",
+ "cleanweb-rules",
  "flate2",
- "idna",
  "ipnet",
  "keyring",
  "libc",
  "rand_core 0.6.4",
- "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -637,9 +636,19 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tempfile",
- "thiserror 2.0.18",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "cleanweb-rules"
+version = "0.1.0"
+dependencies = [
+ "idna",
+ "ipnet",
+ "regex",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

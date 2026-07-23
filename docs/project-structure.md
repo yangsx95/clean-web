@@ -10,8 +10,8 @@ clean-web/
     desktop/       # 桌面端：macOS / Windows / Linux
     android/       # Android 原生原型，Kotlin + Compose + VpnService
     ios/           # iOS 原生端，未来新增
-  crates/          # 跨平台共享 Rust 核心，未来抽取
-  resources/       # 跨平台共享规则、安全搜索等资源，未来抽取
+  crates/          # 跨平台共享 Rust 核心
+  resources/       # 跨平台共享规则、安全搜索等资源
   docs/            # 产品、架构、实现状态和结构文档
   website/         # 官网静态页
   assets/          # 通用品牌资源
@@ -46,7 +46,7 @@ apps/desktop/src-tauri/
     lib.rs                       # Tauri 命令注册和应用状态
     main.rs                      # 桌面进程入口
     storage.rs                   # SQLite 设置、规则、订阅、日志存储
-    rules.rs                     # 规则模型、验证、标准化和优先级
+    rules.rs                     # re-export cleanweb-rules，兼容桌面现有调用
     builtin_rules.rs             # 内置规则源加载
     subscriptions.rs             # 规则和代理订阅解析清洗
     subscription_download.rs     # 订阅下载
@@ -56,8 +56,6 @@ apps/desktop/src-tauri/
     platform.rs                  # 当前平台适配入口，后续可拆 macos/windows/linux
   resources/
     mihomo/                      # 随应用分发的 Mihomo 可执行资源
-    rules/                       # 内置规则补充包
-    safe-search/                 # 安全搜索映射清单
   icons/                         # 桌面和移动图标资源
   tauri.conf.json                # Tauri 应用配置
 ```
@@ -114,14 +112,30 @@ website/
 
 官网是独立静态页，由 GitHub Pages 工作流发布，不参与桌面或 Android App 构建。
 
-## 未来共享模块建议
+## 共享资源
 
-当 Android 的 VPN 数据路径验证通过后，再考虑新增：
+```text
+resources/
+  rules/                         # 内置 CleanWeb 规则补充包
+  safe-search/                   # 安全搜索映射清单
+```
+
+这些资源是跨平台语义资源。桌面端当前通过 `include_str!` 编译期嵌入；移动端接入规则和安全搜索能力时应从这里复用同一份资源。
+
+## 共享模块
+
+当前已抽取：
 
 ```text
 crates/
-  cleanweb-core/                 # 共享设置、分类、动作和日志字段
-  cleanweb-rules/                # 共享规则标准化、验证、去重和优先级
+  cleanweb-rules/                # 共享规则标准化、验证、匹配和优先级
+```
+
+后续当 Android 的 VPN 数据路径验证通过后，再考虑新增：
+
+```text
+crates/
+  cleanweb-core/                 # 未来：共享设置、分类、动作和日志字段
   cleanweb-subscriptions/        # 共享订阅解析和清洗
   cleanweb-policy/               # 共享策略合并和动作判定
   cleanweb-mihomo-config/        # 共享 Mihomo 配置模型和生成
