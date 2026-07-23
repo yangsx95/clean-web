@@ -1199,41 +1199,11 @@ fn append_strict_mode_rules(result: &mut Vec<Value>) {
         "snapchat.com",
         "pinterest.com",
         "pinimg.com",
-        "cam",
         "sex",
         "sexy",
         "porn",
         "adult",
         "xxx",
-        "xyz",
-        "top",
-        "click",
-        "icu",
-        "sbs",
-        "cyou",
-        "monster",
-        "quest",
-        "buzz",
-        "fun",
-        "lol",
-        "rest",
-        "cfd",
-        "win",
-        "men",
-        "date",
-        "party",
-        "review",
-        "trade",
-        "download",
-        "stream",
-        "gdn",
-        "zip",
-        "mov",
-        "tk",
-        "ml",
-        "ga",
-        "gq",
-        "cf",
         "bet",
         "casino",
         "poker",
@@ -1260,7 +1230,6 @@ fn append_strict_mode_rules(result: &mut Vec<Value>) {
         "jav",
         "hentai",
         "rule34",
-        "91",
     ];
     const STRICT_CIDRS: &[&str] = &[
         "91.108.4.0/22",
@@ -1349,9 +1318,10 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
 }
 
 fn safe_search_manifest() -> Result<SafeSearchManifest, String> {
-    let manifest: SafeSearchManifest =
-        serde_yaml::from_str(include_str!("../../../../resources/safe-search/defaults.yaml"))
-            .map_err(|value| format!("内置安全搜索规则无效：{value}"))?;
+    let manifest: SafeSearchManifest = serde_yaml::from_str(include_str!(
+        "../../../../resources/safe-search/defaults.yaml"
+    ))
+    .map_err(|value| format!("内置安全搜索规则无效：{value}"))?;
     if manifest.version != 1 || manifest.mappings.is_empty() {
         return Err("内置安全搜索规则版本无效".into());
     }
@@ -1753,11 +1723,24 @@ mod tests {
         let strict_config = build_config(&state, "secret", true).unwrap();
         assert!(strict_config.contains("DOMAIN-SUFFIX,youtube.com,REJECT"));
         assert!(strict_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
-        assert!(strict_config.contains("DOMAIN-KEYWORD,91,REJECT"));
         assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
         assert!(
             !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
             "strict mode must not block broad random-looking domain labels by default"
+        );
+        for broad_suffix in [
+            "xyz", "top", "click", "icu", "sbs", "cyou", "monster", "quest", "buzz", "fun", "lol",
+            "rest", "cfd", "win", "men", "date", "party", "review", "trade", "download", "stream",
+            "gdn", "zip", "mov", "tk", "ml", "ga", "gq", "cf",
+        ] {
+            assert!(
+                !strict_config.contains(&format!("DOMAIN-SUFFIX,{broad_suffix},REJECT")),
+                "strict mode must not block broad TLDs that commonly host normal infrastructure"
+            );
+        }
+        assert!(
+            !strict_config.contains("DOMAIN-KEYWORD,91,REJECT"),
+            "strict mode must not block short numeric fragments"
         );
     }
 

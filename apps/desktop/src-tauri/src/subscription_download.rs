@@ -398,10 +398,10 @@ fn error(value: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
     use crate::proxy_crypto::{
         decrypt_proxy_payload, is_encrypted_proxy_payload, test_key_env_lock,
     };
+    use base64::Engine;
     use rusqlite::params;
     #[test]
     fn detects_common_rule_formats() {
