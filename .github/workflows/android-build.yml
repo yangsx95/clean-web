@@ -1,0 +1,121 @@
+name: Android Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a GitHub Release after building"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+      release_tag:
+        description: "Release tag to publish, for example v0.1.0-android. Required only when publishing."
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/android-build.yml"
+      - "apps/android/**"
+      - "docs/implementation-status.md"
+  pull_request:
+    paths:
+      - ".github/workflows/android-build.yml"
+      - "apps/android/**"
+      - "docs/implementation-status.md"
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    name: Build Android debug APK
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/android
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Test Android unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
+      - name: Lint Android debug build
+        run: ./gradlew :app:lintDebug
+
+      - name: Build Android debug APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: cleanweb-android-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload Android lint report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cleanweb-android-lint-debug
+          path: apps/android/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-debug-apk
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate release tag
+        run: |
+          if [ -z "${{ inputs.release_tag }}" ]; then
+            echo "release_tag is required when publish_release is true" >&2
+            exit 1
+          fi
+          case "${{ inputs.release_tag }}" in
+            v*) ;;
+            *)
+              echo "release_tag must start with v, for example v0.1.0-android" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: cleanweb-android-debug-apk
+          path: release-artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: release-artifacts/app-debug.apk
+          generate_release_notes: true

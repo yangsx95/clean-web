@@ -19,6 +19,9 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-android-prototype"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 }
 
@@ -38,7 +41,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("com.ooimi.library:tun2socks:1.0.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.yaml:snakeyaml:2.3")
 }

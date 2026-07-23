@@ -23,7 +23,7 @@
 | 内置规则包 | 部分完成 | 共享规则和安全搜索资源已移动到根 `resources/`；有内置规则源、默认启用、不可删除和启动恢复逻辑；缺少许可证、归属、版本、校验和、签名包以及商业再分发审计字段。 |
 | 访问日志 | 部分完成 | 日志模型、保留期、清空和 CSV 导出存在；拦截事件已从 Mihomo 日志流写入 SQLite 并通过 Tauri event 驱动前端刷新；仍需真实设备验证 DNS、连接和规则命中事件覆盖率。 |
 | 代理凭据加密 | 部分完成 | 已有 payload 加密和迁移测试；Windows DPAPI、macOS Keychain 的发布级路径仍需验收。 |
-| Android 原生版本 | 未完成 | 已新增 `apps/android/` Kotlin/Compose 工程骨架和 `VpnService` 入口；尚未接入 Mihomo、真实 TUN 数据路径、规则编译、Keystore、日志和真实设备验收。 |
+| Android 原生版本 | 部分完成 | `apps/android/` 已有 Kotlin/Compose 管理壳、保护/规则/代理/日志/设置页面、本地状态持久化、`VpnService` 权限流、前台服务、内置 Mihomo Android arm64-v8 二进制和 `tun2socks` TUN fd 桥接；启动后生成受控 Mihomo 配置并将设备 IPv4 默认路由转入 Mihomo，且排除 CleanWeb 自身 UID 以避免 Mihomo 出站回环。配置生成已有 JVM YAML 解析测试，`assembleDebug` 和 `lintDebug` 已通过。尚未完成非 arm64 打包、桌面等价规则编译、Keystore、连接级日志采集、安全搜索 DNS 真机验收和真实设备流量矩阵验收。 |
 | 发布许可证交付 | 未完成 | Mihomo GPLv3 边界已在架构中声明，但安装包 notices、对应源码和第三方规则许可证流程尚未完成。 |
 
 ## 建议实施顺序
