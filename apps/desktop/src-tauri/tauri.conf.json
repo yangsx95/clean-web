@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "app.cleanweb.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm --prefix ../.. run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm --prefix ../.. run build",
     "frontendDist": "../dist"
   },
   "app": { "windows": [{ "title": "CleanWeb", "width": 1180, "height": 760, "minWidth": 980, "minHeight": 680, "dragDropEnabled": false }] },

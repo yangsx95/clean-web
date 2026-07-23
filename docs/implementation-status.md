@@ -22,6 +22,7 @@
 | 内置规则包 | 部分完成 | 有内置规则源、默认启用、不可删除和启动恢复逻辑；缺少许可证、归属、版本、校验和、签名包以及商业再分发审计字段。 |
 | 访问日志 | 部分完成 | 日志模型、保留期、清空和 CSV 导出存在；拦截事件已从 Mihomo 日志流写入 SQLite 并通过 Tauri event 驱动前端刷新；仍需真实设备验证 DNS、连接和规则命中事件覆盖率。 |
 | 代理凭据加密 | 部分完成 | 已有 payload 加密和迁移测试；Windows DPAPI、macOS Keychain 的发布级路径仍需验收。 |
+| Android 原生版本 | 未完成 | 已新增 `apps/android/` Kotlin/Compose 工程骨架和 `VpnService` 入口；尚未接入 Mihomo、真实 TUN 数据路径、规则编译、Keystore、日志和真实设备验收。 |
 | 发布许可证交付 | 未完成 | Mihomo GPLv3 边界已在架构中声明，但安装包 notices、对应源码和第三方规则许可证流程尚未完成。 |
 
 ## 建议实施顺序

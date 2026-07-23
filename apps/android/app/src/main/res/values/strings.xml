@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CleanWeb</string>
+    <string name="vpn_notification_channel">CleanWeb protection</string>
+    <string name="vpn_notification_title">CleanWeb protection is active</string>
+    <string name="vpn_notification_text">Device traffic is routed through the local CleanWeb VPN.</string>
+</resources>

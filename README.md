@@ -7,7 +7,7 @@ CleanWeb is a local-first desktop app for content filtering, safe-search enforce
 - Website: [https://yangsx95.github.io/clean-web/](https://yangsx95.github.io/clean-web/)
 - Download: [GitHub Releases](https://github.com/yangsx95/clean-web/releases/latest)
 - Current version: `0.1.0` beta
-- Platforms: macOS 13+ first, Windows 10 22H2 / Windows 11 in validation
+- Platforms: macOS 13+ first, Windows 10 22H2 / Windows 11 in validation, Android 10+ prototype in [apps/android](apps/android)
 
 > Beta notice: current builds are for testing and real-network validation. macOS signing/notarization, Windows service hardening, complete license notices, and broader device testing are still in progress.
 
@@ -39,6 +39,7 @@ For detailed product and architecture boundaries, see:
 - [Product spec](docs/product-spec.md)
 - [Architecture](docs/architecture.md)
 - [Implementation status](docs/implementation-status.md)
+- [Project structure](docs/project-structure.md)
 
 ## For Developers
 
@@ -47,6 +48,7 @@ CleanWeb is built with:
 - Tauri 2
 - React 19, TypeScript, Vite
 - Rust
+- Kotlin, Jetpack Compose, and Android `VpnService` for the Android prototype
 - Mihomo as a separate executable resource
 - SQLite through the Rust backend
 - Vitest and Rust tests
@@ -68,8 +70,8 @@ Run checks:
 ```bash
 npm test
 npm run build
-cd src-tauri && cargo test
-cd src-tauri && cargo clippy --all-targets -- -D warnings
+cd apps/desktop/src-tauri && cargo test
+cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 
 ## Build

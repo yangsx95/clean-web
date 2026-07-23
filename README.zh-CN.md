@@ -7,7 +7,7 @@ CleanWeb 是一个本地优先的桌面网络净化工具，用于内容过滤�
 - 官网：[https://yangsx95.github.io/clean-web/](https://yangsx95.github.io/clean-web/)
 - 下载：[GitHub Releases](https://github.com/yangsx95/clean-web/releases/latest)
 - 当前版本：`0.1.0` 测试版
-- 平台：macOS 13+ 优先，Windows 10 22H2 / Windows 11 验证中
+- 平台：macOS 13+ 优先，Windows 10 22H2 / Windows 11 验证中，Android 10+ 原型位于 [apps/android](apps/android)
 
 > 测试版说明：当前构建适合功能测试和真实网络场景验证。macOS 签名与公证、Windows 服务加固、完整许可证声明和更多设备验证仍在进行中。
 
@@ -39,6 +39,7 @@ CleanWeb V1 可观察域名、DNS 查询、目标 IP、IPv4/IPv6 CIDR 和 Mihomo
 - [产品规格](docs/product-spec.md)
 - [架构说明](docs/architecture.md)
 - [当前实现状态](docs/implementation-status.md)
+- [项目结构](docs/project-structure.md)
 
 ## 开发者
 
@@ -47,6 +48,7 @@ CleanWeb 使用：
 - Tauri 2
 - React 19、TypeScript、Vite
 - Rust
+- Android 原型使用 Kotlin、Jetpack Compose 和 Android `VpnService`
 - Mihomo 独立可执行资源
 - Rust 后端管理 SQLite
 - Vitest 和 Rust tests
@@ -68,8 +70,8 @@ npm run tauri dev
 ```bash
 npm test
 npm run build
-cd src-tauri && cargo test
-cd src-tauri && cargo clippy --all-targets -- -D warnings
+cd apps/desktop/src-tauri && cargo test
+cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 
 ## 构建

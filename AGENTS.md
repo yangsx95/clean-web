@@ -2,7 +2,7 @@
 
 ## Project Context
 
-CleanWeb is a Tauri + React + Rust desktop app for parental network filtering, proxy subscription import, local policy enforcement, access logs, and safe-search enforcement.
+CleanWeb is a multi-platform network filtering project. The desktop app uses Tauri + React + Rust for parental network filtering, proxy subscription import, local policy enforcement, access logs, and safe-search enforcement. Android uses a native Kotlin + Jetpack Compose + `VpnService` prototype. Future iOS and Linux support should stay within the platform boundaries documented in `docs/project-structure.md` and `docs/platforms/`.
 
 Before changing behavior, read the relevant product and architecture boundaries in:
 
@@ -38,8 +38,8 @@ Use the narrowest meaningful checks first, then broader checks before finishing:
 ```bash
 npm test
 npm run build
-cd src-tauri && cargo test
-cd src-tauri && cargo clippy --all-targets -- -D warnings
+cd apps/desktop/src-tauri && cargo test
+cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 
 When changing UI layout, verify the running app visually at a relevant viewport size.
