@@ -22,6 +22,7 @@ data class RuleEntry(
     val pattern: String,
     val category: RuleCategory,
     val action: RuleAction,
+    val matchKind: RuleMatchKind = RuleMatchKind.Suffix,
     val enabled: Boolean = true
 )
 
@@ -29,12 +30,21 @@ enum class RuleCategory(val label: String) {
     Core("核心"),
     AdsTracking("广告"),
     CustomBlock("拦截"),
-    CustomAllow("放行")
+    CustomAllow("放行"),
+    Routing("路由")
 }
 
 enum class RuleAction(val label: String) {
     Block("拦截"),
-    Allow("放行")
+    Allow("直连"),
+    Proxy("走代理")
+}
+
+enum class RuleMatchKind(val label: String) {
+    Suffix("域名及子域名"),
+    Exact("精确域名"),
+    Keyword("关键词"),
+    Cidr("IP/CIDR")
 }
 
 data class ProxySubscription(

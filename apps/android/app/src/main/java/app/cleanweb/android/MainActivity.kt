@@ -14,11 +14,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import app.cleanweb.android.data.CleanWebRepository
 import app.cleanweb.android.model.AccessLogEntry
+import app.cleanweb.android.model.CleanWebState
 import app.cleanweb.android.model.LogDecision
 import app.cleanweb.android.model.ProxySubscription
 import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
+import app.cleanweb.android.model.RuleMatchKind
 import app.cleanweb.android.ui.CleanWebApp
 import app.cleanweb.android.ui.theme.CleanWebTheme
 import app.cleanweb.android.vpn.CleanWebVpnService
@@ -39,6 +41,15 @@ class MainActivity : ComponentActivity() {
                 var appState by remember { mutableStateOf(repository.load()) }
                 var status by remember { mutableStateOf(VpnStatus.Idle) }
                 var vpnError by remember { mutableStateOf<String?>(null) }
+                val updateState = { nextState: CleanWebState, restartVpn: Boolean ->
+                    appState = nextState
+                    repository.save(nextState)
+                    if (restartVpn && (status == VpnStatus.Running || status == VpnStatus.Starting)) {
+                        CleanWebVpnService.restart(this@MainActivity)
+                        status = VpnStatus.Starting
+                        vpnError = null
+                    }
+                }
                 val vpnPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.StartActivityForResult()
                 ) { result ->
@@ -109,65 +120,87 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     onSettingsChange = { settings ->
-                        appState = appState.copy(settings = settings)
+                        updateState(appState.copy(settings = settings), true)
                     },
-                    onAddRule = { pattern, category, action ->
-                        appState = appState.copy(
-                            rules = listOf(
-                                RuleEntry(
-                                    id = UUID.randomUUID().toString(),
-                                    pattern = pattern,
-                                    category = category,
-                                    action = action
-                                )
-                            ) + appState.rules
+                    onAddRule = { pattern, category, action, matchKind ->
+                        updateState(
+                            appState.copy(
+                                rules = listOf(
+                                    RuleEntry(
+                                        id = UUID.randomUUID().toString(),
+                                        pattern = pattern,
+                                        category = category,
+                                        action = action,
+                                        matchKind = matchKind
+                                    )
+                                ) + appState.rules
+                            ),
+                            true
                         )
                     },
                     onToggleRule = { ruleId ->
-                        appState = appState.copy(
-                            rules = appState.rules.map { rule ->
-                                if (rule.id == ruleId) rule.copy(enabled = !rule.enabled) else rule
-                            }
+                        updateState(
+                            appState.copy(
+                                rules = appState.rules.map { rule ->
+                                    if (rule.id == ruleId) rule.copy(enabled = !rule.enabled) else rule
+                                }
+                            ),
+                            true
                         )
                     },
                     onRemoveRule = { ruleId ->
-                        appState = appState.copy(rules = appState.rules.filterNot { it.id == ruleId })
+                        updateState(
+                            appState.copy(rules = appState.rules.filterNot { it.id == ruleId }),
+                            true
+                        )
                     },
                     onAddProxySubscription = { name, url ->
-                        appState = appState.copy(
-                            proxySubscriptions = listOf(
-                                ProxySubscription(
-                                    id = UUID.randomUUID().toString(),
-                                    name = name,
-                                    url = url
-                                )
-                            ) + appState.proxySubscriptions
+                        updateState(
+                            appState.copy(
+                                proxySubscriptions = listOf(
+                                    ProxySubscription(
+                                        id = UUID.randomUUID().toString(),
+                                        name = name,
+                                        url = url
+                                    )
+                                ) + appState.proxySubscriptions
+                            ),
+                            true
                         )
                     },
                     onToggleProxySubscription = { subscriptionId ->
-                        appState = appState.copy(
-                            proxySubscriptions = appState.proxySubscriptions.map { subscription ->
-                                if (subscription.id == subscriptionId) {
-                                    subscription.copy(enabled = !subscription.enabled)
-                                } else {
-                                    subscription
+                        updateState(
+                            appState.copy(
+                                proxySubscriptions = appState.proxySubscriptions.map { subscription ->
+                                    if (subscription.id == subscriptionId) {
+                                        subscription.copy(enabled = !subscription.enabled)
+                                    } else {
+                                        subscription
+                                    }
                                 }
-                            }
+                            ),
+                            true
                         )
                     },
                     onRemoveProxySubscription = { subscriptionId ->
-                        appState = appState.copy(
-                            proxySubscriptions = appState.proxySubscriptions.filterNot {
-                                it.id == subscriptionId
-                            }
+                        updateState(
+                            appState.copy(
+                                proxySubscriptions = appState.proxySubscriptions.filterNot {
+                                    it.id == subscriptionId
+                                }
+                            ),
+                            true
                         )
                     },
                     onClearLogs = {
-                        appState = appState.copy(logs = emptyList())
+                        updateState(appState.copy(logs = emptyList()), false)
                     },
                     onAcknowledgeAlwaysOnGuidance = {
-                        appState = appState.copy(
-                            settings = appState.settings.copy(alwaysOnVpnGuidanceSeen = true)
+                        updateState(
+                            appState.copy(
+                                settings = appState.settings.copy(alwaysOnVpnGuidanceSeen = true)
+                            ),
+                            false
                         )
                     }
                 )

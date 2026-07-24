@@ -1,9 +1,11 @@
 # iOS Platform
 
-iOS is planned under:
+iOS product UI should share:
 
 ```text
-apps/ios/
+apps/mobile/
 ```
 
-The expected implementation is a native iOS app plus a Network Extension Packet Tunnel Provider. Work is gated on Apple entitlement approval, App Store policy review, Mihomo packaging feasibility inside the extension, resource limits, and license review.
+The expected platform execution is a native Network Extension Packet Tunnel Provider exposed to the shared mobile UI through a Tauri iOS plugin.
+
+The `apps/ios/` directory remains a planning placeholder until Apple entitlement approval, App Store VPN and parental-control policy review, Mihomo packaging feasibility inside the extension, resource limits, and license review are confirmed.

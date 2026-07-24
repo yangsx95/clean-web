@@ -1,14 +1,14 @@
-# CleanWeb Android
+# CleanWeb Android VPN Prototype
 
-Android 10+ native prototype for CleanWeb.
+Android 10+ native VPN prototype for CleanWeb.
 
-This project intentionally lives beside the Tauri desktop app under `apps/` instead of inside `apps/desktop/src-tauri`. Android owns the platform VPN lifecycle through `VpnService`; shared CleanWeb policy formats and rule behavior should be moved into reusable modules only after the Android data path is validated.
+This project is no longer the long-term Android product UI. The product UI should move to `apps/mobile` with Tauri mobile and shared React/Rust code. This directory remains the Android `VpnService` data-path prototype and the migration source for a future Tauri Android VPN plugin.
 
 ## Scope
 
 Current scaffold:
 
-- Kotlin + Jetpack Compose management shell.
+- Kotlin + Jetpack Compose transition management shell.
 - Protection, rules, proxy subscriptions, logs, and settings screens.
 - Local state persistence through Android `SharedPreferences`.
 - Android `VpnService` declaration.
@@ -23,8 +23,9 @@ Current scaffold:
 
 Not implemented yet:
 
+- Tauri Android plugin boundary.
 - Non-arm64 Android ABI packaging.
-- Desktop-equivalent rule compiler and subscription import on Android.
+- Full shared Rust rule compiler and subscription import on Android.
 - Connection-level access log collection from Mihomo.
 - Android Keystore encryption.
 - Always-on VPN / lockdown settings deep links.
@@ -71,4 +72,5 @@ If the Gradle wrapper has not been generated yet, open this directory in Android
 2. Wire Mihomo controller polling into Android access logs and proxy node status.
 3. Replace metadata-only proxy imports with cleaned subscription import or locked proxy providers.
 4. Validate or replace the Android DNS interception strategy for safe-search parity, then add Android Keystore encryption.
-5. Decide whether Rust rule and subscription modules should be reused through JNI/UniFFI or mirrored in Kotlin for the first Android MVP.
+5. Move the validated Android VPN lifecycle into a Tauri Android plugin.
+6. Use `apps/mobile` for Android product UI instead of expanding this Compose prototype.

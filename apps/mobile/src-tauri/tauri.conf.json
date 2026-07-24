@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CleanWeb",
+  "version": "0.1.0",
+  "identifier": "app.cleanweb.mobile",
+  "build": {
+    "beforeDevCommand": "npm run dev:mobile",
+    "beforeBuildCommand": "npm run build:mobile",
+    "devUrl": "http://127.0.0.1:1421",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CleanWeb",
+        "width": 420,
+        "height": 860,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../../desktop/src-tauri/icons/32x32.png",
+      "../../desktop/src-tauri/icons/128x128.png",
+      "../../desktop/src-tauri/icons/128x128@2x.png",
+      "../../desktop/src-tauri/icons/icon.icns",
+      "../../desktop/src-tauri/icons/icon.ico"
+    ]
+  }
+}

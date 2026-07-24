@@ -9,6 +9,7 @@ import app.cleanweb.android.model.ProxySubscription
 import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
+import app.cleanweb.android.model.RuleMatchKind
 import app.cleanweb.android.model.defaultRules
 import org.json.JSONArray
 import org.json.JSONObject
@@ -75,6 +76,10 @@ class CleanWebRepository(context: Context) {
                     pattern = value.getString("pattern"),
                     category = enumValueOf(value.getString("category")),
                     action = enumValueOf(value.getString("action")),
+                    matchKind = value.takeIf { it.has("matchKind") }
+                        ?.getString("matchKind")
+                        ?.let { raw -> runCatching { enumValueOf<RuleMatchKind>(raw) }.getOrNull() }
+                        ?: inferMatchKind(value.getString("pattern")),
                     enabled = value.optBoolean("enabled", true)
                 )
             }.ifEmpty { defaultRules }
@@ -133,6 +138,7 @@ class CleanWebRepository(context: Context) {
                         .put("pattern", rule.pattern)
                         .put("category", rule.category.name)
                         .put("action", rule.action.name)
+                        .put("matchKind", rule.matchKind.name)
                         .put("enabled", rule.enabled)
                 )
             }
@@ -176,4 +182,8 @@ class CleanWebRepository(context: Context) {
         private const val KEY_PROXY_SUBSCRIPTIONS = "proxy_subscriptions"
         private const val KEY_LOGS = "logs"
     }
+}
+
+private fun inferMatchKind(pattern: String): RuleMatchKind {
+    return if (pattern.contains("/")) RuleMatchKind.Cidr else RuleMatchKind.Suffix
 }

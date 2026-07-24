@@ -3,6 +3,8 @@ package app.cleanweb.android.vpn
 import app.cleanweb.android.model.CleanWebState
 import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
+import app.cleanweb.android.model.RuleEntry
+import app.cleanweb.android.model.RuleMatchKind
 import java.net.URI
 
 internal object MihomoAndroidConfig {
@@ -130,8 +132,6 @@ internal object MihomoAndroidConfig {
         appendLine("proxy-groups:")
         appendLine("  - name: $PROXY_GROUP_NAME")
         appendLine("    type: select")
-        appendLine("    proxies:")
-        appendLine("      - DIRECT")
         appendLine("    use:")
         providers.forEach { (name, _) -> appendLine("      - $name") }
     }
@@ -140,15 +140,15 @@ internal object MihomoAndroidConfig {
         appendLine("rules:")
         state.rules
             .filter { it.enabled && it.action == RuleAction.Block && it.category == RuleCategory.CustomBlock }
-            .mapNotNull { mihomoRule(it.pattern, "REJECT") }
+            .mapNotNull { mihomoRule(it, "REJECT") }
             .forEach { appendLine("  - $it") }
         state.rules
             .filter { it.enabled && it.action == RuleAction.Allow }
-            .mapNotNull { mihomoRule(it.pattern, "DIRECT") }
+            .mapNotNull { mihomoRule(it, "DIRECT") }
             .forEach { appendLine("  - $it") }
         state.rules
             .filter { it.enabled && it.action == RuleAction.Block && it.category == RuleCategory.Core }
-            .mapNotNull { mihomoRule(it.pattern, "REJECT") }
+            .mapNotNull { mihomoRule(it, "REJECT") }
             .forEach { appendLine("  - $it") }
         if (state.settings.strictModeEnabled) {
             strictModeSuffixes.forEach { suffix -> appendLine("  - DOMAIN-SUFFIX,$suffix,REJECT") }
@@ -156,14 +156,26 @@ internal object MihomoAndroidConfig {
         if (state.settings.adsTrackingEnabled) {
             state.rules
                 .filter { it.enabled && it.action == RuleAction.Block && it.category == RuleCategory.AdsTracking }
-                .mapNotNull { mihomoRule(it.pattern, "REJECT") }
+                .mapNotNull { mihomoRule(it, "REJECT") }
                 .forEach { appendLine("  - $it") }
         }
+        state.rules
+            .filter { it.enabled && it.action == RuleAction.Proxy }
+            .mapNotNull { mihomoRule(it, finalPolicy) }
+            .forEach { appendLine("  - $it") }
         localDirectRules.forEach { appendLine("  - $it") }
         appendLine("  - MATCH,$finalPolicy")
     }
 
-    private fun mihomoRule(pattern: String, policy: String): String? {
+    private fun mihomoRule(rule: RuleEntry, policy: String): String? {
+        return mihomoRule(rule.pattern, policy, rule.matchKind)
+    }
+
+    private fun mihomoRule(
+        pattern: String,
+        policy: String,
+        matchKind: RuleMatchKind = RuleMatchKind.Suffix
+    ): String? {
         val normalized = pattern.trim().trimStart('.').trimEnd('.').lowercase()
         if (normalized.isBlank()) {
             return null
@@ -171,14 +183,26 @@ internal object MihomoAndroidConfig {
         if (normalized.contains(",")) {
             return null
         }
-        if (normalized.contains("/")) {
-            val kind = if (normalized.contains(":")) "IP-CIDR6" else "IP-CIDR"
-            return "$kind,$normalized,$policy,no-resolve"
-        }
         if (normalized.any { it.isWhitespace() }) {
             return null
         }
-        return "DOMAIN-SUFFIX,$normalized,$policy"
+        return when (matchKind) {
+            RuleMatchKind.Cidr -> {
+                if (!normalized.contains("/")) return null
+                val kind = if (normalized.contains(":")) "IP-CIDR6" else "IP-CIDR"
+                "$kind,$normalized,$policy,no-resolve"
+            }
+            RuleMatchKind.Exact -> "DOMAIN,$normalized,$policy"
+            RuleMatchKind.Keyword -> "DOMAIN-KEYWORD,$normalized,$policy"
+            RuleMatchKind.Suffix -> {
+                if (normalized.contains("/")) {
+                    val kind = if (normalized.contains(":")) "IP-CIDR6" else "IP-CIDR"
+                    "$kind,$normalized,$policy,no-resolve"
+                } else {
+                    "DOMAIN-SUFFIX,$normalized,$policy"
+                }
+            }
+        }
     }
 
     private fun yamlQuote(value: String): String {

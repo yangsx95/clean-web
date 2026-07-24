@@ -6,7 +6,9 @@ import app.cleanweb.android.model.ProxySubscription
 import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
+import app.cleanweb.android.model.RuleMatchKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.yaml.snakeyaml.Yaml
@@ -42,6 +44,41 @@ class MihomoAndroidConfigTest {
     }
 
     @Test
+    fun routeRulesSupportDesktopEquivalentActionsAndMatchKinds() {
+        val config = MihomoAndroidConfig.build(
+            CleanWebState(
+                settings = ProtectionSettings(proxyEnabled = true),
+                proxySubscriptions = listOf(
+                    ProxySubscription(
+                        id = "12345678-android",
+                        name = "Test",
+                        url = "https://example.com/sub.yaml"
+                    )
+                ),
+                rules = listOf(
+                    RuleEntry(
+                        id = "exact-direct",
+                        pattern = "api.example.com",
+                        category = RuleCategory.Routing,
+                        action = RuleAction.Allow,
+                        matchKind = RuleMatchKind.Exact
+                    ),
+                    RuleEntry(
+                        id = "keyword-proxy",
+                        pattern = "github",
+                        category = RuleCategory.Routing,
+                        action = RuleAction.Proxy,
+                        matchKind = RuleMatchKind.Keyword
+                    )
+                )
+            )
+        )
+
+        assertTrue(config.contains("  - DOMAIN,api.example.com,DIRECT"))
+        assertTrue(config.contains("  - DOMAIN-KEYWORD,github,CLEANWEB-PROXY"))
+    }
+
+    @Test
     fun proxyDisabledFallsBackToDirect() {
         val config = MihomoAndroidConfig.build(
             CleanWebState(
@@ -59,6 +96,27 @@ class MihomoAndroidConfigTest {
         assertTrue(config.contains("proxy-providers: {}"))
         assertTrue(config.contains("proxy-groups: []"))
         assertTrue(config.contains("  - MATCH,DIRECT"))
+    }
+
+    @Test
+    fun proxyEnabledDoesNotDefaultToDirect() {
+        val config = MihomoAndroidConfig.build(
+            CleanWebState(
+                settings = ProtectionSettings(proxyEnabled = true),
+                proxySubscriptions = listOf(
+                    ProxySubscription(
+                        id = "12345678-android",
+                        name = "Test",
+                        url = "https://example.com/sub.yaml"
+                    )
+                )
+            )
+        )
+
+        val proxyGroup = config.substringAfter("proxy-groups:").substringBefore("rules:")
+
+        assertFalse(proxyGroup.contains("      - DIRECT"))
+        assertTrue(config.contains("  - MATCH,CLEANWEB-PROXY"))
     }
 
     @Test

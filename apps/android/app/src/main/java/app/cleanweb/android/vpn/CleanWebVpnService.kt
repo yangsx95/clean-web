@@ -26,11 +26,20 @@ class CleanWebVpnService : VpnService() {
     private var tunInterface: ParcelFileDescriptor? = null
     private var mihomoRunner: MihomoAndroidRunner? = null
     private val running = AtomicBoolean(false)
+    private val stopping = AtomicBoolean(false)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> stopVpn()
+            ACTION_RESTART -> {
+                stopVpn(updateStatus = false, stopService = false)
+                stopping.set(false)
+                currentStatus = VpnStatus.Starting
+                lastError = null
+                startVpn()
+            }
             else -> {
+                stopping.set(false)
                 currentStatus = VpnStatus.Starting
                 lastError = null
                 startVpn()
@@ -97,9 +106,24 @@ class CleanWebVpnService : VpnService() {
             return
         }
 
-        tunInterface?.let { descriptor ->
+        val establishedInterface = tunInterface
+        if (establishedInterface == null) {
+            val message = "安卓 VPN 接口创建失败。"
+            repository.appendLog(
+                accessLog(
+                    target = "安卓 VPN",
+                    decision = LogDecision.Warning,
+                    reason = message
+                )
+            )
+            failVpn(message)
+            return
+        }
+
+        establishedInterface.let { descriptor ->
             running.set(true)
             val fd = descriptor.detachFd()
+            tunInterface = null
             try {
                 startTun2Socks(fd)
                 isRunning = true
@@ -124,47 +148,48 @@ class CleanWebVpnService : VpnService() {
                 failVpn(message)
             }
         }
-        if (tunInterface == null) {
-            val message = "安卓 VPN 接口创建失败。"
-            repository.appendLog(
-                accessLog(
-                    target = "安卓 VPN",
-                    decision = LogDecision.Warning,
-                    reason = message
-                )
-            )
-            failVpn(message)
-        }
     }
 
     private fun failVpn(message: String) {
-        running.set(false)
-        runCatching { Engine.stop() }
-        mihomoRunner?.stop()
-        mihomoRunner = null
-        tunInterface?.close()
-        tunInterface = null
+        if (!stopping.compareAndSet(false, true)) {
+            return
+        }
+        cleanupVpnRuntime()
         isRunning = false
         currentStatus = VpnStatus.Failed
         lastError = message
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching { stopSelf() }
     }
 
-    private fun stopVpn(updateStatus: Boolean = true) {
-        running.set(false)
-        runCatching { Engine.stop() }
-        mihomoRunner?.stop()
-        mihomoRunner = null
-        tunInterface?.close()
-        tunInterface = null
+    private fun stopVpn(updateStatus: Boolean = true, stopService: Boolean = true) {
+        if (!stopping.compareAndSet(false, true)) {
+            if (stopService) {
+                runCatching { stopSelf() }
+            }
+            return
+        }
+        cleanupVpnRuntime()
         isRunning = false
         if (updateStatus) {
             currentStatus = VpnStatus.Idle
             lastError = null
         }
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        if (stopService) {
+            runCatching { stopSelf() }
+        } else {
+            stopping.set(false)
+        }
+    }
+
+    private fun cleanupVpnRuntime() {
+        running.set(false)
+        runCatching { Engine.stop() }
+        runCatching { mihomoRunner?.stop() }
+        mihomoRunner = null
+        runCatching { tunInterface?.close() }
+        tunInterface = null
     }
 
     private fun startTun2Socks(fd: Int) {
@@ -223,6 +248,7 @@ class CleanWebVpnService : VpnService() {
 
     companion object {
         private const val ACTION_STOP = "app.cleanweb.android.vpn.STOP"
+        private const val ACTION_RESTART = "app.cleanweb.android.vpn.RESTART"
         private const val CHANNEL_ID = "cleanweb_vpn"
         private const val NOTIFICATION_ID = 1001
         private const val VPN_MTU = 1500
@@ -254,6 +280,15 @@ class CleanWebVpnService : VpnService() {
             context.startService(
                 Intent(context, CleanWebVpnService::class.java).setAction(ACTION_STOP)
             )
+        }
+
+        fun restart(context: Context) {
+            val intent = Intent(context, CleanWebVpnService::class.java).setAction(ACTION_RESTART)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 }

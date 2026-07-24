@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.cleanweb.android.model.AccessLogEntry
 import app.cleanweb.android.model.CleanWebState
@@ -44,6 +45,7 @@ import app.cleanweb.android.model.ProxySubscription
 import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
+import app.cleanweb.android.model.RuleMatchKind
 import app.cleanweb.android.vpn.VpnStatus
 
 @Composable
@@ -54,7 +56,7 @@ fun CleanWebApp(
     onStartProtection: () -> Unit,
     onStopProtection: () -> Unit,
     onSettingsChange: (ProtectionSettings) -> Unit,
-    onAddRule: (String, RuleCategory, RuleAction) -> Unit,
+    onAddRule: (String, RuleCategory, RuleAction, RuleMatchKind) -> Unit,
     onToggleRule: (String) -> Unit,
     onRemoveRule: (String) -> Unit,
     onAddProxySubscription: (String, String) -> Unit,
@@ -216,7 +218,9 @@ private fun ProtectionPanel(
                         VpnStatus.Idle -> "VPN 服务已停止。"
                     },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (status == VpnStatus.Failed) 5 else Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             Switch(
@@ -279,9 +283,10 @@ private fun ProtectionPanel(
 }
 
 @Composable
-private fun RulesEditor(onAddRule: (String, RuleCategory, RuleAction) -> Unit) {
+private fun RulesEditor(onAddRule: (String, RuleCategory, RuleAction, RuleMatchKind) -> Unit) {
     var pattern by remember { mutableStateOf("") }
-    var allowRule by remember { mutableStateOf(false) }
+    var action by remember { mutableStateOf(RuleAction.Block) }
+    var matchKind by remember { mutableStateOf(RuleMatchKind.Suffix) }
 
     SectionCard {
         Text("添加规则", style = MaterialTheme.typography.titleMedium)
@@ -293,22 +298,38 @@ private fun RulesEditor(onAddRule: (String, RuleCategory, RuleAction) -> Unit) {
             singleLine = true,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
         )
-        ToggleRow(
-            title = "放行规则",
-            subtitle = "用于明确的管理者白名单条目。",
-            checked = allowRule,
-            onCheckedChange = { allowRule = it }
-        )
+        Text("动作", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RuleAction.entries.forEach { item ->
+                OutlinedButton(onClick = { action = item }) {
+                    Text(if (action == item) "✓ ${item.label}" else item.label)
+                }
+            }
+        }
+        Text("匹配方式", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RuleMatchKind.entries.forEach { item ->
+                OutlinedButton(onClick = { matchKind = item }) {
+                    Text(if (matchKind == item) "✓ ${item.label}" else item.label)
+                }
+            }
+        }
         Button(
             enabled = pattern.isNotBlank(),
             onClick = {
                 onAddRule(
                     pattern,
-                    if (allowRule) RuleCategory.CustomAllow else RuleCategory.CustomBlock,
-                    if (allowRule) RuleAction.Allow else RuleAction.Block
+                    when (action) {
+                        RuleAction.Block -> RuleCategory.CustomBlock
+                        RuleAction.Allow -> RuleCategory.CustomAllow
+                        RuleAction.Proxy -> RuleCategory.Routing
+                    },
+                    action,
+                    matchKind
                 )
                 pattern = ""
-                allowRule = false
+                action = RuleAction.Block
+                matchKind = RuleMatchKind.Suffix
             }
         ) {
             Text("添加")
@@ -333,6 +354,11 @@ private fun RuleRow(
                 Text(
                     "${rule.category.label} / ${rule.action.label}",
                     style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    rule.matchKind.label,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }

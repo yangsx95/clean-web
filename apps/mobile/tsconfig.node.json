@@ -1,0 +1,4 @@
+{
+  "extends": "../desktop/tsconfig.node.json",
+  "include": ["vite.config.ts"]
+}

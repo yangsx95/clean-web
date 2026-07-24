@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config apps/desktop/vite.config.ts --host 127.0.0.1 --port 1420",
+    "dev:mobile": "vite --config apps/mobile/vite.config.ts --host 127.0.0.1 --port 1421",
     "build": "tsc -p apps/desktop/tsconfig.json && vite build --config apps/desktop/vite.config.ts",
+    "build:mobile": "tsc -p apps/mobile/tsconfig.json && vite build --config apps/mobile/vite.config.ts",
     "test": "vitest run",
-    "tauri": "cd apps/desktop && tauri"
+    "tauri": "cd apps/desktop && tauri",
+    "tauri:mobile": "cd apps/mobile && tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
