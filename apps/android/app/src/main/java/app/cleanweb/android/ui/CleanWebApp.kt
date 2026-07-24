@@ -60,6 +60,7 @@ fun CleanWebApp(
     onToggleRule: (String) -> Unit,
     onRemoveRule: (String) -> Unit,
     onAddProxySubscription: (String, String) -> Unit,
+    onImportProxyConfigFile: () -> Unit,
     onToggleProxySubscription: (String) -> Unit,
     onRemoveProxySubscription: (String) -> Unit,
     onClearLogs: () -> Unit,
@@ -126,7 +127,10 @@ fun CleanWebApp(
 
                     AppTab.Proxy -> {
                         item {
-                            ProxyEditor(onAddProxySubscription)
+                            ProxyEditor(
+                                onAddProxySubscription = onAddProxySubscription,
+                                onImportProxyConfigFile = onImportProxyConfigFile
+                            )
                         }
                         items(appState.proxySubscriptions, key = { it.id }) { subscription ->
                             ProxyRow(
@@ -376,7 +380,10 @@ private fun RuleRow(
 }
 
 @Composable
-private fun ProxyEditor(onAddProxySubscription: (String, String) -> Unit) {
+private fun ProxyEditor(
+    onAddProxySubscription: (String, String) -> Unit,
+    onImportProxyConfigFile: () -> Unit
+) {
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
 
@@ -405,10 +412,13 @@ private fun ProxyEditor(onAddProxySubscription: (String, String) -> Unit) {
                 url = ""
             }
         ) {
-            Text("导入")
+            Text("导入订阅")
+        }
+        OutlinedButton(onClick = onImportProxyConfigFile) {
+            Text("导入配置文件")
         }
         Text(
-            text = "代理订阅会由本机安卓 Mihomo 数据通道处理。",
+            text = "代理订阅和本地配置文件都会由安卓 Mihomo 数据通道处理；配置文件只保留可用代理节点。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -430,7 +440,7 @@ private fun ProxyRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(subscription.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    subscription.url,
+                    if (subscription.localProviderFileName == null) subscription.url else "本地配置文件 · ${subscription.importedNodeCount} 个节点",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

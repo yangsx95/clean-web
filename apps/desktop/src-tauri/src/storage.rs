@@ -88,6 +88,16 @@ pub struct NewSubscription {
     pub update_interval_hours: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSubscription {
+    pub name: String,
+    pub url: String,
+    pub format: Option<String>,
+    pub category: Option<String>,
+    pub update_interval_hours: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecommendedSource {
@@ -749,6 +759,24 @@ fn list_subscriptions_inner(
     Ok(records)
 }
 
+fn validate_subscription_fields(
+    name: &str,
+    url: &str,
+    update_interval_hours: Option<i64>,
+) -> Result<(), String> {
+    if name.trim().is_empty() || name.chars().count() > 80 {
+        return Err("订阅名称无效".into());
+    }
+    let url = url.parse::<tauri::Url>().map_err(|_| "订阅地址无效")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("订阅仅支持 HTTP 或 HTTPS 地址".into());
+    }
+    if !matches!(update_interval_hours, None | Some(6 | 12 | 24 | 168)) {
+        return Err("更新周期无效".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_subscription(
     input: NewSubscription,
@@ -759,19 +787,7 @@ pub fn create_subscription(
     if !matches!(input.kind.as_str(), "rule" | "proxy") {
         return Err("订阅类型无效".into());
     }
-    if input.name.trim().is_empty() || input.name.chars().count() > 80 {
-        return Err("订阅名称无效".into());
-    }
-    let url = input
-        .url
-        .parse::<tauri::Url>()
-        .map_err(|_| "订阅地址无效")?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("订阅仅支持 HTTP 或 HTTPS 地址".into());
-    }
-    if !matches!(input.update_interval_hours, None | Some(6 | 12 | 24 | 168)) {
-        return Err("更新周期无效".into());
-    }
+    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
     let id = Uuid::new_v4().to_string();
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.execute("INSERT INTO subscriptions(id,kind,name,url,format,category,update_interval_hours) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, input.kind, input.name.trim(), input.url, input.format, input.category, input.update_interval_hours]).map_err(error)?;
@@ -780,6 +796,65 @@ pub fn create_subscription(
         .into_iter()
         .find(|item| item.id == id)
         .ok_or_else(|| "订阅保存失败".into())
+}
+
+#[tauri::command]
+pub fn update_subscription(
+    id: String,
+    input: UpdateSubscription,
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<SubscriptionRecord, String> {
+    state.require_session(&session_token)?;
+    if id.starts_with("default:") {
+        return Err("内置规则不能修改".into());
+    }
+    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let kind = update_subscription_inner(&db, &id, &input)?;
+    drop(db);
+    list_subscriptions_inner(Some(kind), &state)?
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| "订阅保存失败".into())
+}
+
+fn update_subscription_inner(
+    db: &Connection,
+    id: &str,
+    input: &UpdateSubscription,
+) -> Result<String, String> {
+    if id.starts_with("default:") {
+        return Err("内置规则不能修改".into());
+    }
+    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
+    let kind: String = db
+        .query_row(
+            "SELECT kind FROM subscriptions WHERE id=?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| "订阅不存在".to_string())?;
+    if db
+        .execute(
+            "UPDATE subscriptions SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=?6,last_error=NULL WHERE id=?1",
+            params![
+                id,
+                input.name.trim(),
+                &input.url,
+                &input.format,
+                &input.category,
+                input.update_interval_hours
+            ],
+        )
+        .map_err(error)?
+        != 1
+    {
+        return Err("订阅不存在".into());
+    }
+    Ok(kind)
 }
 
 #[tauri::command]
@@ -1197,6 +1272,71 @@ mod tests {
         assert_eq!(format, "clash");
         assert_eq!(category, "direct");
         assert!(delete_subscription_inner(&db, "default:stevenblack:porn").is_err());
+    }
+
+    #[test]
+    fn updates_external_subscription_metadata() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,update_interval_hours,last_error) VALUES('custom-source','rule','旧规则','https://example.test/old','hosts','custom',24,'上次失败')",
+            [],
+        )
+        .unwrap();
+
+        let kind = update_subscription_inner(
+            &db,
+            "custom-source",
+            &UpdateSubscription {
+                name: " 新规则 ".into(),
+                url: "https://example.test/new".into(),
+                format: Some("adblock".into()),
+                category: Some("ads".into()),
+                update_interval_hours: Some(12),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(kind, "rule");
+        let (name, url, format, category, interval, last_error): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            Option<String>,
+        ) = db
+            .query_row(
+                "SELECT name,url,format,category,update_interval_hours,last_error FROM subscriptions WHERE id='custom-source'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "新规则");
+        assert_eq!(url, "https://example.test/new");
+        assert_eq!(format, "adblock");
+        assert_eq!(category, "ads");
+        assert_eq!(interval, 12);
+        assert_eq!(last_error, None);
+    }
+
+    #[test]
+    fn rejects_default_subscription_updates() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        let result = update_subscription_inner(
+            &db,
+            "default:stevenblack:porn",
+            &UpdateSubscription {
+                name: "不应修改".into(),
+                url: "https://example.test/new".into(),
+                format: Some("hosts".into()),
+                category: Some("pornography".into()),
+                update_interval_hours: Some(24),
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "内置规则不能修改");
     }
 
     #[test]

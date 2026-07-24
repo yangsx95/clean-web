@@ -108,4 +108,27 @@ describe("browser preview persistence", () => {
       { kind: "rule", name: "Test rules", url: "https://example.com/rules.txt", enabled: true },
     ]);
   });
+
+  it("updates preview subscriptions", async () => {
+    const backend = await import("./backend");
+    const item = await backend.createSubscription("browser-preview", {
+      kind: "rule",
+      name: "Old rules",
+      url: "https://example.com/old.txt",
+      format: "hosts",
+      category: "custom",
+    });
+
+    await backend.updateSubscription("browser-preview", item.id, {
+      name: "New rules",
+      url: "https://example.com/new.txt",
+      format: "adblock",
+      category: "ads",
+      updateIntervalHours: 12,
+    });
+
+    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
+      { id: item.id, name: "New rules", url: "https://example.com/new.txt", format: "adblock", category: "ads", updateIntervalHours: 12 },
+    ]);
+  });
 });

@@ -189,6 +189,7 @@ pub fn run() {
             storage::update_setting,
             storage::list_subscriptions,
             storage::create_subscription,
+            storage::update_subscription,
             storage::set_subscription_enabled,
             storage::delete_subscription,
             storage::get_recommended_sources,

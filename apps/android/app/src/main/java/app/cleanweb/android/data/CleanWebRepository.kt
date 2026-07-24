@@ -11,11 +11,13 @@ import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
 import app.cleanweb.android.model.RuleMatchKind
 import app.cleanweb.android.model.defaultRules
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
 class CleanWebRepository(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val providerDirectory = File(context.filesDir, "mihomo/providers").also { it.mkdirs() }
 
     fun load(): CleanWebState {
         val settings = preferences.getString(KEY_SETTINGS, null)?.let(::settingsFromJson)
@@ -49,6 +51,30 @@ class CleanWebRepository(context: Context) {
             return
         }
         save(state.copy(logs = (listOf(entry) + state.logs).take(maxEntries)))
+    }
+
+    fun importProxyConfigFile(name: String, fileName: String, content: String): ProxySubscription {
+        val displayName = name.trim().ifBlank { fileName.substringBeforeLast('.').ifBlank { "本地代理配置" } }
+        require(displayName.length <= 80) { "代理名称无效" }
+        val sanitized = ProxyConfigSanitizer.sanitize(content)
+        val id = java.util.UUID.randomUUID().toString()
+        val providerFile = "local_${id.replace("-", "_")}.yaml"
+        File(providerDirectory, providerFile).writeText(sanitized.payload, Charsets.UTF_8)
+        return ProxySubscription(
+            id = id,
+            name = displayName,
+            url = "file://cleanweb-providers/$providerFile",
+            importedNodeCount = sanitized.proxyCount,
+            localProviderFileName = providerFile
+        )
+    }
+
+    fun deleteLocalProvider(subscription: ProxySubscription) {
+        val fileName = subscription.localProviderFileName ?: return
+        if (!fileName.matches(Regex("""local_[A-Za-z0-9_]+[.]yaml"""))) {
+            return
+        }
+        File(providerDirectory, fileName).delete()
     }
 
     private fun settingsFromJson(raw: String): ProtectionSettings {
@@ -96,7 +122,9 @@ class CleanWebRepository(context: Context) {
                     name = value.getString("name"),
                     url = value.getString("url"),
                     enabled = value.optBoolean("enabled", true),
-                    importedNodeCount = value.optInt("importedNodeCount", 0)
+                    importedNodeCount = value.optInt("importedNodeCount", 0),
+                    localProviderFileName = value.optString("localProviderFileName")
+                        .takeIf { it.isNotBlank() }
                 )
             }
         }.getOrDefault(emptyList())
@@ -155,6 +183,7 @@ class CleanWebRepository(context: Context) {
                         .put("url", subscription.url)
                         .put("enabled", subscription.enabled)
                         .put("importedNodeCount", subscription.importedNodeCount)
+                        .put("localProviderFileName", subscription.localProviderFileName)
                 )
             }
         }

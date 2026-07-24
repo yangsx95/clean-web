@@ -1,5 +1,6 @@
 package app.cleanweb.android.vpn
 
+import app.cleanweb.android.data.ProxyConfigSanitizer
 import app.cleanweb.android.model.CleanWebState
 import app.cleanweb.android.model.ProtectionSettings
 import app.cleanweb.android.model.ProxySubscription
@@ -117,6 +118,53 @@ class MihomoAndroidConfigTest {
 
         assertFalse(proxyGroup.contains("      - DIRECT"))
         assertTrue(config.contains("  - MATCH,CLEANWEB-PROXY"))
+    }
+
+    @Test
+    fun localProxyConfigUsesFileProvider() {
+        val config = MihomoAndroidConfig.build(
+            CleanWebState(
+                settings = ProtectionSettings(proxyEnabled = true),
+                proxySubscriptions = listOf(
+                    ProxySubscription(
+                        id = "12345678-android",
+                        name = "Local",
+                        url = "file://cleanweb-providers/local_12345678_android.yaml",
+                        importedNodeCount = 1,
+                        localProviderFileName = "local_12345678_android.yaml"
+                    )
+                )
+            )
+        )
+
+        assertTrue(config.contains("    type: file"))
+        assertTrue(config.contains("    path: './providers/local_12345678_android.yaml'"))
+        assertTrue(config.contains("      - provider_1_12345678"))
+    }
+
+    @Test
+    fun proxyConfigImportStripsRuntimeFields() {
+        val sanitized = ProxyConfigSanitizer.sanitize(
+            """
+            proxies:
+              - {name: a, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-128-gcm, password: p}
+            proxy-groups:
+              - {name: auto, type: select, proxies: [a]}
+            rules:
+              - MATCH,DIRECT
+            dns:
+              enable: true
+            tun:
+              enable: true
+            """.trimIndent()
+        )
+
+        assertEquals(1, sanitized.proxyCount)
+        assertEquals(1, sanitized.groupCount)
+        assertTrue(sanitized.payload.contains("proxies"))
+        assertFalse(sanitized.payload.contains("rules:"))
+        assertFalse(sanitized.payload.contains("dns:"))
+        assertFalse(sanitized.payload.contains("tun:"))
     }
 
     @Test

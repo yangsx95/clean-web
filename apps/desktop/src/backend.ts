@@ -12,6 +12,7 @@ export type Settings = {
 };
 export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string };
 export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|"lastError">;
+export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
@@ -160,6 +161,15 @@ export async function listSubscriptions(sessionToken:string,kind?: "rule"|"proxy
 export async function createSubscription(sessionToken: string, input: NewSubscription): Promise<Subscription> {
   if (isTauri()) return invoke("create_subscription", { sessionToken, input });
   const item: Subscription = { ...input, id: crypto.randomUUID(), enabled: true }; previewSubscriptions.unshift(item); savePreviewSubscriptions(); return item;
+}
+export async function updateSubscription(sessionToken: string, id: string, input: UpdateSubscription): Promise<Subscription> {
+  if (isTauri()) return invoke("update_subscription", { sessionToken, id, input });
+  const item=previewSubscriptions.find((value)=>value.id===id);
+  if(!item)throw new Error("订阅不存在");
+  if(item.id.startsWith("default:"))throw new Error("内置规则不能修改");
+  Object.assign(item, input, { lastError: undefined });
+  savePreviewSubscriptions();
+  return structuredClone(item);
 }
 export async function importProxyPayload(sessionToken: string, input: ManualProxyImport): Promise<Subscription> {
   if (isTauri()) return invoke("import_proxy_payload", { sessionToken, input });

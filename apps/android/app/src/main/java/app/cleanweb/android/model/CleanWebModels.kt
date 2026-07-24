@@ -52,7 +52,8 @@ data class ProxySubscription(
     val name: String,
     val url: String,
     val enabled: Boolean = true,
-    val importedNodeCount: Int = 0
+    val importedNodeCount: Int = 0,
+    val localProviderFileName: String? = null
 )
 
 data class AccessLogEntry(

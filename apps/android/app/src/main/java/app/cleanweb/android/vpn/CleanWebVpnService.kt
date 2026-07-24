@@ -26,23 +26,32 @@ class CleanWebVpnService : VpnService() {
     private var tunInterface: ParcelFileDescriptor? = null
     private var mihomoRunner: MihomoAndroidRunner? = null
     private val running = AtomicBoolean(false)
+    private val starting = AtomicBoolean(false)
     private val stopping = AtomicBoolean(false)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopVpn()
+            ACTION_STOP -> runInServiceThread("cleanweb-vpn-stop") {
+                stopVpn()
+            }
             ACTION_RESTART -> {
-                stopVpn(updateStatus = false, stopService = false)
-                stopping.set(false)
+                startForegroundServiceNotification()
                 currentStatus = VpnStatus.Starting
                 lastError = null
-                startVpn()
+                runInServiceThread("cleanweb-vpn-restart") {
+                    stopVpn(updateStatus = false, stopService = false)
+                    stopping.set(false)
+                    startVpn()
+                }
             }
             else -> {
-                stopping.set(false)
+                startForegroundServiceNotification()
                 currentStatus = VpnStatus.Starting
                 lastError = null
-                startVpn()
+                runInServiceThread("cleanweb-vpn-start") {
+                    stopping.set(false)
+                    startVpn()
+                }
             }
         }
         return Service.START_STICKY
@@ -54,12 +63,20 @@ class CleanWebVpnService : VpnService() {
     }
 
     private fun startVpn() {
+        if (!starting.compareAndSet(false, true)) {
+            return
+        }
+        try {
+            startVpnInternal()
+        } finally {
+            starting.set(false)
+        }
+    }
+
+    private fun startVpnInternal() {
         if (tunInterface != null) {
             return
         }
-
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
 
         val repository = CleanWebRepository(applicationContext)
         val state = repository.load()
@@ -175,8 +192,8 @@ class CleanWebVpnService : VpnService() {
             currentStatus = VpnStatus.Idle
             lastError = null
         }
-        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         if (stopService) {
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
             runCatching { stopSelf() }
         } else {
             stopping.set(false)
@@ -190,6 +207,15 @@ class CleanWebVpnService : VpnService() {
         mihomoRunner = null
         runCatching { tunInterface?.close() }
         tunInterface = null
+    }
+
+    private fun startForegroundServiceNotification() {
+        createNotificationChannel()
+        runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
+    }
+
+    private fun runInServiceThread(name: String, action: () -> Unit) {
+        Thread(action, name).start()
     }
 
     private fun startTun2Socks(fd: Int) {

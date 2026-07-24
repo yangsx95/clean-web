@@ -1,10 +1,10 @@
 import { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { Activity, BookOpen, ChevronDown, ChevronRight, Gauge, LockKeyhole, Network, Plus, RefreshCw, ScanQrCode, ShieldCheck, Trash2, Upload, X } from "lucide-react";
+import { Activity, BookOpen, ChevronDown, ChevronRight, Gauge, LockKeyhole, Network, Pencil, Plus, RefreshCw, ScanQrCode, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
 
-type ProxyImportMode = "subscription" | "node" | "qr" | "clipboard";
-type AppDialog = "unlock" | "rules" | "proxy" | "custom" | "quit" | null;
+type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
+type AppDialog = "unlock" | "rules" | "editRuleSubscription" | "proxy" | "custom" | "quit" | null;
 
 async function decodeQrImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
@@ -83,6 +83,7 @@ export function App() {
   const [page, setPage] = useState<"overview" | "rules" | "proxy">("overview");
   const [locked, setLocked] = useState(true);
   const [dialog, setDialog] = useState<AppDialog>(null);
+  const [editingSubscription, setEditingSubscription] = useState<backend.Subscription|null>(null);
   const [parentRuleMode, setParentRuleMode] = useState<"block" | "route">("block");
   const [proxyImportMode, setProxyImportMode] = useState<ProxyImportMode>("subscription");
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -156,7 +157,8 @@ export function App() {
     try { await backend.refreshSubscription(sessionToken,item.id); } catch(reason) { await backend.deleteSubscription(sessionToken,item.id); throw reason; }
     setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken); setDialog(null);});
   };
-  const importProxyPayload=async(input:backend.ManualProxyImport)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.importProxy, async()=>{showPolicyStatus({state:"applying",message:"正在导入并应用代理…"});await backend.importProxyPayload(sessionToken,input);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);setDialog(null);});};
+  const updateSubscription=async(id:string,input:backend.UpdateSubscription)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.subscription(id),async()=>{setRuntimeError("");showPolicyStatus({state:"applying",message:"正在保存并更新订阅…"});await backend.updateSubscription(sessionToken,id,input);let refreshFailed:unknown;try{await backend.refreshSubscription(sessionToken,id);}catch(reason){refreshFailed=reason;}setSubscriptions(await backend.listSubscriptions(sessionToken));try{await reloadRuntime(sessionToken,{applyingMessage:"正在应用订阅修改…"});}catch(reason){setRuntimeError(`订阅已修改，但保护配置重载失败：${String(reason)}`);}setDialog(null);setEditingSubscription(null);if(refreshFailed){setRuntimeError(`订阅已修改，但刷新失败，继续使用最后一次有效规则：${String(refreshFailed)}`);}});};
+  const importProxyPayload=async(input:backend.ManualProxyImport)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.importProxy, async()=>{showPolicyStatus({state:"applying",message:"正在导入并应用代理配置…"});await backend.importProxyPayload(sessionToken,input);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);setDialog(null);});};
   const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await runScopedOperation(busyScope.subscription(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新订阅状态…"});await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}); };
   const removeSubscription = async (id: string) => {
     if (!sessionToken) { setDialog("unlock"); return; }
@@ -197,12 +199,13 @@ export function App() {
       {runtimeError&&<div className="runtime-error" role="alert">{runtimeError}</div>}
       {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus}/>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} locked={locked} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
-      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={() => requestAction("rules")} />}
+      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
     {dialog === "rules" && <SubscriptionDialog kind="规则" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
+    {dialog === "editRuleSubscription" && editingSubscription && <SubscriptionDialog kind="规则" subscription={editingSubscription} onClose={() => {setDialog(null);setEditingSubscription(null);}} onSubmit={(input)=>updateSubscription(editingSubscription.id,input)} />}
     {dialog === "proxy" && <ProxyImportDialog mode={proxyImportMode} onClose={() => setDialog(null)} onSubscriptionSubmit={createSubscription} onPayloadSubmit={importProxyPayload} />}
     {dialog === "custom" && <ParentRuleDialog mode={parentRuleMode} onClose={()=>setDialog(null)} onSubmit={createParentRule}/>}
     {dialog === "quit" && <QuitConfirmDialog running={coreStatus?.running===true} onClose={()=>setDialog(null)} onHideToBackground={hideToBackground} onQuitApp={quitApp}/>}
@@ -336,7 +339,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
   </button>;
 });
 
-function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: () => void }) {
+function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
   const builtinSubscriptions = subscriptions.filter((item) => item.id.startsWith("default:"));
   const externalSubscriptions = subscriptions.filter((item) => !item.id.startsWith("default:"));
@@ -387,7 +390,7 @@ function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, on
           <div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??item.url}</small></div>
           <span>{subscriptionFormat(item)}</span>
           <Switch checked={item.enabled} label={`${item.name}订阅`} disabled={rowBusy} onChange={(value)=>onToggleSubscription(item.id,value)}/>
-          <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div>
+          <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button><button className="row-action" aria-label={`编辑${item.name}`} disabled={rowBusy} onClick={()=>onEdit(item)}><Pencil size={15}/></button><button className="row-action" aria-label={`删除${item.name}`} disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div>
         </div>;
       })}
     </section></>}
@@ -486,7 +489,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
   },[onSelectNode,runtimeSelection,testingSpeed]);
   const openImport=(mode:ProxyImportMode)=>{setImportMenuOpen(false);onAdd(mode);};
   return <>
-    <section className="toolbar"><div><h2>代理订阅</h2><p>{subscriptions.length>0?`当前出口：${automatic?"自动选择节点":runtimeSelection??savedSelection??"尚未选择节点"}`:"导入代理后，展开来源并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={automatic||Boolean(selecting)||subscriptions.length===0||isBusy(busyScope.setting("automatic_node_selection"))} onClick={()=>void onAutomatic()}>自动选择</button><div className="import-dropdown"><button className="primary import-main" disabled={isBusy(busyScope.importProxy)} onClick={()=>openImport("subscription")}><Plus size={16}/>导入代理</button><button className="primary import-menu-trigger" disabled={isBusy(busyScope.importProxy)} aria-label="选择代理导入方式" aria-expanded={importMenuOpen} onClick={()=>setImportMenuOpen(value=>!value)}><ChevronDown size={16}/></button>{importMenuOpen&&<div className="import-menu" role="menu"><button role="menuitem" onClick={()=>openImport("subscription")}>订阅链接</button><button role="menuitem" onClick={()=>openImport("node")}>单节点链接</button><button role="menuitem" onClick={()=>openImport("qr")}>二维码导入</button><button role="menuitem" onClick={()=>openImport("clipboard")}>从剪贴板导入</button></div>}</div></div></section>
+    <section className="toolbar"><div><h2>代理订阅</h2><p>{subscriptions.length>0?`当前出口：${automatic?"自动选择节点":runtimeSelection??savedSelection??"尚未选择节点"}`:"导入代理后，展开来源并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={automatic||Boolean(selecting)||subscriptions.length===0||isBusy(busyScope.setting("automatic_node_selection"))} onClick={()=>void onAutomatic()}>自动选择</button><div className="import-dropdown"><button className="primary import-main" disabled={isBusy(busyScope.importProxy)} onClick={()=>openImport("subscription")}><Plus size={16}/>导入代理</button><button className="primary import-menu-trigger" disabled={isBusy(busyScope.importProxy)} aria-label="选择代理导入方式" aria-expanded={importMenuOpen} onClick={()=>setImportMenuOpen(value=>!value)}><ChevronDown size={16}/></button>{importMenuOpen&&<div className="import-menu" role="menu"><button role="menuitem" onClick={()=>openImport("subscription")}>订阅链接</button><button role="menuitem" onClick={()=>openImport("node")}>单节点链接</button><button role="menuitem" onClick={()=>openImport("file")}>配置文件</button><button role="menuitem" onClick={()=>openImport("qr")}>二维码导入</button><button role="menuitem" onClick={()=>openImport("clipboard")}>从剪贴板导入</button></div>}</div></div></section>
     {delayError&&<div className="proxy-delay-error">{delayError}</div>}
     {subscriptions.length===0 ? <section className="proxy-card empty-proxy">尚未导入代理订阅</section> : subscriptions.map((item)=>{
       const expanded = expandedId === item.id;
@@ -586,23 +589,25 @@ function ParentRuleDialog({mode,onClose,onSubmit}:{mode:"block"|"route";onClose:
 
 function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmit }: { mode: ProxyImportMode; onClose: () => void; onSubscriptionSubmit:(input:backend.NewSubscription)=>Promise<void>; onPayloadSubmit:(input:backend.ManualProxyImport)=>Promise<void> }) {
   const [error,setError]=useState("");
+  const [importName,setImportName]=useState("");
   const [content,setContent]=useState("");
   const [qrFileName,setQrFileName]=useState("");
   const [qrDecoding,setQrDecoding]=useState(false);
   const [qrDragActive,setQrDragActive]=useState(false);
   const isSubscription=mode==="subscription";
-  const title=mode==="subscription"?"导入代理订阅":mode==="node"?"导入单节点链接":mode==="qr"?"导入二维码":"从剪贴板导入";
-  const description=mode==="subscription"?"只会提取代理节点和代理组。":mode==="qr"?"拖入代理二维码图片，本地解析后导入。":"支持单条或多条代理链接。";
+  const title=mode==="subscription"?"导入代理订阅":mode==="node"?"导入单节点链接":mode==="file"?"导入配置文件":mode==="qr"?"导入二维码":"从剪贴板导入";
+  const description=mode==="subscription"?"只会提取代理节点和代理组。":mode==="file"?"选择 Clash/Mihomo YAML 配置，只会保留代理节点和代理组。":mode==="qr"?"拖入代理二维码图片，本地解析后导入。":"支持单条或多条代理链接。";
   const handleQrFile=async(file:File|undefined)=>{if(!file)return;setQrDecoding(true);setQrDragActive(false);setError("");setQrFileName(file.name);try{setContent(await decodeQrImage(file));}catch(reason){setContent("");setError(String(reason));}finally{setQrDecoding(false);}};
+  const handleConfigFile=async(file:File|undefined)=>{if(!file)return;setError("");setQrFileName(file.name);try{const text=await file.text();setContent(text);setImportName(name=>name||file.name.replace(/\.(ya?ml|conf|txt)$/i,""));}catch(reason){setContent("");setError(String(reason));}};
   useEffect(()=>{if(mode!=="clipboard")return;let cancelled=false;void navigator.clipboard?.readText().then(text=>{if(!cancelled)setContent(text);}).catch(()=>{if(!cancelled)setError("无法读取剪贴板，请手动粘贴内容");});return()=>{cancelled=true;};},[mode]);
   return <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&onClose()}>
     <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="proxy-import-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
       <h2 id="proxy-import-title">{title}</h2>
       <p>{description}</p>
-      <form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{if(isSubscription)await onSubscriptionSubmit({kind:"proxy",name:String(data.get("name")),url:String(data.get("url")),format:"auto",updateIntervalHours:Number(data.get("interval")||24)});else{if(!content.trim())throw new Error(mode==="qr"?"请先拖入二维码图片":"代理内容不能为空");await onPayloadSubmit({name:String(data.get("name")),content});}}catch(reason){setError(String(reason));}}}>
+      <form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{if(isSubscription)await onSubscriptionSubmit({kind:"proxy",name:String(data.get("name")),url:String(data.get("url")),format:"auto",updateIntervalHours:Number(data.get("interval")||24)});else{if(!content.trim())throw new Error(mode==="qr"?"请先拖入二维码图片":mode==="file"?"请先选择配置文件":"代理内容不能为空");await onPayloadSubmit({name:String(data.get("name")),content});}}catch(reason){setError(String(reason));}}}>
         <label htmlFor="proxy-import-name">名称</label>
-        <input id="proxy-import-name" name="name" placeholder={isSubscription?"我的代理订阅":"我的代理节点"} required autoComplete="off" spellCheck={false}/>
+        <input id="proxy-import-name" name="name" value={importName} onChange={event=>setImportName(event.currentTarget.value)} placeholder={isSubscription?"我的代理订阅":mode==="file"?"配置文件名称":"我的代理节点"} required autoComplete="off" spellCheck={false}/>
         {isSubscription ? <>
           <label htmlFor="proxy-import-url">订阅地址</label>
           <input id="proxy-import-url" name="url" type="url" placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false}/>
@@ -617,6 +622,15 @@ function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmi
             <span>{content?qrFileName||"已读取图片":"或点击选择图片文件"}</span>
           </label>
           {content&&<div className="qr-decoded-preview">{content}</div>}
+        </> : mode==="file" ? <>
+          <label htmlFor="proxy-import-file">配置文件</label>
+          <label className="qr-dropzone" htmlFor="proxy-import-file">
+            <input id="proxy-import-file" type="file" accept=".yaml,.yml,.conf,.txt,application/yaml,text/yaml,text/plain" onChange={event=>void handleConfigFile(event.currentTarget.files?.[0])}/>
+            <Upload size={24}/>
+            <strong>{content?"配置文件已读取":"选择 Clash/Mihomo 配置文件"}</strong>
+            <span>{content?qrFileName||"已读取文件":"会在本机清洗后导入"}</span>
+          </label>
+          {content&&<div className="qr-decoded-preview">{content.slice(0,800)}</div>}
         </> : <>
           <label htmlFor="proxy-import-content">代理内容</label>
           <textarea id="proxy-import-content" value={content} onChange={event=>setContent(event.currentTarget.value)} placeholder="ss://... 或 vmess://..." required spellCheck={false}/>
@@ -629,21 +643,24 @@ function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmi
   </div>;
 }
 
-function SubscriptionDialog({ kind, onClose, onSubmit }: { kind: "规则" | "代理"; onClose: () => void; onSubmit:(input:backend.NewSubscription)=>Promise<void> }) {
+function SubscriptionDialog({ kind, subscription, onClose, onSubmit }: { kind: "规则" | "代理"; subscription?: backend.Subscription; onClose: () => void; onSubmit:(input:backend.NewSubscription)=>Promise<void> }) {
   const [error,setError]=useState("");
+  const editing=Boolean(subscription);
+  const defaultInterval=String(subscription?.updateIntervalHours??24);
+  const defaultFormat=subscription?.format??"auto";
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="subscription-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
-      <h2 id="subscription-title">添加{kind}订阅</h2>
+      <h2 id="subscription-title">{editing?"修改":"添加"}{kind}订阅</h2>
       <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR 和 Adblock 列表。" : "只会提取代理节点和代理组。"}</p>
       <form onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
-        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format"><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索映射</option></select></>}
-        <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
-        <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
-        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category"><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select></>}
-        <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval"><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
+        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" defaultValue={defaultFormat}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索映射</option></select></>}
+        <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" defaultValue={subscription?.name??""} placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
+        <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" defaultValue={subscription?.url??""} placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
+        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" defaultValue={subscription?.category??"custom"}><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select></>}
+        <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval" defaultValue={defaultInterval}><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
         {error&&<span className="form-error">{error}</span>}
-        <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并添加</button></div>
+        <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">{editing?"保存修改":"验证并添加"}</button></div>
       </form>
     </section>
   </div>;

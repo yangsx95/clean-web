@@ -9,6 +9,7 @@ import java.net.URI
 
 internal object MihomoAndroidConfig {
     private const val PROXY_GROUP_NAME = "CLEANWEB-PROXY"
+    private data class ProxyProvider(val name: String, val type: String, val value: String)
 
     fun build(state: CleanWebState): String {
         val providers = proxyProviders(state)
@@ -30,22 +31,36 @@ internal object MihomoAndroidConfig {
         }.trimEnd() + "\n"
     }
 
-    private fun MutableList<Pair<String, String>>.addProvider(index: Int, id: String, url: String) {
+    private fun MutableList<ProxyProvider>.addRemoteProvider(index: Int, id: String, url: String) {
         val name = "provider_${index + 1}_${id.take(8).replace("-", "_")}"
-        add(name to url)
+        add(ProxyProvider(name = name, type = "http", value = url))
     }
 
-    private fun proxyProviders(state: CleanWebState): List<Pair<String, String>> {
+    private fun MutableList<ProxyProvider>.addLocalProvider(index: Int, id: String, fileName: String) {
+        val name = "provider_${index + 1}_${id.take(8).replace("-", "_")}"
+        add(ProxyProvider(name = name, type = "file", value = "./providers/$fileName"))
+    }
+
+    private fun proxyProviders(state: CleanWebState): List<ProxyProvider> {
         if (!state.settings.proxyEnabled) {
             return emptyList()
         }
         return buildList {
             state.proxySubscriptions
-                .filter { it.enabled && isHttpsUrl(it.url) }
+                .filter { it.enabled && (isHttpsUrl(it.url) || isLocalProvider(it.localProviderFileName)) }
                 .forEachIndexed { index, subscription ->
-                    addProvider(index, subscription.id, subscription.url)
+                    val fileName = subscription.localProviderFileName
+                    if (fileName != null) {
+                        addLocalProvider(index, subscription.id, fileName)
+                    } else {
+                        addRemoteProvider(index, subscription.id, subscription.url)
+                    }
                 }
         }
+    }
+
+    private fun isLocalProvider(fileName: String?): Boolean {
+        return fileName?.matches(Regex("""local_[A-Za-z0-9_]+[.]yaml""")) == true
     }
 
     private fun isHttpsUrl(value: String): Boolean {
@@ -105,26 +120,34 @@ internal object MihomoAndroidConfig {
         }
     }
 
-    private fun StringBuilder.appendProxyProviders(providers: List<Pair<String, String>>) {
+    private fun StringBuilder.appendProxyProviders(providers: List<ProxyProvider>) {
         if (providers.isEmpty()) {
             appendLine("proxy-providers: {}")
             return
         }
         appendLine("proxy-providers:")
-        providers.forEach { (name, url) ->
-            appendLine("  $name:")
-            appendLine("    type: http")
-            appendLine("    url: ${yamlQuote(url)}")
-            appendLine("    interval: 3600")
-            appendLine("    path: ./providers/$name.yaml")
-            appendLine("    health-check:")
-            appendLine("      enable: true")
-            appendLine("      interval: 600")
-            appendLine("      url: https://www.gstatic.com/generate_204")
+        providers.forEach { provider ->
+            appendLine("  ${provider.name}:")
+            appendLine("    type: ${provider.type}")
+            if (provider.type == "http") {
+                appendLine("    url: ${yamlQuote(provider.value)}")
+                appendLine("    interval: 3600")
+                appendLine("    path: ./providers/${provider.name}.yaml")
+                appendLine("    health-check:")
+                appendLine("      enable: true")
+                appendLine("      interval: 600")
+                appendLine("      url: https://www.gstatic.com/generate_204")
+            } else {
+                appendLine("    path: ${yamlQuote(provider.value)}")
+                appendLine("    health-check:")
+                appendLine("      enable: true")
+                appendLine("      interval: 600")
+                appendLine("      url: https://www.gstatic.com/generate_204")
+            }
         }
     }
 
-    private fun StringBuilder.appendProxyGroups(providers: List<Pair<String, String>>) {
+    private fun StringBuilder.appendProxyGroups(providers: List<ProxyProvider>) {
         if (providers.isEmpty()) {
             appendLine("proxy-groups: []")
             return
@@ -133,7 +156,7 @@ internal object MihomoAndroidConfig {
         appendLine("  - name: $PROXY_GROUP_NAME")
         appendLine("    type: select")
         appendLine("    use:")
-        providers.forEach { (name, _) -> appendLine("      - $name") }
+        providers.forEach { provider -> appendLine("      - ${provider.name}") }
     }
 
     private fun StringBuilder.appendRules(state: CleanWebState, finalPolicy: String) {

@@ -1,8 +1,11 @@
 package app.cleanweb.android
 
 import android.content.Intent
+import android.database.Cursor
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -64,6 +67,38 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         status = VpnStatus.PermissionDenied
+                    }
+                }
+                val proxyConfigFileLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument()
+                ) { uri: Uri? ->
+                    if (uri == null) return@rememberLauncherForActivityResult
+                    runCatching {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                    }
+                    val fileName = displayName(uri)
+                    runCatching {
+                        repository.importProxyConfigFile(
+                            name = fileName.substringBeforeLast('.'),
+                            fileName = fileName,
+                            content = readTextDocument(uri)
+                        )
+                    }.onSuccess { subscription ->
+                        updateState(
+                            appState.copy(
+                                proxySubscriptions = listOf(subscription) + appState.proxySubscriptions
+                            ),
+                            true
+                        )
+                    }.onFailure { error ->
+                        appState = appState.withLog(
+                            target = fileName,
+                            decision = LogDecision.Warning,
+                            reason = "配置文件导入失败：${error.message ?: error}"
+                        )
                     }
                 }
 
@@ -168,6 +203,17 @@ class MainActivity : ComponentActivity() {
                             true
                         )
                     },
+                    onImportProxyConfigFile = {
+                        proxyConfigFileLauncher.launch(
+                            arrayOf(
+                                "application/yaml",
+                                "application/x-yaml",
+                                "text/yaml",
+                                "text/plain",
+                                "application/octet-stream"
+                            )
+                        )
+                    },
                     onToggleProxySubscription = { subscriptionId ->
                         updateState(
                             appState.copy(
@@ -183,6 +229,9 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     onRemoveProxySubscription = { subscriptionId ->
+                        appState.proxySubscriptions
+                            .firstOrNull { it.id == subscriptionId }
+                            ?.let(repository::deleteLocalProvider)
                         updateState(
                             appState.copy(
                                 proxySubscriptions = appState.proxySubscriptions.filterNot {
@@ -229,5 +278,25 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val MAX_LOCAL_LOGS = 50
+        private const val MAX_CONFIG_BYTES = 20 * 1024 * 1024
+    }
+
+    private fun displayName(uri: Uri): String {
+        val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && it.moveToFirst()) {
+                return it.getString(index)
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { null } ?: "proxy-config.yaml"
+    }
+
+    private fun readTextDocument(uri: Uri): String {
+        val bytes = contentResolver.openInputStream(uri)?.use { input ->
+            input.readBytes()
+        } ?: throw IllegalArgumentException("无法读取配置文件")
+        require(bytes.size <= MAX_CONFIG_BYTES) { "配置文件超过20MB限制" }
+        return bytes.toString(Charsets.UTF_8)
     }
 }

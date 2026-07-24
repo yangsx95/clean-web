@@ -48,9 +48,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.ooimi.library:tun2socks:1.0.0")
+    implementation("org.yaml:snakeyaml:2.3")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.yaml:snakeyaml:2.3")
 }

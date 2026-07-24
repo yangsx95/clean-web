@@ -270,6 +270,36 @@ describe("management actions", () => {
     expect(screen.queryByLabelText("代理内容")).toBeNull();
   });
 
+  it("imports a proxy config file from the proxy import menu", async () => {
+    const importProxy = vi.spyOn(backend, "importProxyPayload").mockResolvedValue({
+      id: "file-proxy",
+      kind: "proxy",
+      name: "proxy-config",
+      url: "manual://preview",
+      format: "clash",
+      enabled: true,
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(screen.getByRole("button", { name: "选择代理导入方式" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "配置文件" }));
+
+    expect(screen.getByRole("dialog", { name: "导入配置文件" })).toBeTruthy();
+    await userEvent.upload(
+      screen.getByLabelText("配置文件"),
+      new File(["proxies:\n  - {name: a, type: ss, server: x, port: 1, cipher: aes-128-gcm, password: p}\n"], "proxy-config.yaml", { type: "application/yaml" })
+    );
+    await userEvent.click(screen.getByRole("button", { name: "验证并添加" }));
+
+    expect(importProxy).toHaveBeenCalledWith("browser-preview", {
+      name: "proxy-config",
+      content: "proxies:\n  - {name: a, type: ss, server: x, port: 1, cipher: aes-128-gcm, password: p}\n",
+    });
+    importProxy.mockRestore();
+  });
+
   it("handles dropped files in QR proxy import", async () => {
     render(<App />);
     await unlockManagement();
@@ -368,6 +398,35 @@ describe("management actions", () => {
     expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
+  });
+
+  it("edits an external rule subscription", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"custom-source",kind:"rule",name:"旧规则源",url:"https://example.test/old",format:"hosts",category:"custom",updateIntervalHours:24,enabled:true},
+    ]));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
+    await userEvent.click(screen.getByRole("button", { name: "编辑旧规则源" }));
+
+    expect(screen.getByRole("dialog", { name: "修改规则订阅" })).toBeTruthy();
+    const name = screen.getByLabelText("订阅名称");
+    const url = screen.getByLabelText("订阅地址");
+    await userEvent.clear(name);
+    await userEvent.type(name, "新规则源");
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://example.test/new");
+    await userEvent.selectOptions(screen.getByLabelText("格式"), "adblock");
+    await userEvent.selectOptions(screen.getByLabelText("分类"), "ads");
+    await userEvent.selectOptions(screen.getByLabelText("更新周期"), "12");
+    await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    expect(await screen.findByText("新规则源")).toBeTruthy();
+    expect(screen.getByText("https://example.test/new")).toBeTruthy();
+    expect(screen.getByText("adblock")).toBeTruthy();
+    expect(screen.queryByText("旧规则源")).toBeNull();
   });
 
   it("closes the custom rule dialog after saving even when runtime reload fails", async () => {
