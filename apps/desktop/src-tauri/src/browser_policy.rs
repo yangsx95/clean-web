@@ -123,7 +123,7 @@ fn browser_status(browser: &BrowserPolicy) -> BrowserPolicyBrowserStatus {
     let details: Vec<BrowserPolicyDetail> = POLICY_KEYS
         .iter()
         .map(|policy| {
-            let current_value = read_policy_value(browser.domain, policy.key).ok();
+            let current_value = read_policy_value(browser, policy.key).ok();
             BrowserPolicyDetail {
                 label: policy.label,
                 configured: current_value.as_deref() == Some(policy.expected_value),
@@ -148,6 +148,12 @@ fn apply_browser_policies_inner() -> Result<(), String> {
     fs::create_dir_all(&temp_dir).map_err(|reason| format!("无法创建浏览器策略缓存：{reason}"))?;
     let mut install_commands = vec!["set -e".to_string()];
     install_commands.push("/bin/mkdir -p '/Library/Managed Preferences'".to_string());
+    if let Some(user) = console_user() {
+        install_commands.push(format!(
+            "/bin/mkdir -p {}",
+            shell_quote(&Path::new("/Library/Managed Preferences").join(&user))
+        ));
+    }
     for browser in BROWSERS {
         if !Path::new(browser.app_path).exists() {
             continue;
@@ -160,6 +166,13 @@ fn apply_browser_policies_inner() -> Result<(), String> {
             shell_quote(&temp_file),
             shell_quote(Path::new(browser.managed_path))
         ));
+        if let Some(user) = console_user() {
+            install_commands.push(format!(
+                "/usr/bin/install -o root -g wheel -m 644 {} {}",
+                shell_quote(&temp_file),
+                shell_quote(&user_managed_policy_path(&user, browser.domain))
+            ));
+        }
     }
     if install_commands.len() == 2 {
         return Ok(());
@@ -168,21 +181,24 @@ fn apply_browser_policies_inner() -> Result<(), String> {
     Ok(())
 }
 
-fn read_policy_value(domain: &str, key: &str) -> Result<String, String> {
-    let browser = BROWSERS
-        .iter()
-        .find(|browser| browser.domain == domain)
-        .ok_or("未知浏览器策略域")?;
-    let output = Command::new("/usr/libexec/PlistBuddy")
-        .args(["-c", &format!("Print :{key}"), browser.managed_path])
-        .output()
-        .map_err(|reason| format!("读取浏览器策略失败：{reason}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+fn read_policy_value(browser: &BrowserPolicy, key: &str) -> Result<String, String> {
+    let mut candidates = Vec::new();
+    if let Some(user) = console_user() {
+        candidates.push(user_managed_policy_path(&user, browser.domain));
     }
-    Ok(normalize_defaults_value(
-        String::from_utf8_lossy(&output.stdout).trim(),
-    ))
+    candidates.push(Path::new(browser.managed_path).to_path_buf());
+    for path in candidates {
+        let output = Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", &format!("Print :{key}"), &path.to_string_lossy()])
+            .output()
+            .map_err(|reason| format!("读取浏览器策略失败：{reason}"))?;
+        if output.status.success() {
+            return Ok(normalize_defaults_value(
+                String::from_utf8_lossy(&output.stdout).trim(),
+            ));
+        }
+    }
+    Err("浏览器策略尚未配置".into())
 }
 
 fn browser_policy_plist() -> String {
@@ -252,6 +268,28 @@ fn run_admin_shell(command: &str) -> Result<String, String> {
 
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn console_user() -> Option<String> {
+    let output = Command::new("/usr/bin/stat")
+        .args(["-f", "%Su", "/dev/console"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let user = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if user.is_empty() || user == "root" {
+        None
+    } else {
+        Some(user)
+    }
+}
+
+fn user_managed_policy_path(user: &str, domain: &str) -> std::path::PathBuf {
+    Path::new("/Library/Managed Preferences")
+        .join(user)
+        .join(format!("{domain}.plist"))
 }
 
 fn xml_escape(value: &str) -> String {
