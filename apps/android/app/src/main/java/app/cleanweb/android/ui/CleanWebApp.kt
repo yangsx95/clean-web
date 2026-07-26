@@ -525,6 +525,12 @@ private fun SettingsPanel(
         onCheckedChange = { onSettingsChange(settings.copy(adsTrackingEnabled = it)) }
     )
     ToggleRow(
+        title = "短视频与游戏",
+        subtitle = "拦截常见短视频、直播和游戏平台域名。",
+        checked = settings.entertainmentEnabled,
+        onCheckedChange = { onSettingsChange(settings.copy(entertainmentEnabled = it)) }
+    )
+    ToggleRow(
         title = "访问日志",
         subtitle = "在本机保存访问决策记录。",
         checked = settings.accessLogsEnabled,

@@ -50,6 +50,18 @@ describe("browser preview persistence", () => {
     await expect(backend.getSettings()).resolves.toMatchObject({ strictModeEnabled: true });
   });
 
+  it("persists entertainment category setting in browser preview", async () => {
+    let backend = await import("./backend");
+    await backend.updateSetting("browser-preview", "category.entertainment", "true");
+
+    vi.resetModules();
+    backend = await import("./backend");
+
+    await expect(backend.getSettings()).resolves.toMatchObject({
+      categories: expect.objectContaining({ entertainment: true }),
+    });
+  });
+
   it("keeps the unlocked backend session across a page reload", async () => {
     let backend = await import("./backend");
     await backend.unlock("parent123");

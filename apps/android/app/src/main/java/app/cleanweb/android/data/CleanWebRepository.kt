@@ -87,6 +87,7 @@ class CleanWebRepository(context: Context) {
                 safeSearchEnabled = value.optBoolean("safeSearchEnabled", true),
                 strictModeEnabled = value.optBoolean("strictModeEnabled", false),
                 adsTrackingEnabled = value.optBoolean("adsTrackingEnabled", true),
+                entertainmentEnabled = value.optBoolean("entertainmentEnabled", false),
                 accessLogsEnabled = value.optBoolean("accessLogsEnabled", true),
                 autoSelectNode = value.optBoolean("autoSelectNode", true),
                 alwaysOnVpnGuidanceSeen = value.optBoolean("alwaysOnVpnGuidanceSeen", false)
@@ -154,6 +155,7 @@ class CleanWebRepository(context: Context) {
             .put("safeSearchEnabled", safeSearchEnabled)
             .put("strictModeEnabled", strictModeEnabled)
             .put("adsTrackingEnabled", adsTrackingEnabled)
+            .put("entertainmentEnabled", entertainmentEnabled)
             .put("accessLogsEnabled", accessLogsEnabled)
             .put("autoSelectNode", autoSelectNode)
             .put("alwaysOnVpnGuidanceSeen", alwaysOnVpnGuidanceSeen)

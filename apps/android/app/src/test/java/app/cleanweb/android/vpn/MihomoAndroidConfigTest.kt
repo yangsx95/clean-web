@@ -240,6 +240,31 @@ class MihomoAndroidConfigTest {
         assertTrue(!config.contains("tracker.example"))
     }
 
+    @Test
+    fun entertainmentRulesFollowEntertainmentToggle() {
+        val disabled = CleanWebState(
+            settings = ProtectionSettings(entertainmentEnabled = false),
+            rules = listOf(
+                RuleEntry("game", "game.example", RuleCategory.Entertainment, RuleAction.Block),
+                RuleEntry("allow-douyin", "douyin.com", RuleCategory.CustomAllow, RuleAction.Allow, RuleMatchKind.Exact),
+                RuleEntry("proxy-roblox", "roblox.com", RuleCategory.Routing, RuleAction.Proxy)
+            )
+        )
+
+        val disabledConfig = MihomoAndroidConfig.build(disabled)
+
+        assertTrue(!disabledConfig.contains("DOMAIN-SUFFIX,douyin.com,REJECT"))
+        assertTrue(!disabledConfig.contains("game.example"))
+
+        val enabled = disabled.copy(settings = disabled.settings.copy(entertainmentEnabled = true))
+        val enabledConfig = MihomoAndroidConfig.build(enabled)
+
+        assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,douyin.com,REJECT"))
+        assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,game.example,REJECT"))
+        assertTrue(enabledConfig.indexOf("DOMAIN,douyin.com,DIRECT") < enabledConfig.indexOf("DOMAIN-SUFFIX,douyin.com,REJECT"))
+        assertTrue(enabledConfig.indexOf("DOMAIN-SUFFIX,roblox.com,REJECT") < enabledConfig.indexOf("DOMAIN-SUFFIX,roblox.com,DIRECT"))
+    }
+
     private fun sharedBuiltInRules() = BuiltInRuleResources.loadFromResourceRoot(resourceRoot())
 
     private fun resourceRoot(): File {

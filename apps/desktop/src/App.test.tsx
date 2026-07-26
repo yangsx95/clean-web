@@ -76,6 +76,14 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "严格模式" })).toBeTruthy();
   });
 
+  it("shows an entertainment category switch on the overview", async () => {
+    render(<App />);
+    await unlockManagement();
+
+    expect(screen.getByText("短视频与游戏")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "短视频与游戏" })).toBeTruthy();
+  });
+
   it("keeps unrelated settings interactive while one setting is applying", async () => {
     const update = vi.spyOn(backend, "updateSetting")
       .mockImplementation(() => new Promise<backend.Settings>(() => {}));
@@ -86,6 +94,7 @@ describe("management actions", () => {
 
     await waitFor(() => expect((screen.getByRole("switch", { name: "安全搜索" }) as HTMLButtonElement).disabled).toBe(true));
     expect((screen.getByRole("switch", { name: "严格模式" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("switch", { name: "短视频与游戏" }) as HTMLButtonElement).disabled).toBe(false);
     update.mockRestore();
   });
 

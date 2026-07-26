@@ -880,7 +880,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
     // 排除本地域名和系统网络检测域名，使其不走 fake-ip。
-    let fake_filter: Vec<String> = vec![
+    let mut fake_filter: Vec<String> = vec![
         "+.home",
         "+.local",
         "+.lan",
@@ -897,6 +897,14 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     .into_iter()
     .map(str::to_owned)
     .collect();
+    if safe_search_enabled {
+        for mapping in &safe_search_mappings {
+            fake_filter.push(mapping.domain.clone());
+            fake_filter.push(mapping.target.clone());
+        }
+        fake_filter.sort();
+        fake_filter.dedup();
+    }
     let fake_filter_values: Vec<Value> = fake_filter
         .iter()
         .map(|s| Value::String(s.clone()))
@@ -1123,7 +1131,25 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     {
         append_strict_mode_rules(&mut result);
     }
-    let mut statement=db.prepare("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'proxy' THEN 1 ELSE 2 END,created_at").map_err(error)?;
+    append_parent_rules(db, "action IN ('block','allow')", &mut result)?;
+    if enabled_categories
+        .get("category.entertainment")
+        .is_some_and(|value| value == "true")
+    {
+        append_entertainment_rules(&mut result);
+    }
+    append_imported_rules(db, &enabled_categories, false, &mut result)?;
+    append_parent_rules(db, "action='proxy'", &mut result)?;
+    Ok(result)
+}
+
+fn append_parent_rules(
+    db: &rusqlite::Connection,
+    action_filter: &str,
+    result: &mut Vec<Value>,
+) -> Result<(), String> {
+    let sql = format!("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 AND {action_filter} ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'allow' THEN 1 ELSE 2 END,created_at");
+    let mut statement = db.prepare(&sql).map_err(error)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
@@ -1145,8 +1171,7 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
             result.push(Value::String(rule));
         }
     }
-    append_imported_rules(db, &enabled_categories, false, &mut result)?;
-    Ok(result)
+    Ok(())
 }
 
 fn append_strict_mode_rules(result: &mut Vec<Value>) {
@@ -1248,6 +1273,70 @@ fn append_strict_mode_rules(result: &mut Vec<Value>) {
     }
     for cidr in STRICT_CIDRS {
         result.push(Value::String(format!("IP-CIDR,{cidr},REJECT,no-resolve")));
+    }
+}
+
+fn append_entertainment_rules(result: &mut Vec<Value>) {
+    const ENTERTAINMENT_SUFFIXES: &[&str] = &[
+        "douyin.com",
+        "douyinpic.com",
+        "douyincdn.com",
+        "iesdouyin.com",
+        "snssdk.com",
+        "tiktok.com",
+        "tiktokv.com",
+        "tiktokcdn.com",
+        "muscdn.com",
+        "byteoversea.com",
+        "kuaishou.com",
+        "gifshow.com",
+        "ksapisrv.com",
+        "yximgs.com",
+        "bilibili.com",
+        "bilivideo.com",
+        "hdslb.com",
+        "biliapi.net",
+        "huya.com",
+        "msstatic.com",
+        "douyu.com",
+        "douyucdn.cn",
+        "yy.com",
+        "huoshan.com",
+        "ixigua.com",
+        "ixgvideo.com",
+        "xiaohongshu.com",
+        "xhscdn.com",
+        "snapchat.com",
+        "youtube.com",
+        "youtu.be",
+        "googlevideo.com",
+        "ytimg.com",
+        "roblox.com",
+        "rbxcdn.com",
+        "steamcommunity.com",
+        "steampowered.com",
+        "steamstatic.com",
+        "epicgames.com",
+        "epicgames.dev",
+        "discord.com",
+        "discord.gg",
+        "discordapp.net",
+        "twitch.tv",
+        "ttvnw.net",
+    ];
+    const ENTERTAINMENT_KEYWORDS: &[&str] = &[
+        "shortvideo",
+        "short-video",
+        "livestream",
+        "live-stream",
+        "mobilegame",
+        "gamevideo",
+    ];
+    for suffix in ENTERTAINMENT_SUFFIXES {
+        result.push(Value::String(format!("DOMAIN-SUFFIX,{suffix},REJECT")));
+    }
+    for keyword in ENTERTAINMENT_KEYWORDS {
+        result.push(Value::String(format!("DOMAIN-KEYWORD,{keyword},REJECT")));
     }
 }
 
@@ -1695,8 +1784,11 @@ mod tests {
             .and_then(|dns| dns.get("fake-ip-filter"))
             .and_then(Value::as_sequence)
             .unwrap();
-        assert!(!fake_ip_filter.contains(&Value::String("www.google.*".into())));
-        assert!(!fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
+        assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
+        assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
+        assert!(fake_ip_filter.contains(&Value::String(
+            "forcesafesearch.google.com".into()
+        )));
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
     }
@@ -1741,6 +1833,61 @@ mod tests {
         assert!(
             !strict_config.contains("DOMAIN-KEYWORD,91,REJECT"),
             "strict mode must not block short numeric fragments"
+        );
+    }
+
+    #[test]
+    fn entertainment_category_blocks_short_video_and_game_rules_only_when_enabled() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('fun','rule','fun','https://x/fun.txt',1)",[]).unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('fun','1','Suffix','game.example','Block','entertainment',1)",[]).unwrap();
+            db.execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('allow-douyin','allow','Exact','douyin.com','custom')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('proxy-roblox','proxy','Suffix','roblox.com','routing')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let default_config = build_config(&state, "secret", true).unwrap();
+        assert!(!default_config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
+        assert!(!default_config.contains("DOMAIN-SUFFIX,game.example,REJECT"));
+
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE settings SET value='true' WHERE key='category.entertainment'",
+                [],
+            )
+            .unwrap();
+        }
+        let enabled_config = build_config(&state, "secret", true).unwrap();
+        assert!(enabled_config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
+        assert!(enabled_config.contains("DOMAIN-SUFFIX,roblox.com,REJECT"));
+        assert!(enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"));
+        let allow_douyin = enabled_config.find("DOMAIN,douyin.com,DIRECT").unwrap();
+        let reject_douyin = enabled_config
+            .find("DOMAIN-SUFFIX,douyin.com,REJECT")
+            .unwrap();
+        assert!(
+            allow_douyin < reject_douyin,
+            "手动放行必须先于可选娱乐分类，才能处理误杀"
+        );
+        let reject_roblox = enabled_config
+            .find("DOMAIN-SUFFIX,roblox.com,REJECT")
+            .unwrap();
+        let proxy_roblox = enabled_config
+            .find("DOMAIN-SUFFIX,roblox.com,CleanWeb")
+            .unwrap();
+        assert!(
+            reject_roblox < proxy_roblox,
+            "路由规则必须晚于内容过滤，避免走代理绕过拦截"
         );
     }
 

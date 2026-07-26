@@ -36,7 +36,7 @@ const defaultSettings: Settings = {
   safeSearchEnabled: true,
   strictModeEnabled: false,
   logRetention: "30d",
-  categories: { pornography: true, gambling: true, drugs: true, violence: true, self_harm: true, hate_extremism: true, fraud: true, phishing: true, malware: true, ads: true, tracking: true },
+  categories: { pornography: true, gambling: true, drugs: true, violence: true, self_harm: true, hate_extremism: true, fraud: true, phishing: true, malware: true, ads: true, tracking: true, entertainment: false },
 };
 const defaultCoreStatus: CoreStatus = { running: false, controller: "127.0.0.1:19090", configPath: "preview" };
 

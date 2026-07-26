@@ -189,6 +189,14 @@ internal object MihomoAndroidConfig {
                 .mapNotNull { mihomoRule(it, "REJECT") }
                 .forEach { appendLine("  - $it") }
         }
+        if (state.settings.entertainmentEnabled) {
+            entertainmentSuffixes.forEach { suffix -> appendLine("  - DOMAIN-SUFFIX,$suffix,REJECT") }
+            entertainmentKeywords.forEach { keyword -> appendLine("  - DOMAIN-KEYWORD,$keyword,REJECT") }
+            state.rules
+                .filter { it.enabled && it.action == RuleAction.Block && it.category == RuleCategory.Entertainment }
+                .mapNotNull { mihomoRule(it, "REJECT") }
+                .forEach { appendLine("  - $it") }
+        }
         state.rules
             .filter { it.enabled && it.action == RuleAction.Proxy }
             .mapNotNull { mihomoRule(it, finalPolicy) }
@@ -279,5 +287,45 @@ internal object MihomoAndroidConfig {
         "yandex.net",
         "youtu.be",
         "youtube.com"
+    )
+
+    private val entertainmentSuffixes = listOf(
+        "douyin.com",
+        "douyinpic.com",
+        "douyincdn.com",
+        "iesdouyin.com",
+        "snssdk.com",
+        "tiktok.com",
+        "tiktokv.com",
+        "tiktokcdn.com",
+        "kuaishou.com",
+        "gifshow.com",
+        "ksapisrv.com",
+        "yximgs.com",
+        "bilibili.com",
+        "bilivideo.com",
+        "hdslb.com",
+        "huya.com",
+        "douyu.com",
+        "xiaohongshu.com",
+        "xhscdn.com",
+        "youtube.com",
+        "googlevideo.com",
+        "ytimg.com",
+        "roblox.com",
+        "rbxcdn.com",
+        "steamcommunity.com",
+        "steampowered.com",
+        "discord.com",
+        "discord.gg",
+        "twitch.tv"
+    )
+
+    private val entertainmentKeywords = listOf(
+        "shortvideo",
+        "short-video",
+        "livestream",
+        "mobilegame",
+        "gamevideo"
     )
 }

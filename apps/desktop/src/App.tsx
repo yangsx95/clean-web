@@ -80,6 +80,21 @@ function proxyDelayLabel(d: number | undefined) {
   return { text: `${d}ms`, cls: "slow" };
 }
 
+function compactCount(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  const abs = Math.abs(value);
+  if (abs < 1000) return new Intl.NumberFormat("en-US").format(value);
+  const units = [
+    { threshold: 1_000_000, suffix: "m" },
+    { threshold: 1_000, suffix: "k" },
+  ];
+  const unit = units.find(item => abs >= item.threshold);
+  if (!unit) return String(value);
+  const scaled = value / unit.threshold;
+  const digits = Math.abs(scaled) >= 10 ? 0 : 1;
+  return `${scaled.toFixed(digits).replace(/\.0$/, "")}${unit.suffix}`;
+}
+
 export function App() {
   const [page, setPage] = useState<AppPage>("overview");
   const [locked, setLocked] = useState(true);
@@ -238,9 +253,9 @@ function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComp
       </div>
       {runtimeError && <div className="runtime-error compact" role="alert">{runtimeError}</div>}
       <div className="locked-status-stats">
-        <article><span>已拦截</span><strong>{stats.block}</strong></article>
-        <article><span>已允许</span><strong>{stats.allow}</strong></article>
-        <article><span>总请求</span><strong>{stats.total}</strong></article>
+        <article><span>已拦截</span><strong>{compactCount(stats.block)}</strong></article>
+        <article><span>已允许</span><strong>{compactCount(stats.allow)}</strong></article>
+        <article><span>总请求</span><strong>{compactCount(stats.total)}</strong></article>
       </div>
       <button className="primary full" onClick={()=>setDialog("unlock")}><LockKeyhole size={16}/>点击解锁</button>
     </section>
@@ -293,6 +308,13 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
 function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOpenLogs, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onAddRule:()=>void }) {
   const running=coreStatus?.running===true;
   const recentLogs = logs.slice(0,4);
+  const enabledControls = [
+    true,
+    settings.safeSearchEnabled,
+    settings.strictModeEnabled,
+    settings.proxyEnabled,
+    settings.categories.entertainment,
+  ].filter(Boolean).length;
   const protectionLabel = running ? "保护运行中" : "保护未运行";
   const protectionMessage = running
     ? `保护服务 PID ${coreStatus?.pid ?? "-"} · 安全 DNS 已配置`
@@ -311,16 +333,17 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
           <p>{protectionMessage}</p>
           <Switch checked={running} label="总保护" disabled={isBusy(busyScope.protection)} onChange={(value) => onToggle("protection_enabled", value)} />
         </article>
-        <article><span>今日拦截</span><strong>{logStats.block}</strong><small>访问日志总计</small></article>
-        <article><span>已允许</span><strong>{logStats.allow}</strong><small>正常访问请求</small></article>
-        <article><span>总请求</span><strong>{logStats.total}</strong><small>已记录决策</small></article>
+        <article><span>今日拦截</span><strong>{compactCount(logStats.block)}</strong><small>访问日志总计</small></article>
+        <article><span>已允许</span><strong>{compactCount(logStats.allow)}</strong><small>正常访问请求</small></article>
+        <article><span>总请求</span><strong>{compactCount(logStats.total)}</strong><small>已记录决策</small></article>
       </section>
       <section className="cw-dashboard-grid">
         <article className="cw-panel">
-          <div className="cw-panel-head"><h3>策略开关</h3><span>3 项启用</span></div>
+          <div className="cw-panel-head"><h3>策略开关</h3><span>{enabledControls} 项启用</span></div>
           <SettingLine title="本地拦截规则" active />
           <SettingLine title="安全搜索强制" active={settings.safeSearchEnabled}><Switch checked={settings.safeSearchEnabled} label="安全搜索" disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value) => onToggle("safe_search_enabled", value)} /></SettingLine>
           <SettingLine title="严格模式" active={settings.strictModeEnabled}><Switch checked={settings.strictModeEnabled} label="严格模式" disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value) => onToggle("strict_mode_enabled", value)} /></SettingLine>
+          <SettingLine title="短视频与游戏" active={Boolean(settings.categories.entertainment)}><Switch checked={Boolean(settings.categories.entertainment)} label="短视频与游戏" disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value) => onToggle("category.entertainment", value)} /></SettingLine>
           <SettingLine title="代理订阅路由" active={settings.proxyEnabled}><Switch checked={settings.proxyEnabled} label="代理" disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value) => onToggle("proxy_enabled", value)} /></SettingLine>
         </article>
         <article className="cw-panel">
@@ -359,7 +382,7 @@ function LogsPage({ locked, logs, logStats, isBusy, settings, onClear, onExport,
         {locked ? <div className="empty">解锁管理台后查看访问详情</div> : visibleLogs.length === 0 ? <SampleLogs /> : visibleLogs.map(log=><AccessLogRow log={log} key={log.id}/>)}
       </article>
       <aside className="cw-log-side">
-        <article className="cw-dark-card"><h3>今日</h3><strong>{logStats.total}</strong><span>条最终决策已记录</span><div><b>{logStats.block}</b> 拦截 · <b>{logStats.allow}</b> 放行 · <b>{logStats.warning}</b> 警告</div></article>
+        <article className="cw-dark-card"><h3>今日</h3><strong>{compactCount(logStats.total)}</strong><span>条最终决策已记录</span><div><b>{compactCount(logStats.block)}</b> 拦截 · <b>{compactCount(logStats.allow)}</b> 放行 · <b>{compactCount(logStats.warning)}</b> 警告</div></article>
         <article className="cw-panel privacy-panel"><h3>隐私控制</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">保留期：7 天</option><option value="30d">保留期：30 天</option><option value="90d">保留期：90 天</option><option value="forever">保留期：永久</option></select><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>
       </aside>
     </section>
@@ -376,13 +399,15 @@ function SampleLogs() {
 }
 
 function AccessLogRow({ log }: { log:backend.AccessLog }) {
+  const target = log.domain ?? log.targetIp ?? "未知目标";
+  const endpoint = log.targetIp ? `${log.targetIp}${log.targetPort ? `:${log.targetPort}` : ""}` : log.targetPort ? `:${log.targetPort}` : "未知地址";
+  const rule = log.category ?? log.rule ?? "默认策略";
+  const source = `${log.processName ?? "未知进程"} / ${log.route ?? "直连"}`;
   return <div className="cw-access-row">
     <time>{new Date(log.observedAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</time>
-    <b>{log.domain??log.targetIp??"未知目标"}</b>
-    <span>{log.targetIp}{log.targetPort?`:${log.targetPort}`:""}</span>
+    <div className="access-target"><b>{target}</b><span>{endpoint}</span></div>
     <span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span>
-    <small>{log.category??log.rule??"默认"}</small>
-    <small>{log.processName??"未知进程"} / {log.route??"直连"}</small>
+    <div className="access-meta"><small>{rule}</small><small>{source}</small></div>
   </div>;
 }
 
@@ -414,7 +439,7 @@ function SettingsPage({ settings, coreStatus, isBusy, onToggle, onRetention, onL
     <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、严格模式、日志保留和冲突提示，同时不暴露 Mihomo 内部细节。</p><div><button className="secondary" onClick={()=>void onLock()}>锁定管理台</button></div></section>
     <section className="cw-settings-layout">
       <div>
-        <article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>
+        <article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>
         <article className="cw-panel management-panel"><h3>管理会话</h3><div className="readonly-field">管理台已解锁 · 除非手动锁定，否则 14 分钟后过期</div><div className="readonly-field">密码重置需要本机系统管理员授权</div><p>V1 不提供账户、云同步、远程监控或自动遥测。</p><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">日志保留：7 天</option><option value="30d">日志保留：30 天</option><option value="90d">日志保留：90 天</option><option value="forever">日志保留：永久</option></select></article>
       </div>
       <div>
@@ -770,7 +795,7 @@ function SubscriptionDialog({ kind, subscription, onClose, onSubmit }: { kind: "
         {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" defaultValue={defaultFormat}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">安全搜索映射</option></select></>}
         <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" defaultValue={subscription?.name??""} placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
         <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" defaultValue={subscription?.url??""} placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
-        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" defaultValue={subscription?.category??"custom"}><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="ads">广告</option></select></>}
+        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" defaultValue={subscription?.category??"custom"}><option value="custom">自定义</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="entertainment">短视频与游戏</option><option value="ads">广告</option></select></>}
         <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval" defaultValue={defaultInterval}><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
         {error&&<span className="form-error">{error}</span>}
         <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">{editing?"保存修改":"验证并添加"}</button></div>

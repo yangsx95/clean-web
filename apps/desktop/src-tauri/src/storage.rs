@@ -396,6 +396,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
         ("category.malware", "true"),
         ("category.ads", "true"),
         ("category.tracking", "true"),
+        ("category.entertainment", "false"),
     ];
     for (key, value) in defaults {
         db.execute(
@@ -1088,7 +1089,10 @@ fn allowed_setting(key: &str, value: &str) -> bool {
             | "access_logging_enabled"
             | "safe_search_enabled"
             | "strict_mode_enabled"
-    ) || matches!(key, "category.ads" | "category.tracking");
+    ) || matches!(
+        key,
+        "category.ads" | "category.tracking" | "category.entertainment"
+    );
     (boolean_key && matches!(value, "true" | "false"))
         || (key == "log_retention" && matches!(value, "7d" | "30d" | "90d" | "forever"))
 }
@@ -1119,6 +1123,7 @@ mod tests {
         assert!(!settings.strict_mode_enabled);
         assert!(settings.access_logging_enabled);
         assert!(settings.categories["pornography"]);
+        assert!(!settings.categories["entertainment"]);
     }
 
     #[test]
@@ -1136,6 +1141,7 @@ mod tests {
         assert!(!allowed_setting("category.malware", "false"));
         assert!(allowed_setting("category.ads", "false"));
         assert!(allowed_setting("category.tracking", "false"));
+        assert!(allowed_setting("category.entertainment", "false"));
         assert!(!allowed_setting("password_hash", "stolen"));
         assert!(!allowed_setting("proxy_enabled", "yes"));
     }

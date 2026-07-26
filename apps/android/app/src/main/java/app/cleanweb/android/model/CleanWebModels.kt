@@ -12,6 +12,7 @@ data class ProtectionSettings(
     val safeSearchEnabled: Boolean = true,
     val strictModeEnabled: Boolean = false,
     val adsTrackingEnabled: Boolean = true,
+    val entertainmentEnabled: Boolean = false,
     val accessLogsEnabled: Boolean = true,
     val autoSelectNode: Boolean = true,
     val alwaysOnVpnGuidanceSeen: Boolean = false
@@ -29,6 +30,7 @@ data class RuleEntry(
 enum class RuleCategory(val label: String) {
     Core("核心"),
     AdsTracking("广告"),
+    Entertainment("短视频与游戏"),
     CustomBlock("拦截"),
     CustomAllow("放行"),
     Routing("路由")
