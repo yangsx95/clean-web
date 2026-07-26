@@ -138,6 +138,47 @@ describe("management actions", () => {
     subscribe.mockRestore();
   });
 
+  it("polls access logs when update events are missed", async () => {
+    const interval = vi.spyOn(window, "setInterval");
+
+    render(<App />);
+    await unlockManagement();
+
+    await waitFor(() => expect(interval).toHaveBeenCalledWith(expect.any(Function), 3000));
+    interval.mockRestore();
+  });
+
+  it("keeps polling access logs after a refresh failure", async () => {
+    let pollLogs: (() => void) | undefined;
+    const interval = vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 3000 && typeof handler === "function") pollLogs = handler as () => void;
+      return 1;
+    });
+    vi.spyOn(backend, "listAccessLogs")
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("temporary log read failure"))
+      .mockResolvedValueOnce([{
+        id: "fresh-log",
+        observedAt: "2026-07-26T11:03:32Z",
+        domain: "fresh.example",
+        targetPort: 443,
+        decision: "allow",
+        operatingSystem: "test",
+        systemUser: "test",
+      }]);
+
+    render(<App />);
+    await unlockManagement();
+    await waitFor(() => expect(pollLogs).toBeTruthy());
+
+    act(() => pollLogs?.());
+    await waitFor(() => expect(backend.listAccessLogs).toHaveBeenCalledTimes(2));
+    act(() => pollLogs?.());
+
+    expect(await screen.findByText("fresh.example")).toBeTruthy();
+    interval.mockRestore();
+  });
+
   it("confirms app quit requests while protection keeps running", async () => {
     let requestQuit = () => {};
     const coreStatus = vi.spyOn(backend, "getCoreStatus")

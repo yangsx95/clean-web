@@ -247,10 +247,13 @@ internal object MihomoAndroidConfig {
         return "'${value.replace("'", "''")}'"
     }
 
-    private data class SafeSearchMapping(val domain: String, val target: String)
+    private data class SafeSearchMapping(
+        val domain: String,
+        val target: String
+    )
 
     private val safeSearchMappings = listOf(
-        SafeSearchMapping("www.google.com", "forcesafesearch.google.com"),
+        SafeSearchMapping("www.google.com", "216.239.38.120"),
         SafeSearchMapping("www.bing.com", "strict.bing.com"),
         SafeSearchMapping("duckduckgo.com", "safe.duckduckgo.com"),
         SafeSearchMapping("www.youtube.com", "restrict.youtube.com"),
@@ -293,8 +296,16 @@ internal object MihomoAndroidConfig {
         "douyin.com",
         "douyinpic.com",
         "douyincdn.com",
+        "douyinvod.com",
         "iesdouyin.com",
         "snssdk.com",
+        "amemv.com",
+        "pstatp.com",
+        "bytecdn.cn",
+        "byteimg.com",
+        "bytedance.com",
+        "bytedance.net",
+        "zijieapi.com",
         "tiktok.com",
         "tiktokv.com",
         "tiktokcdn.com",
@@ -304,6 +315,7 @@ internal object MihomoAndroidConfig {
         "yximgs.com",
         "bilibili.com",
         "bilivideo.com",
+        "bilivideo.cn",
         "hdslb.com",
         "huya.com",
         "douyu.com",

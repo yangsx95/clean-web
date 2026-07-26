@@ -6,6 +6,7 @@ import * as backend from "./backend";
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
 type AppDialog = "unlock" | "rules" | "editRuleSubscription" | "proxy" | "custom" | "quit" | null;
 type AppPage = "overview" | "rules" | "logs" | "subscriptions" | "proxy" | "settings";
+const ACCESS_LOG_REFRESH_INTERVAL_MS = 3000;
 
 async function decodeQrImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
@@ -132,7 +133,7 @@ export function App() {
     if (storedToken) {
       try {
         const result = await backend.validateSession(storedToken);
-        const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,100),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
+        const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,500),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
         setSessionToken(result.sessionToken);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules);setLocked(false);
       } catch {
         backend.clearStoredSessionToken();
@@ -143,7 +144,7 @@ export function App() {
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(()=>reloadRuntime(sessionToken,{silent:true})).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
-  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,100),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
+  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,500),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
   const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats({block:0,allow:0,warning:0,total:0}); setLocked(true); };
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
     if(!options.silent)showPolicyStatus({state:"applying",message:options.applyingMessage??"正在应用网络策略…"});
@@ -195,8 +196,43 @@ export function App() {
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError("");try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){showPolicyStatus({state:"failed",message:`代理节点切换失败：${String(reason)}`});setRuntimeError(String(reason));throw reason;}};
-  useEffect(()=>{if(!sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.syncAccessLogs().catch(()=>0).then(()=>Promise.all([backend.listAccessLogs(sessionToken,undefined,undefined,100),backend.getAccessLogStats(sessionToken)])).then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
-  useEffect(()=>{if(sessionToken)return;let cancelled=false;let unlisten:(()=>void)|undefined;const refresh=()=>void backend.getPublicAccessLogStats().then(stats=>{if(!cancelled)setAccessLogStats(stats);});refresh();void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[sessionToken]);
+  useEffect(()=>{
+    if(!sessionToken)return;
+    let cancelled=false;
+    let refreshing=false;
+    let unlisten:(()=>void)|undefined;
+    const refresh=()=>{
+      if(refreshing)return;
+      refreshing=true;
+      void backend.syncAccessLogs().catch(()=>0)
+        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,undefined,undefined,500),backend.getAccessLogStats(sessionToken)]))
+        .then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}})
+        .catch(()=>undefined)
+        .finally(()=>{refreshing=false;});
+    };
+    refresh();
+    const interval=window.setInterval(refresh,ACCESS_LOG_REFRESH_INTERVAL_MS);
+    void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});
+    return()=>{cancelled=true;window.clearInterval(interval);if(unlisten)unlisten();};
+  },[sessionToken]);
+  useEffect(()=>{
+    if(sessionToken)return;
+    let cancelled=false;
+    let refreshing=false;
+    let unlisten:(()=>void)|undefined;
+    const refresh=()=>{
+      if(refreshing)return;
+      refreshing=true;
+      void backend.getPublicAccessLogStats()
+        .then(stats=>{if(!cancelled)setAccessLogStats(stats);})
+        .catch(()=>undefined)
+        .finally(()=>{refreshing=false;});
+    };
+    refresh();
+    const interval=window.setInterval(refresh,ACCESS_LOG_REFRESH_INTERVAL_MS);
+    void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});
+    return()=>{cancelled=true;window.clearInterval(interval);if(unlisten)unlisten();};
+  },[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
   if (locked) return <LockedStatus coreStatus={coreStatus} stats={accessLogStats} runtimeError={runtimeError} needsSetup={needsSetup} onSetupComplete={() => setNeedsSetup(false)} onUnlock={handleUnlock} dialog={dialog} setDialog={setDialog} onHideToBackground={hideToBackground} onQuitApp={quitApp} />;
   return <div className="shell">
@@ -372,19 +408,28 @@ function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
 }
 
 function LogsPage({ locked, logs, logStats, isBusy, settings, onClear, onExport, onToggle, onRetention }: { locked:boolean; logs:backend.AccessLog[]; logStats:backend.AccessLogStats; isBusy:(scope:string)=>boolean; settings:backend.Settings; onClear:()=>Promise<void>; onExport:()=>Promise<void>; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void> }) {
-  const visibleLogs = logs.length ? logs : [];
+  const [decisionFilter,setDecisionFilter]=useState<"all"|"block"|"warning">("all");
+  const [search,setSearch]=useState("");
+  const query=search.trim().toLowerCase();
+  const visibleLogs = logs.filter(log=>{
+    if(decisionFilter!=="all"&&log.decision!==decisionFilter)return false;
+    if(!query)return true;
+    return [log.domain,log.targetIp,log.rule,log.category,log.processName,log.route,log.proxyGroup].some(value=>value?.toLowerCase().includes(query));
+  });
   return <>
     <section className="cw-page-intro"><p>查看仅保存在本机的最终网络决策。日志支持筛选、导出 CSV、清空和按策略保留。</p><div><button className="secondary" disabled={isBusy(busyScope.logs)} onClick={()=>void onExport()}>导出 CSV</button><button className="primary danger" disabled={isBusy(busyScope.logs)} onClick={()=>void onClear()}>清空日志</button></div></section>
     <section className="cw-logs-layout">
-      <article className="cw-log-table">
-        <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills"><span>全部</span><span>已拦截</span><span>未知 IP</span></div></div>
-        <div className="log-search">搜索域名、IP、进程、规则、分类</div>
-        {locked ? <div className="empty">解锁管理台后查看访问详情</div> : visibleLogs.length === 0 ? <SampleLogs /> : visibleLogs.map(log=><AccessLogRow log={log} key={log.id}/>)}
-      </article>
-      <aside className="cw-log-side">
+      <div className="cw-log-side">
         <article className="cw-dark-card"><h3>今日</h3><strong>{compactCount(logStats.total)}</strong><span>条最终决策已记录</span><div><b>{compactCount(logStats.block)}</b> 拦截 · <b>{compactCount(logStats.allow)}</b> 放行 · <b>{compactCount(logStats.warning)}</b> 警告</div></article>
         <article className="cw-panel privacy-panel"><h3>隐私控制</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">保留期：7 天</option><option value="30d">保留期：30 天</option><option value="90d">保留期：90 天</option><option value="forever">保留期：永久</option></select><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>
-      </aside>
+      </div>
+      <article className="cw-log-table">
+        <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills" role="group" aria-label="日志筛选"><button className={decisionFilter==="all"?"active":""} onClick={()=>setDecisionFilter("all")}>全部</button><button className={decisionFilter==="block"?"active":""} onClick={()=>setDecisionFilter("block")}>已拦截</button><button className={decisionFilter==="warning"?"active":""} onClick={()=>setDecisionFilter("warning")}>未知 IP</button></div></div>
+        <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>setSearch(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" />
+        <div className="cw-log-list">
+          {locked ? <div className="empty">解锁管理台后查看访问详情</div> : logs.length === 0 ? <SampleLogs /> : visibleLogs.length === 0 ? <div className="empty">没有匹配的访问记录</div> : visibleLogs.map(log=><AccessLogRow log={log} key={log.id}/>)}
+        </div>
+      </article>
     </section>
   </>;
 }
@@ -402,7 +447,7 @@ function AccessLogRow({ log }: { log:backend.AccessLog }) {
   const target = log.domain ?? log.targetIp ?? "未知目标";
   const endpoint = log.targetIp ? `${log.targetIp}${log.targetPort ? `:${log.targetPort}` : ""}` : log.targetPort ? `:${log.targetPort}` : "未知地址";
   const rule = log.category ?? log.rule ?? "默认策略";
-  const source = `${log.processName ?? "未知进程"} / ${log.route ?? "直连"}`;
+  const source = `${log.processName?.trim() || "设备流量"} / ${log.route ?? "直连"}`;
   return <div className="cw-access-row">
     <time>{new Date(log.observedAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</time>
     <div className="access-target"><b>{target}</b><span>{endpoint}</span></div>

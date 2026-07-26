@@ -304,8 +304,7 @@ header h1 {
   font-weight: 800;
 }
 
-.cw-panel-head span,
-.filter-pills span {
+.cw-panel-head span {
   height: 26px;
   border-radius: 999px;
   background: var(--cw-soft);
@@ -453,6 +452,26 @@ header h1 {
   gap: 8px;
 }
 
+.filter-pills button {
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--cw-soft);
+  color: var(--cw-muted);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.filter-pills button.active {
+  background: var(--cw-ink);
+  color: #fff;
+}
+
 .log-search {
   height: 38px;
   border-radius: 8px;
@@ -465,6 +484,13 @@ header h1 {
   font-size: 13px;
   font-weight: 800;
   margin-bottom: 14px;
+  outline: none;
+  width: 100%;
+}
+
+.log-search:focus {
+  border-color: #8fbea4;
+  box-shadow: 0 0 0 3px rgba(31, 138, 112, .12);
 }
 
 .cw-access-row {
@@ -1709,7 +1735,20 @@ h1 {
 .proxy-toolbar-actions .secondary.selected { color: var(--color-primary); border-color: var(--color-primary); background: var(--color-primary-light); }
 .import-dropdown { position: relative; display: inline-flex; align-items: stretch; }
 .import-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.import-menu-trigger { width: 38px; padding-inline: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid rgba(255,255,255,0.35); justify-content: center; }
+.import-menu-trigger {
+  width: 34px;
+  min-width: 34px;
+  padding-inline: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(255,255,255,0.32);
+  justify-content: center;
+}
+.import-menu-trigger svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.6;
+}
 .import-menu {
   position: absolute;
   right: 0;
@@ -2335,6 +2374,7 @@ h1 {
 html,
 body,
 #root {
+  height: 100%;
   overflow-x: hidden;
 }
 
@@ -2343,7 +2383,9 @@ body { background: var(--cw-ground); }
 .shell {
   grid-template-columns: 220px minmax(0, 1fr);
   background: var(--cw-ground);
-  overflow-x: hidden;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .shell > aside {
@@ -2351,6 +2393,10 @@ body { background: var(--cw-ground); }
   color: var(--cw-muted);
   border-right: 1px solid var(--cw-line);
   padding: 24px 16px;
+  position: relative;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .shell .brand { color: var(--cw-ink); border: 0; padding: 0; margin-bottom: 28px; }
@@ -2374,7 +2420,16 @@ body { background: var(--cw-ground); }
 .shell .sidebar-version {
   color: #7b878c;
 }
-.shell > main { min-width: 0; padding: 22px 26px 26px; max-width: none; margin: 0; overflow-x: hidden; }
+.shell > main {
+  min-width: 0;
+  height: 100vh;
+  min-height: 0;
+  padding: 22px 26px 26px;
+  max-width: none;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
 header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--cw-ink); font-weight: 800; }
 .eyebrow { color: var(--cw-accent); font-size: 12px; font-weight: 800; letter-spacing: 0; }
 .primary, .secondary { border-radius: 8px; min-height: 38px; font-size: 13px; font-weight: 800; }
@@ -2442,17 +2497,42 @@ header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--
   line-height: 1.05;
 }
 
+.cw-status-panel > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding-right: 82px;
+}
+
+.cw-status-panel > div span {
+  font-size: 12px;
+  line-height: 16px;
+  color: #7f8c91;
+}
+
+.cw-status-panel > div b {
+  display: block;
+  font-size: 17px;
+  line-height: 22px;
+  color: #fff;
+}
+
 .cw-status-panel h2 {
   max-width: 100%;
   padding-right: 74px;
   overflow: visible;
   white-space: normal;
-  font-size: clamp(22px, 2.1vw, 27px);
-  line-height: 1.12;
+  margin-top: 4px;
+  font-size: clamp(24px, 2vw, 30px);
+  line-height: 1.08;
 }
 
 .cw-status-panel p {
-  max-width: calc(100% - 18px);
+  max-width: calc(100% - 8px);
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 19px;
 }
 
 .cw-dashboard-grid {
@@ -2474,7 +2554,8 @@ header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--
 }
 
 .cw-logs-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(210px, 232px);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
 }
 
 .cw-log-side {
@@ -2482,12 +2563,28 @@ header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--
   border: 0;
   background: transparent;
   color: inherit;
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 14px;
 }
 
 .cw-access-row {
-  grid-template-columns: 50px minmax(0, 1.35fr) 58px minmax(0, .9fr);
-  min-height: 58px;
+  grid-template-columns: 50px minmax(150px, 1.15fr) 58px minmax(180px, .85fr);
+  min-height: 54px;
   gap: 12px;
+}
+
+.cw-log-table {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 230px);
+}
+
+.cw-log-list {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .access-target,

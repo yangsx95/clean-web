@@ -23,6 +23,7 @@ class MihomoAndroidConfigTest {
         val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
 
         assertTrue(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,dh.net,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dns.google,REJECT"))
         assertFalse(config.contains("adult.example"))
     }
@@ -34,6 +35,14 @@ class MihomoAndroidConfigTest {
         assertTrue(config.contains("  parse-pure-ip: true"))
         assertTrue(config.contains("  force-dns-mapping: true"))
         assertTrue(config.contains("    QUIC:"))
+    }
+
+    @Test
+    fun googleSafeSearchUsesVipAddressMapping() {
+        val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
+
+        assertTrue(config.contains("  www.google.com: 216.239.38.120"))
+        assertFalse(config.contains("  www.google.com: forcesafesearch.google.com"))
     }
 
     @Test
@@ -254,12 +263,16 @@ class MihomoAndroidConfigTest {
         val disabledConfig = MihomoAndroidConfig.build(disabled)
 
         assertTrue(!disabledConfig.contains("DOMAIN-SUFFIX,douyin.com,REJECT"))
+        assertTrue(!disabledConfig.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"))
+        assertTrue(!disabledConfig.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"))
         assertTrue(!disabledConfig.contains("game.example"))
 
         val enabled = disabled.copy(settings = disabled.settings.copy(entertainmentEnabled = true))
         val enabledConfig = MihomoAndroidConfig.build(enabled)
 
         assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,douyin.com,REJECT"))
+        assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"))
+        assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"))
         assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,game.example,REJECT"))
         assertTrue(enabledConfig.indexOf("DOMAIN,douyin.com,DIRECT") < enabledConfig.indexOf("DOMAIN-SUFFIX,douyin.com,REJECT"))
         assertTrue(enabledConfig.indexOf("DOMAIN-SUFFIX,roblox.com,REJECT") < enabledConfig.indexOf("DOMAIN-SUFFIX,roblox.com,DIRECT"))

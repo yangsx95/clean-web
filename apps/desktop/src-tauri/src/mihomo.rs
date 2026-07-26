@@ -120,6 +120,8 @@ struct SafeSearchManifest {
 struct SafeSearchMapping {
     domain: String,
     target: String,
+    #[serde(default)]
+    route_addresses: Vec<String>,
 }
 
 #[tauri::command]
@@ -312,7 +314,11 @@ async fn reload_protection_inner(
     let binary = ensure_binary(app, &runtime)?;
     let secret = controller_secret(state)?;
     let new_config = build_config(state, &secret, true)?;
-    if active_config_matches(&runtime.join("active-config"), status.pid, &new_config) {
+    if active_config_matches(&runtime.join("active-config"), status.pid, &new_config)
+        && running_tun_routes_match(&secret, &new_config)
+            .await
+            .unwrap_or(false)
+    {
         return Ok(status);
     }
     let config_path = runtime.join("config.yaml");
@@ -347,6 +353,12 @@ async fn reload_protection_inner(
             "Mihomo 热更新失败（HTTP {status_code}）：{detail}。如果这是升级前启动的内核，请关闭保护后重新开启一次。"
         ));
     }
+    if !running_tun_routes_match(&secret, &new_config)
+        .await
+        .unwrap_or(false)
+    {
+        return start_inner(app, state);
+    }
     if let Some(pid) = status.pid {
         atomic_write(
             &runtime.join("active-config"),
@@ -355,6 +367,53 @@ async fn reload_protection_inner(
         .map_err(error)?;
     }
     core_status(state)
+}
+
+async fn running_tun_routes_match(secret: &str, config: &str) -> Result<bool, String> {
+    let expected = config_tun_route_addresses(config)?;
+    let response = reqwest::Client::new()
+        .get(format!("http://{CONTROLLER}/configs"))
+        .bearer_auth(secret)
+        .send()
+        .await
+        .map_err(error)?
+        .error_for_status()
+        .map_err(error)?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(error)?;
+    let mut running: Vec<String> = response
+        .get("tun")
+        .and_then(|tun| tun.get("route-address"))
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    running.sort();
+    running.dedup();
+    Ok(running == expected)
+}
+
+fn config_tun_route_addresses(config: &str) -> Result<Vec<String>, String> {
+    let value: Value = serde_yaml::from_str(config).map_err(error)?;
+    let mut routes: Vec<String> = value
+        .get("tun")
+        .and_then(|tun| tun.get("route-address"))
+        .and_then(Value::as_sequence)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    routes.sort();
+    routes.dedup();
+    Ok(routes)
 }
 
 fn config_hash(config: &str) -> String {
@@ -807,7 +866,12 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
-    let dns_routes = dns_route_addresses(&platform::system_dns_servers());
+    let mut dns_routes = dns_route_addresses(&platform::system_dns_servers());
+    if safe_search_enabled {
+        dns_routes.extend(safe_search_route_addresses(&safe_search_mappings));
+        dns_routes.sort();
+        dns_routes.dedup();
+    }
     if !dns_routes.is_empty() {
         insert(
             &mut tun,
@@ -1121,6 +1185,15 @@ fn dns_route_addresses(servers: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn safe_search_route_addresses(mappings: &[SafeSearchMapping]) -> Vec<String> {
+    mappings
+        .iter()
+        .flat_map(|mapping| mapping.route_addresses.iter())
+        .filter(|address| address.parse::<ipnet::IpNet>().is_ok())
+        .cloned()
+        .collect()
+}
+
 fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
@@ -1281,8 +1354,16 @@ fn append_entertainment_rules(result: &mut Vec<Value>) {
         "douyin.com",
         "douyinpic.com",
         "douyincdn.com",
+        "douyinvod.com",
         "iesdouyin.com",
         "snssdk.com",
+        "amemv.com",
+        "pstatp.com",
+        "bytecdn.cn",
+        "byteimg.com",
+        "bytedance.com",
+        "bytedance.net",
+        "zijieapi.com",
         "tiktok.com",
         "tiktokv.com",
         "tiktokcdn.com",
@@ -1294,6 +1375,7 @@ fn append_entertainment_rules(result: &mut Vec<Value>) {
         "yximgs.com",
         "bilibili.com",
         "bilivideo.com",
+        "bilivideo.cn",
         "hdslb.com",
         "biliapi.net",
         "huya.com",
@@ -1425,6 +1507,7 @@ fn safe_search_mappings(db: &rusqlite::Connection) -> Result<Vec<SafeSearchMappi
             Ok(SafeSearchMapping {
                 domain: row.get(0)?,
                 target: row.get(1)?,
+                route_addresses: Vec::new(),
             })
         })
         .map_err(error)?
@@ -1765,19 +1848,28 @@ mod tests {
             yaml.get("hosts")
                 .and_then(|hosts| hosts.get("www.google.com"))
                 .and_then(Value::as_str),
-            Some("forcesafesearch.google.com")
+            Some("216.239.38.120")
         );
         assert_eq!(
             yaml.get("hosts")
                 .and_then(|hosts| hosts.get("www.google.*"))
                 .and_then(Value::as_str),
-            Some("forcesafesearch.google.com")
+            Some("216.239.38.120")
         );
         assert_eq!(
             yaml.get("hosts")
                 .and_then(|hosts| hosts.get("www.youtube-nocookie.com"))
                 .and_then(Value::as_str),
             Some("restrictmoderate.youtube.com")
+        );
+        let route_addresses = yaml
+            .get("tun")
+            .and_then(|tun| tun.get("route-address"))
+            .and_then(Value::as_sequence)
+            .expect("tun route addresses");
+        assert!(
+            route_addresses.contains(&Value::String("216.239.38.120/32".into())),
+            "Google SafeSearch VIP must stay inside CleanWeb TUN routing"
         );
         let fake_ip_filter = yaml
             .get("dns")
@@ -1786,9 +1878,7 @@ mod tests {
             .unwrap();
         assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
         assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
-        assert!(fake_ip_filter.contains(&Value::String(
-            "forcesafesearch.google.com".into()
-        )));
+        assert!(fake_ip_filter.contains(&Value::String("216.239.38.120".into())));
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
     }
@@ -1857,6 +1947,8 @@ mod tests {
 
         let default_config = build_config(&state, "secret", true).unwrap();
         assert!(!default_config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
+        assert!(!default_config.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"));
+        assert!(!default_config.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"));
         assert!(!default_config.contains("DOMAIN-SUFFIX,game.example,REJECT"));
 
         {
@@ -1869,6 +1961,8 @@ mod tests {
         }
         let enabled_config = build_config(&state, "secret", true).unwrap();
         assert!(enabled_config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
+        assert!(enabled_config.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"));
+        assert!(enabled_config.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"));
         assert!(enabled_config.contains("DOMAIN-SUFFIX,roblox.com,REJECT"));
         assert!(enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"));
         let allow_douyin = enabled_config.find("DOMAIN,douyin.com,DIRECT").unwrap();
@@ -1916,6 +2010,19 @@ mod tests {
         assert!(routes.contains(&"198.18.0.0/16".into()));
         assert!(routes.contains(&"10.195.85.120/32".into()));
         assert!(routes.contains(&"240e:479:4e90:3e59::19/128".into()));
+    }
+
+    #[test]
+    fn extracts_sorted_tun_routes_from_config() {
+        let routes = config_tun_route_addresses(
+            "tun:\n  route-address:\n    - 216.239.38.120/32\n    - 198.18.0.0/16\n    - 216.239.38.120/32\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            routes,
+            vec!["198.18.0.0/16".to_string(), "216.239.38.120/32".to_string()]
+        );
     }
 
     #[test]
