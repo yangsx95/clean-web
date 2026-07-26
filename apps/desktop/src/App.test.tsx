@@ -84,6 +84,32 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "短视频与游戏" })).toBeTruthy();
   });
 
+  it("applies browser enhancement policies from settings", async () => {
+    const apply = vi.spyOn(backend, "applyBrowserPolicies").mockResolvedValueOnce({
+      browsers: [
+        {
+          id: "edge",
+          name: "Edge",
+          installed: true,
+          configured: true,
+          needsRestart: true,
+          details: [
+            { label: "强制 Google SafeSearch", configured: true, currentValue: "true", expectedValue: "true" },
+          ],
+        },
+      ],
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(await screen.findByRole("button", { name: "应用浏览器保护" }));
+
+    expect(apply).toHaveBeenCalledWith("browser-preview");
+    expect(await screen.findByText("浏览器策略已写入，重启浏览器后完全生效")).toBeTruthy();
+    apply.mockRestore();
+  });
+
   it("keeps unrelated settings interactive while one setting is applying", async () => {
     const update = vi.spyOn(backend, "updateSetting")
       .mockImplementation(() => new Promise<backend.Settings>(() => {}));

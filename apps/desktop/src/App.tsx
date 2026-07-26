@@ -1,6 +1,6 @@
 import { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, Network, Pencil, Plus, RefreshCw, ScanQrCode, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
+import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
 
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
@@ -117,6 +117,7 @@ export function App() {
   const [accessLogs,setAccessLogs]=useState<backend.AccessLog[]>([]);
   const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>({block:0,allow:0,warning:0,total:0});
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
+  const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
   const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "订阅导入", proxy: "代理节点", settings: "设置" };
   const requestAction = (action: "rules" | "proxy", mode: ProxyImportMode = "subscription") => { if (action === "proxy") setProxyImportMode(mode); setDialog(locked ? "unlock" : action); };
   const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
@@ -127,8 +128,8 @@ export function App() {
   useEffect(()=>{const preventContextMenu=(event:MouseEvent)=>event.preventDefault();window.addEventListener("contextmenu",preventContextMenu);return()=>window.removeEventListener("contextmenu",preventContextMenu);},[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
   useEffect(() => { void (async () => {
-    const [bootstrap,current,core,publicStats] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats()]);
-    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);
+    const [bootstrap,current,core,publicStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getBrowserPolicyStatus()]);
+    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);setBrowserPolicyStatus(browserPolicies);
     const storedToken = backend.getStoredSessionToken();
     if (storedToken) {
       try {
@@ -196,6 +197,7 @@ export function App() {
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError("");try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){showPolicyStatus({state:"failed",message:`代理节点切换失败：${String(reason)}`});setRuntimeError(String(reason));throw reason;}};
+  const applyBrowserPolicies=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.setting("browser_policies"),async()=>{showPolicyStatus({state:"applying",message:"正在配置浏览器增强保护…"});try{const status=await backend.applyBrowserPolicies(sessionToken);setBrowserPolicyStatus(status);showPolicyStatus({state:"applied",message:"浏览器策略已写入，重启浏览器后完全生效"});}catch(reason){showPolicyStatus({state:"failed",message:`浏览器策略配置失败：${String(reason)}`});setRuntimeError(String(reason));}});};
   useEffect(()=>{
     if(!sessionToken)return;
     let cancelled=false;
@@ -258,7 +260,7 @@ export function App() {
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} isBusy={isBusy} settings={settings} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{if(item.kind==="rule"){setEditingSubscription(item);setDialog("editRuleSubscription");}}} onAddRule={() => requestAction("rules")} onAddProxy={(mode) => requestAction("proxy", mode)} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
-      {page === "settings" && <SettingsPage settings={settings} coreStatus={coreStatus} isBusy={isBusy} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onLock={handleLock} />}
+      {page === "settings" && <SettingsPage settings={settings} coreStatus={coreStatus} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onLock={handleLock} onApplyBrowserPolicies={applyBrowserPolicies} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
@@ -478,13 +480,14 @@ function SubscriptionRows({ items, refreshingId, isBusy, onRefresh, onToggle, on
   return <div className="subscription-rows">{items.map(item=>{const rowBusy=isBusy(busyScope.subscription(item.id));return <div className="subscription-row" key={item.id}><div className="subscription-main"><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??`${item.format??"自动检测"} · ${item.updateIntervalHours??24}小时更新`}</small></div><span className="subscription-category">{item.category??(item.kind==="proxy"?"代理":"自定义")}</span><Switch checked={item.enabled} label={`${item.name}订阅`} disabled={rowBusy} onChange={(value)=>onToggle(item.id,value)}/><div className="row-actions"><button className="row-action" disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{item.kind==="rule"&&<button className="row-action" disabled={rowBusy} onClick={()=>onEdit(item)}><Pencil size={15}/></button>}<button className="row-action" disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>;})}</div>;
 }
 
-function SettingsPage({ settings, coreStatus, isBusy, onToggle, onRetention, onLock }: { settings:backend.Settings; coreStatus:backend.CoreStatus|null; isBusy:(scope:string)=>boolean; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onLock:()=>Promise<void> }) {
+function SettingsPage({ settings, coreStatus, isBusy, browserPolicyStatus, onToggle, onRetention, onLock, onApplyBrowserPolicies }: { settings:backend.Settings; coreStatus:backend.CoreStatus|null; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onLock:()=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
   const running = coreStatus?.running === true;
   return <>
-    <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、严格模式、日志保留和冲突提示，同时不暴露 Mihomo 内部细节。</p><div><button className="secondary" onClick={()=>void onLock()}>锁定管理台</button></div></section>
+    <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、浏览器增强保护、日志保留和管理会话。</p><div><button className="secondary" onClick={()=>void onLock()}>锁定管理台</button></div></section>
     <section className="cw-settings-layout">
       <div>
         <article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>
+        <BrowserPolicyPanel status={browserPolicyStatus} busy={isBusy(busyScope.setting("browser_policies"))} onApply={onApplyBrowserPolicies}/>
         <article className="cw-panel management-panel"><h3>管理会话</h3><div className="readonly-field">管理台已解锁 · 除非手动锁定，否则 14 分钟后过期</div><div className="readonly-field">密码重置需要本机系统管理员授权</div><p>V1 不提供账户、云同步、远程监控或自动遥测。</p><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">日志保留：7 天</option><option value="30d">日志保留：30 天</option><option value="90d">日志保留：90 天</option><option value="forever">日志保留：永久</option></select></article>
       </div>
       <div>
@@ -492,6 +495,29 @@ function SettingsPage({ settings, coreStatus, isBusy, onToggle, onRetention, onL
       </div>
     </section>
   </>;
+}
+
+function BrowserPolicyPanel({ status, busy, onApply }: { status:backend.BrowserPolicyStatus|null; busy:boolean; onApply:()=>Promise<void> }) {
+  const browsers = status?.browsers ?? [];
+  const configuredCount = browsers.filter(browser => browser.installed && browser.configured).length;
+  const installedCount = browsers.filter(browser => browser.installed).length;
+  return <article className="cw-panel browser-policy-panel">
+    <div className="cw-panel-head"><h3>浏览器增强保护</h3><span>{configuredCount}/{installedCount || browsers.length}</span></div>
+    <p>为 Chrome 和 Edge 写入浏览器策略，强制 Google SafeSearch、YouTube 受限模式，并关闭浏览器内置 DoH。</p>
+    <div className="browser-policy-list">
+      {browsers.length === 0 ? <div className="table-empty">正在读取浏览器状态</div> : browsers.map(browser => <BrowserPolicyRow browser={browser} key={browser.id}/>)}
+    </div>
+    <button className="primary full" disabled={busy || installedCount === 0} onClick={()=>void onApply()}><MonitorCheck size={16}/>{busy ? "配置中…" : "应用浏览器保护"}</button>
+  </article>;
+}
+
+function BrowserPolicyRow({ browser }: { browser:backend.BrowserPolicyBrowserStatus }) {
+  const statusText = !browser.installed ? "未安装" : browser.configured ? "已配置" : "需配置";
+  const statusClass = !browser.installed ? "missing" : browser.configured ? "configured" : "pending";
+  return <div className="browser-policy-row">
+    <div><b>{browser.name}</b><span>{browser.details.map(detail => detail.configured ? detail.label : `${detail.label}待配置`).join(" · ")}</span></div>
+    <strong className={statusClass}>{statusText}</strong>
+  </div>;
 }
 
 function SettingToggle({ title, note, checked, disabled, onChange }: { title:string; note:string; checked:boolean; disabled:boolean; onChange:(value:boolean)=>void|Promise<void> }) {

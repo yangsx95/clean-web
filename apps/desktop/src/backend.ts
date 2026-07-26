@@ -20,6 +20,9 @@ export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:stri
 export type AccessLogStats={block:number;allow:number;warning:number;total:number};
 export type ParentRule={id:string;action:"allow"|"block"|"proxy";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
+export type BrowserPolicyDetail={label:string;configured:boolean;currentValue?:string|null;expectedValue:string};
+export type BrowserPolicyBrowserStatus={id:string;name:string;installed:boolean;configured:boolean;needsRestart:boolean;details:BrowserPolicyDetail[]};
+export type BrowserPolicyStatus={browsers:BrowserPolicyBrowserStatus[]};
 const previewSettingsKey = "cleanweb.preview.settings";
 const previewCoreStatusKey = "cleanweb.preview.coreStatus";
 const previewParentRulesKey = "cleanweb.preview.parentRules";
@@ -275,3 +278,22 @@ export async function listParentRules(sessionToken:string):Promise<ParentRule[]>
 export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(isTauri())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:crypto.randomUUID(),enabled:true};previewParentRules.unshift(item);savePreviewParentRules();return item;}
 export async function setParentRuleEnabled(sessionToken:string,id:string,enabled:boolean):Promise<void>{if(isTauri())return invoke("set_parent_rule_enabled",{sessionToken,id,enabled});const item=previewParentRules.find(value=>value.id===id);if(item){item.enabled=enabled;savePreviewParentRules();}}
 export async function deleteParentRule(sessionToken:string,id:string):Promise<void>{if(isTauri())return invoke("delete_parent_rule",{sessionToken,id});const index=previewParentRules.findIndex(value=>value.id===id);if(index>=0){previewParentRules.splice(index,1);savePreviewParentRules();}}
+const previewBrowserPolicyStatus:BrowserPolicyStatus={browsers:[
+  {id:"chrome",name:"Chrome",installed:true,configured:false,needsRestart:false,details:[
+    {label:"强制 Google SafeSearch",configured:false,expectedValue:"true"},
+    {label:"YouTube 受限模式",configured:false,expectedValue:"2"},
+    {label:"关闭浏览器 DoH",configured:false,expectedValue:"off"},
+  ]},
+  {id:"edge",name:"Edge",installed:true,configured:false,needsRestart:false,details:[
+    {label:"强制 Google SafeSearch",configured:false,expectedValue:"true"},
+    {label:"YouTube 受限模式",configured:false,expectedValue:"2"},
+    {label:"关闭浏览器 DoH",configured:false,expectedValue:"off"},
+  ]},
+]};
+export async function getBrowserPolicyStatus():Promise<BrowserPolicyStatus>{return isTauri()?invoke("get_browser_policy_status"):structuredClone(previewBrowserPolicyStatus);}
+export async function applyBrowserPolicies(sessionToken:string):Promise<BrowserPolicyStatus>{
+  if(isTauri())return invoke("apply_browser_policies",{sessionToken});
+  const applied=structuredClone(previewBrowserPolicyStatus);
+  applied.browsers=applied.browsers.map(browser=>({...browser,configured:true,needsRestart:true,details:browser.details.map(detail=>({...detail,configured:true,currentValue:detail.expectedValue}))}));
+  return applied;
+}

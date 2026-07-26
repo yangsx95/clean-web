@@ -1,5 +1,6 @@
 pub mod access_logs;
 pub mod builtin_rules;
+pub mod browser_policy;
 pub mod mihomo;
 pub mod platform;
 pub mod proxy_crypto;
@@ -217,6 +218,8 @@ pub fn run() {
             access_logs::public_access_log_stats,
             access_logs::clear_access_logs,
             access_logs::export_access_logs_csv,
+            browser_policy::get_browser_policy_status,
+            browser_policy::apply_browser_policies,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build CleanWeb");

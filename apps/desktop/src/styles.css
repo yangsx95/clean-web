@@ -651,6 +651,63 @@ header h1 {
   font-size: 28px;
 }
 
+.browser-policy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.browser-policy-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #eef0ed;
+}
+
+.browser-policy-row {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #eef0ed;
+}
+
+.browser-policy-row b,
+.browser-policy-row span {
+  display: block;
+}
+
+.browser-policy-row span {
+  margin-top: 3px;
+  color: var(--cw-muted);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 700;
+}
+
+.browser-policy-row strong {
+  justify-self: end;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.browser-policy-row strong.configured {
+  background: #e9f7ef;
+  color: #196b3c;
+}
+
+.browser-policy-row strong.pending {
+  background: #fff4df;
+  color: #8a4f00;
+}
+
+.browser-policy-row strong.missing {
+  background: #eef0ed;
+  color: #68716c;
+}
+
 @media (max-width: 900px) {
   .shell {
     display: block;
