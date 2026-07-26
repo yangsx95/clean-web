@@ -168,6 +168,27 @@ class MihomoAndroidConfigTest {
     }
 
     @Test
+    fun proxyConfigImportAcceptsLongUnicodeFlowStyleNodes() {
+        val longServer = "a".repeat(340) + ".example.com"
+        val sanitized = ProxyConfigSanitizer.sanitize(
+            """
+            proxies:
+              - {name: 🇯🇵 日本A01 | IEPL, server: $longServer, port: 476, type: ss, cipher: aes-256-gcm, password: password-token, udp: true}
+            proxy-groups:
+              - name: 🔰 选择节点
+                type: select
+                proxies:
+                  - 🇯🇵 日本A01 | IEPL
+            rules:
+              - MATCH,DIRECT
+            """.trimIndent()
+        )
+
+        assertEquals(1, sanitized.proxyCount)
+        assertTrue(sanitized.payload.contains("日本A01"))
+    }
+
+    @Test
     fun adsRulesFollowAdsTrackingToggle() {
         val state = CleanWebState(
             settings = ProtectionSettings(adsTrackingEnabled = false),
