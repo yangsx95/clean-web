@@ -327,15 +327,6 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
           <div className="cw-panel-head"><h3>最近访问日志</h3><span>Live</span></div>
           <MiniLogList logs={recentLogs} />
         </article>
-        <article className="cw-panel cw-rule-priority">
-          <div className="cw-panel-head"><h3>规则优先级</h3><span>Ordered</span></div>
-          {["高风险安全规则", "家长黑白名单", "核心内容类别", "订阅与路由规则"].map((item,index)=><div className="priority-row" key={item}><b>{String(index+1).padStart(2,"0")}</b><span>{item}</span></div>)}
-        </article>
-        <article className="cw-panel cw-import-callout">
-          <h3>导入订阅</h3>
-          <p>粘贴代理或过滤列表 URL，CleanWeb 会先验证再应用。</p>
-          <button className="secondary" onClick={onOpenLogs}>查看日志</button>
-        </article>
       </section>
   </>;
 }
@@ -403,10 +394,9 @@ function SubscriptionsPage({ subscriptions, refreshingId, isBusy, onRefresh, onT
     <section className="cw-sub-layout">
       <div className="cw-sub-main">
         <article className="cw-panel"><div className="cw-panel-head"><h3>启用中的规则来源</h3><span>失败保留旧版</span></div><SubscriptionRows items={ruleSubs} refreshingId={refreshingId} isBusy={isBusy} onRefresh={onRefresh} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit}/></article>
-        <article className="cw-panel import-checklist"><h3>导入检查</h3>{["HTTPS URL 与大小限制","识别 hosts、adblock、域名/IP 列表和 Clash","用户来源必须选择分类","规则标准化与语义去重","原子切换前完成编译校验","失败时继续使用上一次有效版本"].map((item,index)=><div className="priority-row" key={item}><b>{index+1}</b><span>{item}</span></div>)}</article>
       </div>
       <div className="cw-sub-side">
-        <article className="cw-dark-card"><h3>代理订阅边界</h3><p>CleanWeb 只保留代理节点和代理组。DNS、TUN、脚本、控制器、本地端口和绕过规则都会被丢弃。</p>{["节点与组","手动选点","延迟测试","自动故障切换"].map(item=><div className="boundary-row" key={item}><span className="dot on"/> {item}</div>)}</article>
+        <article className="cw-dark-card compact-boundary"><h3>代理订阅边界</h3><p>只保留节点和代理组；DNS、TUN、脚本、控制器、本地端口和绕过规则都会被丢弃。</p></article>
         <article className="cw-panel"><div className="cw-panel-head"><h3>代理来源</h3><span>{proxySubs.length}</span></div><SubscriptionRows items={proxySubs} refreshingId={refreshingId} isBusy={isBusy} onRefresh={onRefresh} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit}/><div className="import-actions"><button className="secondary" onClick={()=>onAddProxy("file")}>配置文件</button><button className="secondary" onClick={()=>onAddProxy("qr")}>二维码</button><button className="secondary" onClick={()=>onAddProxy("clipboard")}>剪贴板</button></div></article>
       </div>
     </section>
@@ -415,7 +405,7 @@ function SubscriptionsPage({ subscriptions, refreshingId, isBusy, onRefresh, onT
 
 function SubscriptionRows({ items, refreshingId, isBusy, onRefresh, onToggle, onDelete, onEdit }: { items:backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggle:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void }) {
   if (items.length === 0) return <div className="table-empty">尚未添加来源</div>;
-  return <div className="subscription-rows">{items.map(item=>{const rowBusy=isBusy(busyScope.subscription(item.id));return <div className="subscription-row" key={item.id}><div><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??`${item.format??"自动检测"} · ${item.updateIntervalHours??24}小时更新`}</small></div><span>{item.category??(item.kind==="proxy"?"代理":"自定义")}</span><Switch checked={item.enabled} label={`${item.name}订阅`} disabled={rowBusy} onChange={(value)=>onToggle(item.id,value)}/><div className="row-actions"><button className="row-action" disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{item.kind==="rule"&&<button className="row-action" disabled={rowBusy} onClick={()=>onEdit(item)}><Pencil size={15}/></button>}<button className="row-action" disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>;})}</div>;
+  return <div className="subscription-rows">{items.map(item=>{const rowBusy=isBusy(busyScope.subscription(item.id));return <div className="subscription-row" key={item.id}><div className="subscription-main"><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??`${item.format??"自动检测"} · ${item.updateIntervalHours??24}小时更新`}</small></div><span className="subscription-category">{item.category??(item.kind==="proxy"?"代理":"自定义")}</span><Switch checked={item.enabled} label={`${item.name}订阅`} disabled={rowBusy} onChange={(value)=>onToggle(item.id,value)}/><div className="row-actions"><button className="row-action" disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{item.kind==="rule"&&<button className="row-action" disabled={rowBusy} onClick={()=>onEdit(item)}><Pencil size={15}/></button>}<button className="row-action" disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>;})}</div>;
 }
 
 function SettingsPage({ settings, coreStatus, isBusy, onToggle, onRetention, onLock }: { settings:backend.Settings; coreStatus:backend.CoreStatus|null; isBusy:(scope:string)=>boolean; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onLock:()=>Promise<void> }) {
@@ -428,8 +418,7 @@ function SettingsPage({ settings, coreStatus, isBusy, onToggle, onRetention, onL
         <article className="cw-panel management-panel"><h3>管理会话</h3><div className="readonly-field">管理台已解锁 · 除非手动锁定，否则 14 分钟后过期</div><div className="readonly-field">密码重置需要本机系统管理员授权</div><p>V1 不提供账户、云同步、远程监控或自动遥测。</p><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">日志保留：7 天</option><option value="30d">日志保留：30 天</option><option value="90d">日志保留：90 天</option><option value="forever">日志保留：永久</option></select></article>
       </div>
       <div>
-        <article className="cw-dark-card runtime-card"><div className="cw-panel-head"><h3>运行健康状态</h3><span>{running?"运行中":"未运行"}</span></div><strong>{running ? `PID ${coreStatus?.pid ?? "-"}` : "IDLE"} · {running ? "OK" : "OFF"}</strong><p>只有进程和路由健康检查同时成功后，界面才显示保护运行中。</p></article>
-        <article className="cw-panel conflict-panel"><h3>网络冲突检测</h3>{["其他 VPN/TUN 接口：检测后提示，不自动关闭","系统代理：尽力共存","DNS 备份：当前生命周期已保留","崩溃恢复：10 秒内开始重启","兜底：恢复失败时保持网络可用"].map((item,index)=><div className="boundary-row" key={item}><span className={index===0?"dot warn":"dot on"}/> {item}</div>)}</article>
+        <article className="cw-dark-card runtime-card"><div className="cw-panel-head"><h3>运行健康状态</h3><span>{running?"运行中":"未运行"}</span></div><strong>{running ? `PID ${coreStatus?.pid ?? "-"}` : "IDLE"} · {running ? "OK" : "OFF"}</strong><p>进程和路由健康检查同时成功后才显示运行中。</p></article>
       </div>
     </section>
   </>;
