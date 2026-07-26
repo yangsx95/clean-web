@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="CleanWeb 是本地运行的网络净化与代理管理工具，支持内容过滤、安全搜索、访问日志和自有代理订阅。" />
-    <title>CleanWeb | 本地网络净化与代理管理</title>
+    <meta
+      name="description"
+      content="CleanWeb 是本地运行的家庭网络净化工具，把内容过滤、安全搜索、访问日志和自有代理订阅放在同一个受控网络层。"
+    />
+    <title>CleanWeb | 本地优先的家庭网络净化工具</title>
     <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,8 +23,8 @@
         <span>CleanWeb</span>
       </a>
       <nav aria-label="主导航">
+        <a href="#principles">原则</a>
         <a href="#features">能力</a>
-        <a href="#proxy">代理</a>
         <a href="#privacy">隐私</a>
         <a href="#download">下载</a>
       </nav>
@@ -29,61 +32,77 @@
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
-        <img class="hero-bg" src="./assets/cleanweb-overview.png" alt="CleanWeb 应用中的网络环境安全概览界面" />
+        <img class="hero-bg" src="./assets/cleanweb-overview.png" alt="CleanWeb 桌面管理台概览界面" />
         <div class="hero-scrim" aria-hidden="true"></div>
         <div class="hero-content">
-          <p class="eyebrow">CleanWeb 0.1</p>
-          <h1 id="hero-title">本地网络净化与代理管理</h1>
-          <p class="hero-copy">在同一个桌面应用里管理内容过滤、安全搜索、访问日志和自有代理订阅。规则优先于代理，配置保存在本机。</p>
+          <p class="eyebrow">CleanWeb 0.1 测试版</p>
+          <h1 id="hero-title">本地优先的家庭网络净化工具</h1>
+          <p class="hero-copy">
+            在同一个网络接管层中执行内容过滤、安全搜索、访问日志和自有代理订阅。过滤先于代理，配置和日志保存在本机。
+          </p>
           <div class="hero-actions">
             <a class="button primary" href="#download">下载测试版</a>
-            <a class="button ghost" href="#model">了解工作方式</a>
+            <a class="button ghost" href="#principles">查看产品原则</a>
           </div>
-          <dl class="hero-metrics" aria-label="CleanWeb 版本能力">
-            <div><dt>平台</dt><dd>macOS / Windows</dd></div>
-            <div><dt>网络层</dt><dd>TUN + DNS</dd></div>
-            <div><dt>状态</dt><dd>0.1 测试版</dd></div>
+          <dl class="hero-metrics" aria-label="CleanWeb 当前边界">
+            <div><dt>策略顺序</dt><dd>先过滤，再路由</dd></div>
+            <div><dt>数据位置</dt><dd>本机配置与日志</dd></div>
+            <div><dt>代理来源</dt><dd>仅导入自有订阅</dd></div>
           </dl>
         </div>
       </section>
 
-      <section class="section product-shots" aria-labelledby="product-shots-title">
+      <section class="system-strip" aria-label="CleanWeb 网络处理流程">
+        <div><span>01</span><b>接管 DNS 与 TUN</b></div>
+        <div><span>02</span><b>执行安全与内容规则</b></div>
+        <div><span>03</span><b>允许流量再走直连或代理</b></div>
+        <div><span>04</span><b>记录本机最终决策</b></div>
+      </section>
+
+      <section class="section product-stage" aria-labelledby="stage-title">
         <div class="section-heading">
           <p class="eyebrow">产品界面</p>
-          <h2 id="product-shots-title">管理时完整可控，锁定后只保留状态</h2>
+          <h2 id="stage-title">管理者看到完整控制面板，普通状态只暴露必要信息</h2>
         </div>
-        <div class="shot-layout">
-          <figure class="shot-main">
-            <img src="./assets/cleanweb-overview.png" alt="CleanWeb 管理台概览界面" />
-            <figcaption>概览页集中展示保护状态、统计数字和核心开关。</figcaption>
+        <div class="stage-grid">
+          <figure class="stage-main">
+            <img src="./assets/cleanweb-overview.png" alt="CleanWeb 管理台概览页" />
+            <figcaption>概览页集中展示真实运行状态、策略开关、最近日志和规则优先级。</figcaption>
           </figure>
-          <figure class="shot-side">
-            <img src="./assets/cleanweb-locked.png" alt="CleanWeb 锁定状态窗口" />
-            <figcaption>锁定状态隐藏配置，只展示运行状态和访问统计。</figcaption>
-          </figure>
+          <div class="stage-side">
+            <figure>
+              <img src="./assets/cleanweb-locked.png" alt="CleanWeb 锁定状态窗口" />
+              <figcaption>锁定状态隐藏规则、订阅和代理配置，只保留非敏感运行状态。</figcaption>
+            </figure>
+            <article class="status-card">
+              <span class="status-dot"></span>
+              <h3>保护状态必须真实</h3>
+              <p>只有进程和路由健康检查同时成功后，客户端才显示“保护运行中”。配置要求开启但内核未运行时，会明确提示恢复保护。</p>
+            </article>
+          </div>
         </div>
       </section>
 
-      <section class="section intro" id="model">
+      <section class="section principles" id="principles">
         <div class="section-heading">
-          <p class="eyebrow">工作方式</p>
-          <h2>过滤、直连和代理由同一套策略决定</h2>
+          <p class="eyebrow">产品原则</p>
+          <h2>CleanWeb 不把代理当作绕过过滤的捷径</h2>
         </div>
-        <div class="flow">
+        <div class="principle-grid">
           <article>
             <span>01</span>
-            <h3>先判断安全规则</h3>
-            <p>手动拦截、核心内容类别、恶意软件和诈骗规则先于代理路由执行。</p>
+            <h3>过滤永远优先</h3>
+            <p>诈骗、钓鱼、恶意软件、家长规则和核心内容类别先执行。只有被允许的流量才进入直连或代理路由。</p>
           </article>
           <article>
             <span>02</span>
-            <h3>再决定出口</h3>
-            <p>允许的流量按路由规则走直连或代理，未命中时使用当前代理策略。</p>
+            <h3>订阅必须受控</h3>
+            <p>代理订阅中的 DNS、TUN、脚本、本地端口和绕过策略会被丢弃，CleanWeb 保持唯一策略权威。</p>
           </article>
           <article>
             <span>03</span>
-            <h3>最后记录结果</h3>
-            <p>访问日志只保存本机可观察到的最终决策，不保存代理凭据。</p>
+            <h3>故障保持可用</h3>
+            <p>内核异常时优先恢复；无法恢复时保持网络可用，并在界面里准确显示保护失效。</p>
           </article>
         </div>
       </section>
@@ -91,60 +110,83 @@
       <section class="section feature-band" id="features">
         <div class="section-heading">
           <p class="eyebrow">核心能力</p>
-          <h2>为家庭设备和个人自律设计</h2>
+          <h2>为家庭设备和个人自律场景设计</h2>
         </div>
         <div class="feature-grid">
           <article>
-            <h3>内容过滤</h3>
-            <p>基于域名、DNS 查询、IP 和 CIDR 执行本地规则，覆盖成人内容、赌博、恶意软件和诈骗风险。</p>
+            <h3>本地内容过滤</h3>
+            <p>基于域名、DNS 查询、目标 IP 和 CIDR 做决策，覆盖成人内容、赌博、毒品、暴力、自残、仇恨、诈骗、钓鱼和恶意软件。</p>
           </article>
           <article>
-            <h3>安全搜索</h3>
-            <p>为主流搜索服务生成安全搜索映射，并通过受控 DNS 配置应用。</p>
+            <h3>安全搜索强制</h3>
+            <p>在服务商支持范围内为搜索服务生成安全搜索映射，由受控 DNS 配置应用，不修改系统 hosts。</p>
           </article>
           <article>
-            <h3>规则管理</h3>
-            <p>支持内置规则、外部规则源和手动规则，拦截规则与路由规则分开管理。</p>
+            <h3>规则与订阅</h3>
+            <p>支持内置规则、第三方过滤源、手动黑白名单和路由规则。更新失败时继续使用最后一次有效版本。</p>
           </article>
           <article>
-            <h3>锁定状态</h3>
-            <p>锁定后只显示运行状态和统计数字，敏感配置需要管理密码解锁。</p>
+            <h3>本地访问日志</h3>
+            <p>每个连接最多记录一条最终决策，支持保留期、筛选、清空和 CSV 导出。日志默认只保存在本机。</p>
+          </article>
+          <article>
+            <h3>代理节点管理</h3>
+            <p>导入自己的 Clash/Mihomo 订阅、单节点链接、二维码或配置文件，支持选点、延迟测试和故障切换。</p>
+          </article>
+          <article>
+            <h3>锁定管理台</h3>
+            <p>规则、订阅、代理和日志详情需要管理密码解锁。忘记密码时只允许通过本机系统管理员授权重置。</p>
           </article>
         </div>
       </section>
 
-      <section class="section split" id="proxy">
+      <section class="section split proxy-boundary" id="proxy">
         <div>
-          <p class="eyebrow">代理节点</p>
-          <h2>导入自己的订阅，保留 CleanWeb 的规则边界</h2>
-          <p>CleanWeb 不提供代理节点，只导入用户自己的订阅或单节点配置。订阅中的 DNS、TUN、脚本和路由策略会被丢弃，只保留代理节点、代理组和节点关系。</p>
+          <p class="eyebrow">代理边界</p>
+          <h2>CleanWeb 不销售、不托管代理节点</h2>
+          <p>
+            它只导入用户自己的代理来源，并把代理放在过滤之后。代理关闭或节点失效时，过滤继续运行；需要代理的网站自然连接失败，普通直连网站继续访问。
+          </p>
         </div>
-        <div class="capability-list" aria-label="代理能力">
-          <div><b>订阅链接</b><span>Clash/Mihomo 节点提取</span></div>
-          <div><b>单节点链接</b><span>手动导入常见代理 URI</span></div>
-          <div><b>二维码导入</b><span>本地拖入图片解析</span></div>
-          <div><b>节点选择</b><span>按订阅来源选择当前出口</span></div>
+        <div class="capability-list" aria-label="代理导入与清洗能力">
+          <div><b>保留</b><span>节点、代理组、节点关系</span></div>
+          <div><b>丢弃</b><span>DNS、TUN、脚本、控制器、绕过规则</span></div>
+          <div><b>支持</b><span>手动选点、延迟测试、自动选择</span></div>
+          <div><b>不支持</b><span>把过滤规则交给代理订阅决定</span></div>
         </div>
       </section>
 
-      <section class="section privacy" id="privacy">
+      <section class="privacy" id="privacy">
         <div class="section-heading">
-          <p class="eyebrow">本地优先</p>
-          <h2>配置和日志保存在你的电脑上</h2>
+          <p class="eyebrow">隐私边界</p>
+          <h2>不解密 HTTPS，不做云端监控</h2>
         </div>
         <div class="privacy-grid">
           <article>
-            <h3>不托管代理</h3>
-            <p>订阅地址和节点凭据只用于本机生成运行配置。</p>
+            <h3>可观察范围有限</h3>
+            <p>V1 只基于域名、DNS 查询、目标 IP 和 CIDR 做判断，不检查网页正文、图片、视频、AI 对话或完整 URL 路径。</p>
           </article>
           <article>
-            <h3>不解密 HTTPS</h3>
-            <p>0.1 版本只基于可观察的域名、DNS 和 IP 做决策。</p>
+            <h3>没有账户和云同步</h3>
+            <p>管理密码、规则、订阅元数据和访问日志保存在本机。诊断包由用户主动导出，并默认脱敏。</p>
           </article>
           <article>
-            <h3>不做云同步</h3>
-            <p>管理密码、规则和访问日志均在本机保存。</p>
+            <h3>不自动关闭第三方 VPN</h3>
+            <p>CleanWeb 会提示其他 VPN/TUN 或系统代理冲突，但 V1 采用尽力共存策略，不终止或修改第三方应用。</p>
           </article>
+        </div>
+      </section>
+
+      <section class="section platform-section" aria-labelledby="platform-title">
+        <div class="section-heading">
+          <p class="eyebrow">平台路线</p>
+          <h2 id="platform-title">先把桌面端做可靠，再推进移动端</h2>
+        </div>
+        <div class="platform-grid">
+          <article><b>macOS 13+</b><span>首发目标，Developer ID 签名与公证分发</span></article>
+          <article><b>Windows 10/11</b><span>功能等价后发布，长期使用独立 Windows Service</span></article>
+          <article><b>Android 10+</b><span>原生 VpnService 路径，已存在 Kotlin 原型</span></article>
+          <article><b>iOS 16+</b><span>取决于 Network Extension 能力与审核边界</span></article>
         </div>
       </section>
 
@@ -152,11 +194,11 @@
         <div>
           <p class="eyebrow">测试版下载</p>
           <h2>CleanWeb 0.1</h2>
-          <p>当前版本适合功能测试和真实网络场景验证。正式分发前仍需要代码签名、公证和 Windows 真机网络测试。</p>
+          <p>当前版本适合功能测试和真实网络验证。正式发布前仍需要完成签名、公证、Windows 服务化和真实网络验收。</p>
         </div>
         <div class="download-actions">
-          <a class="button primary" href="https://github.com/yangsx95/clean-web/releases/latest">macOS Universal</a>
-          <a class="button secondary" href="https://github.com/yangsx95/clean-web/releases/latest">Windows x64</a>
+          <a class="button primary" href="https://github.com/yangsx95/clean-web/releases/latest">查看最新版本</a>
+          <a class="button secondary" href="https://github.com/yangsx95/clean-web">浏览源码</a>
         </div>
       </section>
     </main>
