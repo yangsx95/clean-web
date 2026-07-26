@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rusqlite::params;
@@ -15,6 +15,8 @@ use crate::{mihomo::controller_secret, platform, storage::AppState};
 const CONTROLLER_CONNECTIONS: &str = "http://127.0.0.1:19090/connections";
 const CONTROLLER_LOGS: &str = "http://127.0.0.1:19090/logs";
 const ACCESS_LOGS_UPDATED_EVENT: &str = "access-logs-updated";
+const LOG_STREAM_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const LOG_FILE_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const MACOS_PRIVILEGED_LOG: &str = "/Library/Application Support/CleanWeb/mihomo.log";
 
@@ -62,6 +64,16 @@ struct LogLine {
     payload: Option<String>,
 }
 
+struct ParsedLogEvent {
+    id: String,
+    observed_at: Option<String>,
+    domain: String,
+    port: Option<i64>,
+    decision: &'static str,
+    rule: Option<String>,
+    route: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessLog {
@@ -93,7 +105,10 @@ pub struct AccessLogStats {
 
 pub fn start_access_log_collector(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .read_timeout(LOG_STREAM_READ_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         loop {
             let state = app.state::<AppState>();
             if !setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
@@ -103,9 +118,7 @@ pub fn start_access_log_collector(app: AppHandle) {
             let secret = match controller_secret(&state) {
                 Ok(value) => value,
                 Err(_) => {
-                    if sync_mihomo_log_files(&state).unwrap_or(0) > 0 {
-                        let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
-                    }
+                    sync_mihomo_log_files_and_emit(&app, &state);
                     tokio_sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -119,14 +132,13 @@ pub fn start_access_log_collector(app: AppHandle) {
             {
                 Ok(response) if response.status().is_success() => response,
                 _ => {
-                    if sync_mihomo_log_files(&state).unwrap_or(0) > 0 {
-                        let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
-                    }
+                    sync_mihomo_log_files_and_emit(&app, &state);
                     tokio_sleep(Duration::from_secs(5)).await;
                     continue;
                 }
             };
             let mut buffer = String::new();
+            let mut last_file_sync = Instant::now();
             while let Ok(Some(chunk)) = response.chunk().await {
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
                 while let Some(index) = buffer.find('\n') {
@@ -140,10 +152,23 @@ pub fn start_access_log_collector(app: AppHandle) {
                         let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
                     }
                 }
+                if last_file_sync.elapsed() >= LOG_FILE_SYNC_INTERVAL {
+                    let state = app.state::<AppState>();
+                    sync_mihomo_log_files_and_emit(&app, &state);
+                    last_file_sync = Instant::now();
+                }
             }
+            let state = app.state::<AppState>();
+            sync_mihomo_log_files_and_emit(&app, &state);
             tokio_sleep(Duration::from_secs(2)).await;
         }
     });
+}
+
+fn sync_mihomo_log_files_and_emit(app: &AppHandle, state: &AppState) {
+    if sync_mihomo_log_files(state).unwrap_or(0) > 0 {
+        let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
+    }
 }
 
 #[tauri::command]
@@ -201,31 +226,75 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
 }
 
 fn insert_mihomo_log_line(state: &AppState, line: &str) -> Result<usize, String> {
+    insert_mihomo_log_line_inner(state, line, true)
+}
+
+fn insert_mihomo_log_line_inner(
+    state: &AppState,
+    line: &str,
+    cleanup: bool,
+) -> Result<usize, String> {
+    let Some(event) = parse_mihomo_log_event(line) else {
+        return Ok(0);
+    };
+    let observed_at = event
+        .observed_at
+        .as_deref()
+        .map(str::to_owned)
+        .unwrap_or_else(|| current_timestamp(state));
+    let os = platform::os_version();
+    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let inserted = insert_parsed_log_event(&db, &event, &observed_at, &os, &user)?;
+    if cleanup {
+        cleanup_retention(&db)?;
+    }
+    Ok(inserted)
+}
+
+fn parse_mihomo_log_event(line: &str) -> Option<ParsedLogEvent> {
     let message = log_message(line);
-    let Some(route) = log_route(&message) else {
-        return Ok(0);
-    };
-    let Some((domain, port)) = log_target(&message) else {
-        return Ok(0);
-    };
+    let route = log_route(&message)?;
+    let (domain, port) = log_target(&message)?;
     let rule = log_rule(&message);
     let decision = if route.eq_ignore_ascii_case("REJECT") {
         "block"
     } else {
         "allow"
     };
-    let os = platform::os_version();
-    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-    let id = format!("mihomo-log-{}", line_id_suffix(line));
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let inserted = db
-        .execute(
-            "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_port,decision,rule,operating_system,system_user,route,proxy_group) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%SZ','now'),?2,?3,?4,?5,?6,?7,?8,?8)",
-            params![id, domain, port, decision, rule, os, user, route],
-        )
-        .map_err(error)?;
-    cleanup_retention(&db)?;
-    Ok(inserted)
+    Some(ParsedLogEvent {
+        id: format!("mihomo-log-{}", line_id_suffix(line)),
+        observed_at: log_time(line),
+        domain,
+        port,
+        decision,
+        rule,
+        route,
+    })
+}
+
+fn insert_parsed_log_event(
+    db: &rusqlite::Connection,
+    event: &ParsedLogEvent,
+    observed_at: &str,
+    os: &str,
+    user: &str,
+) -> Result<usize, String> {
+    db.execute(
+        "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_port,decision,rule,operating_system,system_user,route,proxy_group) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+        params![
+            event.id,
+            observed_at,
+            event.domain,
+            event.port,
+            event.decision,
+            event.rule,
+            os,
+            user,
+            event.route
+        ],
+    )
+    .map_err(error)
 }
 
 fn sync_mihomo_log_files(state: &AppState) -> Result<usize, String> {
@@ -241,9 +310,25 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
         Ok(file) => file,
         Err(_) => return Ok(0),
     };
+    let events = BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| parse_mihomo_log_event(&line))
+        .collect::<Vec<_>>();
+    if events.is_empty() {
+        return Ok(0);
+    }
+    let fallback_timestamp = current_timestamp(state);
+    let os = platform::os_version();
+    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let mut inserted = 0;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        inserted += insert_mihomo_log_line(state, &line)?;
+    for event in events {
+        let observed_at = event.observed_at.as_deref().unwrap_or(&fallback_timestamp);
+        inserted += insert_parsed_log_event(&db, &event, observed_at, &os, &user)?;
+    }
+    if inserted > 0 {
+        cleanup_retention(&db)?;
     }
     Ok(inserted)
 }
@@ -274,6 +359,13 @@ fn logfmt_msg(line: &str) -> Option<String> {
         return Some(rest[..end].replace("\\\"", "\""));
     }
     Some(value.split_whitespace().next()?.to_owned())
+}
+
+fn log_time(line: &str) -> Option<String> {
+    let value = line.split_once("time=")?.1.trim();
+    let rest = value.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_owned())
 }
 
 fn log_target(message: &str) -> Option<(String, Option<i64>)> {
@@ -327,7 +419,7 @@ pub fn list_access_logs(
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let search = search.unwrap_or_default();
     let pattern = format!("%{search}%");
-    let mut statement=db.prepare("SELECT connection_id,observed_at,domain,target_ip,target_port,decision,rule,category,process_name,operating_system,system_user,source_ip,route,proxy_group,error FROM access_logs WHERE (?1 IS NULL OR decision=?1) AND (?2='' OR COALESCE(domain,'') LIKE ?3 OR COALESCE(target_ip,'') LIKE ?3 OR COALESCE(process_name,'') LIKE ?3) ORDER BY observed_at DESC LIMIT ?4").map_err(error)?;
+    let mut statement=db.prepare("SELECT connection_id,observed_at,domain,target_ip,target_port,decision,rule,category,process_name,operating_system,system_user,source_ip,route,proxy_group,error FROM access_logs WHERE (?1 IS NULL OR decision=?1) AND (?2='' OR COALESCE(domain,'') LIKE ?3 OR COALESCE(target_ip,'') LIKE ?3 OR COALESCE(process_name,'') LIKE ?3) ORDER BY julianday(observed_at) DESC, observed_at DESC LIMIT ?4").map_err(error)?;
     let rows = statement
         .query_map(
             params![decision, search, pattern, limit.unwrap_or(500).min(5000)],
@@ -414,7 +506,7 @@ pub fn export_access_logs_csv(
 ) -> Result<String, String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let mut statement=db.prepare("SELECT observed_at,domain,target_ip,CAST(target_port AS TEXT),decision,rule,category,process_name,operating_system,system_user,source_ip,route,proxy_group,error FROM access_logs ORDER BY observed_at DESC").map_err(error)?;
+    let mut statement=db.prepare("SELECT observed_at,domain,target_ip,CAST(target_port AS TEXT),decision,rule,category,process_name,operating_system,system_user,source_ip,route,proxy_group,error FROM access_logs ORDER BY julianday(observed_at) DESC, observed_at DESC").map_err(error)?;
     let mut output=String::from("time,domain,target_ip,target_port,decision,rule,category,process,os,user,source_ip,route,proxy_group,error\n");
     let rows = statement
         .query_map([], |row| {
@@ -465,6 +557,21 @@ fn cleanup_retention(db: &rusqlite::Connection) -> Result<(), String> {
     }
     Ok(())
 }
+
+fn current_timestamp(state: &AppState) -> String {
+    state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| {
+            db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')", [], |row| {
+                row.get(0)
+            })
+            .ok()
+        })
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".into())
+}
+
 fn setting_bool(state: &AppState, key: &str) -> Result<bool, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     Ok(db
@@ -531,6 +638,10 @@ mod tests {
             log_message(line),
             "[TCP] 198.18.0.1:54135 --> www.baidu.com:443 match DomainSuffix(baidu.com) using REJECT"
         );
+        assert_eq!(
+            log_time(line),
+            Some("2026-07-20T17:21:19.379133000+08:00".into())
+        );
     }
 
     #[test]
@@ -557,13 +668,14 @@ mod tests {
         assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 1);
         assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 0);
         let db = state.db.lock().unwrap();
-        let (domain, decision, route): (String, String, String) = db
+        let (observed_at, domain, decision, route): (String, String, String, String) = db
             .query_row(
-                "SELECT domain,decision,route FROM access_logs LIMIT 1",
+                "SELECT observed_at,domain,decision,route FROM access_logs LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
+        assert_eq!(observed_at, "2026-07-20T17:21:19.379133000+08:00");
         assert_eq!(domain, "www.baidu.com");
         assert_eq!(decision, "block");
         assert_eq!(route, "REJECT");
@@ -585,6 +697,25 @@ mod tests {
         assert_eq!(domain, "example.com");
         assert_eq!(decision, "allow");
         assert_eq!(route, "DIRECT");
+    }
+
+    #[test]
+    fn inserts_current_mihomo_proxy_route_logfmt() {
+        let state = AppState::open(":memory:").unwrap();
+        let line = r#"time="2026-07-26T20:39:13.539499000+08:00" level=info msg="[TCP] 198.18.0.1:54918 --> chatgpt.com:443 match Match using CleanWeb[HK-A01]""#;
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 1);
+        let db = state.db.lock().unwrap();
+        let (domain, decision, rule, route): (String, String, String, String) = db
+            .query_row(
+                "SELECT domain,decision,rule,route FROM access_logs LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(domain, "chatgpt.com");
+        assert_eq!(decision, "allow");
+        assert_eq!(rule, "Match");
+        assert_eq!(route, "CleanWeb[HK-A01]");
     }
 
     #[test]
@@ -611,5 +742,45 @@ mod tests {
         assert_eq!(stats.allow, 150);
         assert_eq!(stats.block, 2);
         assert_eq!(stats.total, 152);
+    }
+
+    #[test]
+    fn sqlite_orders_mixed_timezone_access_log_timestamps_by_instant() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute("INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES('old-local','2026-07-26T20:29:14+08:00','allow','macOS','u')",[]).unwrap();
+        db.execute("INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES('new-utc','2026-07-26T12:44:19Z','allow','macOS','u')",[]).unwrap();
+        let first: String = db
+            .query_row(
+                "SELECT connection_id FROM access_logs ORDER BY julianday(observed_at) DESC, observed_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first, "new-utc");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn syncs_privileged_mihomo_log_file_when_available() {
+        let path = Path::new(MACOS_PRIVILEGED_LOG);
+        if !path.exists() {
+            return;
+        }
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if !text.contains(" using REJECT") {
+            return;
+        }
+        let state = AppState::open(":memory:").unwrap();
+        assert!(sync_mihomo_log_file(&state, path).unwrap() > 0);
+        let db = state.db.lock().unwrap();
+        let blocks: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM access_logs WHERE decision='block'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(blocks > 0);
     }
 }

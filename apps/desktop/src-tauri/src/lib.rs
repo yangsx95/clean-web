@@ -1,6 +1,6 @@
 pub mod access_logs;
-pub mod builtin_rules;
 pub mod browser_policy;
+pub mod builtin_rules;
 pub mod mihomo;
 pub mod platform;
 pub mod proxy_crypto;

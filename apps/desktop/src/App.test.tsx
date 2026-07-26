@@ -116,6 +116,7 @@ describe("management actions", () => {
 
     render(<App />);
     await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
     await userEvent.click(screen.getByRole("switch", { name: "安全搜索" }));
 
     await waitFor(() => expect((screen.getByRole("switch", { name: "安全搜索" }) as HTMLButtonElement).disabled).toBe(true));

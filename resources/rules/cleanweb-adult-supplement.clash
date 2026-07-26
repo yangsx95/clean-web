@@ -2,6 +2,7 @@
 # Curated from the user's OpenClash custom rules. Keep only high-confidence adult domains here.
 DOMAIN-SUFFIX,pornhub.com,REJECT
 DOMAIN-SUFFIX,pornhubpremium.com,REJECT
+DOMAIN-SUFFIX,18j.tv,REJECT
 DOMAIN-SUFFIX,dh.net,REJECT
 DOMAIN-SUFFIX,phncdn.com,REJECT
 DOMAIN-SUFFIX,xvideos.com,REJECT

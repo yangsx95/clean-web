@@ -181,7 +181,10 @@ internal object MihomoAndroidConfig {
             .mapNotNull { mihomoRule(it, "REJECT") }
             .forEach { appendLine("  - $it") }
         if (state.settings.strictModeEnabled) {
-            strictModeSuffixes.forEach { suffix -> appendLine("  - DOMAIN-SUFFIX,$suffix,REJECT") }
+            state.strictModeRules
+                .filter { it.enabled && it.action == RuleAction.Block }
+                .mapNotNull { mihomoRule(it, "REJECT") }
+                .forEach { appendLine("  - $it") }
         }
         if (state.settings.adsTrackingEnabled) {
             state.rules
@@ -282,14 +285,6 @@ internal object MihomoAndroidConfig {
         "DOMAIN-SUFFIX,local,DIRECT",
         "DOMAIN-SUFFIX,lan,DIRECT",
         "DOMAIN-SUFFIX,internal,DIRECT"
-    )
-
-    private val strictModeSuffixes = listOf(
-        "yandex.com",
-        "yandex.ru",
-        "yandex.net",
-        "youtu.be",
-        "youtube.com"
     )
 
     private val entertainmentSuffixes = listOf(

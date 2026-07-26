@@ -3,6 +3,7 @@ package app.cleanweb.android.model
 data class CleanWebState(
     val settings: ProtectionSettings = ProtectionSettings(),
     val rules: List<RuleEntry> = emptyList(),
+    val strictModeRules: List<RuleEntry> = emptyList(),
     val proxySubscriptions: List<ProxySubscription> = emptyList(),
     val logs: List<AccessLogEntry> = emptyList()
 )

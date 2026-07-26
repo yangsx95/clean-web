@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
 
 use serde::Serialize;
 use tauri::State;
@@ -257,11 +253,13 @@ fn run_admin_shell(command: &str) -> Result<String, String> {
         .map_err(|reason| format!("无法请求 macOS 管理员权限：{reason}"))?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if message.contains("User canceled") || message.contains("-128") {
-            "已取消管理员授权，浏览器增强保护未配置".into()
-        } else {
-            format!("macOS 管理员授权失败：{message}")
-        });
+        return Err(
+            if message.contains("User canceled") || message.contains("-128") {
+                "已取消管理员授权，浏览器增强保护未配置".into()
+            } else {
+                format!("macOS 管理员授权失败：{message}")
+            },
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }

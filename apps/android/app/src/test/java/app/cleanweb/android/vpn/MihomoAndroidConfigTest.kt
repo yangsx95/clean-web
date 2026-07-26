@@ -23,6 +23,7 @@ class MihomoAndroidConfigTest {
         val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
 
         assertTrue(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,18j.tv,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dh.net,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dns.google,REJECT"))
         assertFalse(config.contains("adult.example"))
@@ -250,6 +251,28 @@ class MihomoAndroidConfigTest {
     }
 
     @Test
+    fun strictModeRulesComeFromSharedSupplementOnlyWhenEnabled() {
+        val disabled = CleanWebState(
+            settings = ProtectionSettings(strictModeEnabled = false),
+            strictModeRules = sharedStrictModeRules()
+        )
+        val disabledConfig = MihomoAndroidConfig.build(disabled)
+
+        assertFalse(disabledConfig.contains("DOMAIN-SUFFIX,youtube.com,REJECT"))
+        assertFalse(disabledConfig.contains("DOMAIN-KEYWORD,xvideo,REJECT"))
+
+        val enabled = disabled.copy(settings = disabled.settings.copy(strictModeEnabled = true))
+        val enabledConfig = MihomoAndroidConfig.build(enabled)
+
+        assertTrue(enabledConfig.contains("DOMAIN-SUFFIX,youtube.com,REJECT"))
+        assertTrue(enabledConfig.contains("DOMAIN-KEYWORD,xvideo,REJECT"))
+        assertTrue(enabledConfig.contains("DOMAIN-KEYWORD,casino,REJECT"))
+        listOf("vip", "cc", "fun").forEach { suffix ->
+            assertFalse(enabledConfig.contains("DOMAIN-SUFFIX,$suffix,REJECT"))
+        }
+    }
+
+    @Test
     fun entertainmentRulesFollowEntertainmentToggle() {
         val disabled = CleanWebState(
             settings = ProtectionSettings(entertainmentEnabled = false),
@@ -279,6 +302,8 @@ class MihomoAndroidConfigTest {
     }
 
     private fun sharedBuiltInRules() = BuiltInRuleResources.loadFromResourceRoot(resourceRoot())
+
+    private fun sharedStrictModeRules() = BuiltInRuleResources.loadStrictModeFromResourceRoot(resourceRoot())
 
     private fun resourceRoot(): File {
         return listOf(

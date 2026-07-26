@@ -19,6 +19,7 @@ class CleanWebRepository(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val providerDirectory = File(context.filesDir, "mihomo/providers").also { it.mkdirs() }
     private val builtInRules = BuiltInRuleResources.load(context)
+    private val strictModeRules = BuiltInRuleResources.loadStrictMode(context)
 
     fun load(): CleanWebState {
         val settings = preferences.getString(KEY_SETTINGS, null)?.let(::settingsFromJson)
@@ -33,6 +34,7 @@ class CleanWebRepository(context: Context) {
         return CleanWebState(
             settings = settings,
             rules = rules,
+            strictModeRules = strictModeRules,
             proxySubscriptions = proxySubscriptions,
             logs = logs
         )

@@ -20,6 +20,11 @@ object BuiltInRuleResources {
             category = RuleCategory.Core
         )
     )
+    private val strictModeResource = BuiltInRuleResource(
+        path = "rules/cleanweb-strict-supplement.clash",
+        idPrefix = "strict-mode",
+        category = RuleCategory.Core
+    )
 
     fun load(context: Context): List<RuleEntry> {
         return resources.flatMap { resource ->
@@ -29,10 +34,23 @@ object BuiltInRuleResources {
         }
     }
 
+    fun loadStrictMode(context: Context): List<RuleEntry> {
+        return context.assets.open(strictModeResource.path).bufferedReader(Charsets.UTF_8).use { reader ->
+            parseClashRules(strictModeResource, reader.readText())
+        }
+    }
+
     fun loadFromResourceRoot(root: File): List<RuleEntry> {
         return resources.flatMap { resource ->
             parseClashRules(resource, root.resolve(resource.path).readText(Charsets.UTF_8))
         }
+    }
+
+    fun loadStrictModeFromResourceRoot(root: File): List<RuleEntry> {
+        return parseClashRules(
+            strictModeResource,
+            root.resolve(strictModeResource.path).readText(Charsets.UTF_8)
+        )
     }
 
     internal fun parseClashRules(resource: BuiltInRuleResource, text: String): List<RuleEntry> {

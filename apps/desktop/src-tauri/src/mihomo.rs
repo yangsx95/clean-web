@@ -10,6 +10,7 @@ use std::process::Command;
 #[cfg(not(target_os = "macos"))]
 use std::{fs::OpenOptions, process::Stdio};
 
+use cleanweb_subscriptions::{import_text, SubscriptionFormat};
 use flate2::read::GzDecoder;
 use reqwest::Url;
 use rusqlite::{params, OptionalExtension};
@@ -20,6 +21,10 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::{
+    builtin_rules::{
+        CLEANWEB_STRICT_SUPPLEMENT_ID, CLEANWEB_STRICT_SUPPLEMENT_TEXT,
+        CLEANWEB_STRICT_SUPPLEMENT_URL,
+    },
     platform::{self, NetworkConflicts},
     proxy_crypto::decrypt_proxy_payload,
     storage::AppState,
@@ -1248,104 +1253,18 @@ fn append_parent_rules(
 }
 
 fn append_strict_mode_rules(result: &mut Vec<Value>) {
-    const STRICT_SUFFIXES: &[&str] = &[
-        "yandex.com",
-        "yandex.ru",
-        "yandex.net",
-        "yastatic.net",
-        "yandexadexchange.net",
-        "youtube.com",
-        "youtu.be",
-        "youtube-nocookie.com",
-        "googlevideo.com",
-        "ytimg.com",
-        "youtubei.googleapis.com",
-        "youtube.googleapis.com",
-        "telegram.org",
-        "telegram.me",
-        "t.me",
-        "telegra.ph",
-        "tdesktop.com",
-        "instagram.com",
-        "cdninstagram.com",
-        "ig.me",
-        "threads.net",
-        "facebook.com",
-        "fbcdn.net",
-        "fb.com",
-        "x.com",
-        "twitter.com",
-        "twimg.com",
-        "t.co",
-        "douyin.com",
-        "tiktok.com",
-        "tiktokv.com",
-        "tiktokcdn.com",
-        "muscdn.com",
-        "byteoversea.com",
-        "reddit.com",
-        "redd.it",
-        "redditmedia.com",
-        "redditstatic.com",
-        "tumblr.com",
-        "tumblr.co",
-        "tmblr.co",
-        "discord.com",
-        "discord.gg",
-        "discordapp.com",
-        "discordapp.net",
-        "snapchat.com",
-        "pinterest.com",
-        "pinimg.com",
-        "sex",
-        "sexy",
-        "porn",
-        "adult",
-        "xxx",
-        "bet",
-        "casino",
-        "poker",
-        "bingo",
-    ];
-    const STRICT_KEYWORDS: &[&str] = &[
-        "yandex",
-        "youtube",
-        "telegram",
-        "instagram",
-        "twitter",
-        "tiktok",
-        "porn",
-        "porno",
-        "sex",
-        "sexy",
-        "xxx",
-        "adult",
-        "nude",
-        "naked",
-        "onlyfans",
-        "camgirl",
-        "livecam",
-        "jav",
-        "hentai",
-        "rule34",
-    ];
-    const STRICT_CIDRS: &[&str] = &[
-        "91.108.4.0/22",
-        "91.108.8.0/22",
-        "91.108.12.0/22",
-        "91.108.16.0/22",
-        "91.108.20.0/22",
-        "91.108.56.0/22",
-        "149.154.160.0/20",
-    ];
-    for suffix in STRICT_SUFFIXES {
-        result.push(Value::String(format!("DOMAIN-SUFFIX,{suffix},REJECT")));
-    }
-    for keyword in STRICT_KEYWORDS {
-        result.push(Value::String(format!("DOMAIN-KEYWORD,{keyword},REJECT")));
-    }
-    for cidr in STRICT_CIDRS {
-        result.push(Value::String(format!("IP-CIDR,{cidr},REJECT,no-resolve")));
+    let report = import_text(
+        SubscriptionFormat::Clash,
+        CLEANWEB_STRICT_SUPPLEMENT_TEXT,
+        CLEANWEB_STRICT_SUPPLEMENT_ID,
+        CLEANWEB_STRICT_SUPPLEMENT_URL,
+        "strict",
+    );
+    for imported in report.rules {
+        let kind = format!("{:?}", imported.rule.kind);
+        if let Some(rule) = mihomo_rule(&kind, &imported.rule.pattern, "REJECT") {
+            result.push(Value::String(rule));
+        }
     }
 }
 
@@ -1905,15 +1824,17 @@ mod tests {
         let strict_config = build_config(&state, "secret", true).unwrap();
         assert!(strict_config.contains("DOMAIN-SUFFIX,youtube.com,REJECT"));
         assert!(strict_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
+        assert!(strict_config.contains("DOMAIN-KEYWORD,casino,REJECT"));
+        assert!(strict_config.contains("DOMAIN-KEYWORD,xvideo,REJECT"));
         assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
         assert!(
             !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
             "strict mode must not block broad random-looking domain labels by default"
         );
         for broad_suffix in [
-            "xyz", "top", "click", "icu", "sbs", "cyou", "monster", "quest", "buzz", "fun", "lol",
-            "rest", "cfd", "win", "men", "date", "party", "review", "trade", "download", "stream",
-            "gdn", "zip", "mov", "tk", "ml", "ga", "gq", "cf",
+            "vip", "cc", "xyz", "top", "click", "icu", "sbs", "cyou", "monster", "quest", "buzz",
+            "fun", "lol", "rest", "cfd", "win", "men", "date", "party", "review", "trade",
+            "download", "stream", "gdn", "zip", "mov", "tk", "ml", "ga", "gq", "cf",
         ] {
             assert!(
                 !strict_config.contains(&format!("DOMAIN-SUFFIX,{broad_suffix},REJECT")),

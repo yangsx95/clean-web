@@ -348,7 +348,6 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
   const recentLogs = logs.slice(0,4);
   const enabledControls = [
     true,
-    settings.safeSearchEnabled,
     settings.strictModeEnabled,
     settings.proxyEnabled,
     settings.categories.entertainment,
@@ -361,7 +360,7 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
       : "当前网络未被 CleanWeb 接管";
   return <>
       <section className="cw-overview-actions">
-        <p>CleanWeb 正在为这台设备执行本地策略、安全搜索和订阅规则。</p>
+        <p>CleanWeb 正在为这台设备执行本地拦截、订阅规则和受控代理策略。</p>
         <div><button className="secondary" onClick={onOpenLogs}>查看日志</button><button className="primary" onClick={onAddRule}><Plus size={16}/>添加规则</button></div>
       </section>
       <section className="cw-stat-row">
@@ -379,7 +378,6 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
         <article className="cw-panel">
           <div className="cw-panel-head"><h3>策略开关</h3><span>{enabledControls} 项启用</span></div>
           <SettingLine title="本地拦截规则" active />
-          <SettingLine title="安全搜索强制" active={settings.safeSearchEnabled}><Switch checked={settings.safeSearchEnabled} label="安全搜索" disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value) => onToggle("safe_search_enabled", value)} /></SettingLine>
           <SettingLine title="严格模式" active={settings.strictModeEnabled}><Switch checked={settings.strictModeEnabled} label="严格模式" disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value) => onToggle("strict_mode_enabled", value)} /></SettingLine>
           <SettingLine title="短视频与游戏" active={Boolean(settings.categories.entertainment)}><Switch checked={Boolean(settings.categories.entertainment)} label="短视频与游戏" disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value) => onToggle("category.entertainment", value)} /></SettingLine>
           <SettingLine title="代理订阅路由" active={settings.proxyEnabled}><Switch checked={settings.proxyEnabled} label="代理" disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value) => onToggle("proxy_enabled", value)} /></SettingLine>
