@@ -10,7 +10,7 @@ import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
 import app.cleanweb.android.model.RuleMatchKind
-import app.cleanweb.android.model.defaultRules
+import app.cleanweb.android.model.normalizeBuiltInRules
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
@@ -18,12 +18,14 @@ import org.json.JSONObject
 class CleanWebRepository(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val providerDirectory = File(context.filesDir, "mihomo/providers").also { it.mkdirs() }
+    private val builtInRules = BuiltInRuleResources.load(context)
 
     fun load(): CleanWebState {
         val settings = preferences.getString(KEY_SETTINGS, null)?.let(::settingsFromJson)
             ?: ProtectionSettings()
         val rules = preferences.getString(KEY_RULES, null)?.let(::rulesFromJson)
-            ?: defaultRules
+            ?.let { normalizeBuiltInRules(it, builtInRules) }
+            ?: builtInRules
         val proxySubscriptions =
             preferences.getString(KEY_PROXY_SUBSCRIPTIONS, null)?.let(::proxySubscriptionsFromJson)
                 ?: emptyList()
@@ -108,8 +110,8 @@ class CleanWebRepository(context: Context) {
                         ?: inferMatchKind(value.getString("pattern")),
                     enabled = value.optBoolean("enabled", true)
                 )
-            }.ifEmpty { defaultRules }
-        }.getOrDefault(defaultRules)
+            }
+        }.getOrDefault(emptyList())
     }
 
     private fun proxySubscriptionsFromJson(raw: String): List<ProxySubscription> {

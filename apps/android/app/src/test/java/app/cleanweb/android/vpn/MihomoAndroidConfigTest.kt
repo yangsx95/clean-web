@@ -1,5 +1,6 @@
 package app.cleanweb.android.vpn
 
+import app.cleanweb.android.data.BuiltInRuleResources
 import app.cleanweb.android.data.ProxyConfigSanitizer
 import app.cleanweb.android.model.CleanWebState
 import app.cleanweb.android.model.ProtectionSettings
@@ -8,13 +9,49 @@ import app.cleanweb.android.model.RuleAction
 import app.cleanweb.android.model.RuleCategory
 import app.cleanweb.android.model.RuleEntry
 import app.cleanweb.android.model.RuleMatchKind
+import app.cleanweb.android.model.normalizeBuiltInRules
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.yaml.snakeyaml.Yaml
+import java.io.File
 
 class MihomoAndroidConfigTest {
+    @Test
+    fun defaultStateIncludesRealBuiltInBlockRules() {
+        val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
+
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,dns.google,REJECT"))
+        assertFalse(config.contains("adult.example"))
+    }
+
+    @Test
+    fun androidTun2socksConfigSniffsPureIpTrafficForDomainRules() {
+        val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
+
+        assertTrue(config.contains("  parse-pure-ip: true"))
+        assertTrue(config.contains("  force-dns-mapping: true"))
+        assertTrue(config.contains("    QUIC:"))
+    }
+
+    @Test
+    fun normalizesLegacyPlaceholderBuiltInRules() {
+        val builtInRules = sharedBuiltInRules()
+        val normalized = normalizeBuiltInRules(
+            listOf(
+                RuleEntry("core-adult", "adult.example", RuleCategory.Core, RuleAction.Block),
+                RuleEntry("custom", "custom.example", RuleCategory.CustomBlock, RuleAction.Block)
+            ),
+            builtInRules
+        )
+
+        assertTrue(normalized.any { it.pattern == "pornhub.com" })
+        assertTrue(normalized.any { it.pattern == "custom.example" })
+        assertFalse(normalized.any { it.pattern == "adult.example" })
+    }
+
     @Test
     fun configIsValidYamlWithProxyProviderAndRules() {
         val config = MihomoAndroidConfig.build(
@@ -30,7 +67,7 @@ class MihomoAndroidConfigTest {
                 rules = listOf(
                     RuleEntry("block", "blocked.example", RuleCategory.CustomBlock, RuleAction.Block),
                     RuleEntry("allow", "allowed.example", RuleCategory.CustomAllow, RuleAction.Allow),
-                    RuleEntry("core", "adult.example", RuleCategory.Core, RuleAction.Block),
+                    RuleEntry("core", "pornhub.com", RuleCategory.Core, RuleAction.Block),
                     RuleEntry("cidr", "203.0.113.0/24", RuleCategory.CustomBlock, RuleAction.Block)
                 )
             )
@@ -40,6 +77,7 @@ class MihomoAndroidConfigTest {
 
         assertEquals(17890, yaml["mixed-port"])
         assertTrue(config.contains("provider_1_12345678"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
         assertTrue(config.contains("  - IP-CIDR,203.0.113.0/24,REJECT,no-resolve"))
         assertTrue(config.contains("  - MATCH,CLEANWEB-PROXY"))
     }
@@ -200,5 +238,15 @@ class MihomoAndroidConfigTest {
         val config = MihomoAndroidConfig.build(state)
 
         assertTrue(!config.contains("tracker.example"))
+    }
+
+    private fun sharedBuiltInRules() = BuiltInRuleResources.loadFromResourceRoot(resourceRoot())
+
+    private fun resourceRoot(): File {
+        return listOf(
+            File("../../resources"),
+            File("../../../resources"),
+            File("resources")
+        ).first { it.resolve("rules/cleanweb-adult-supplement.clash").isFile }
     }
 }

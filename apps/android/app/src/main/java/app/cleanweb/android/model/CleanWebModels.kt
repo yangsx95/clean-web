@@ -2,7 +2,7 @@ package app.cleanweb.android.model
 
 data class CleanWebState(
     val settings: ProtectionSettings = ProtectionSettings(),
-    val rules: List<RuleEntry> = defaultRules,
+    val rules: List<RuleEntry> = emptyList(),
     val proxySubscriptions: List<ProxySubscription> = emptyList(),
     val logs: List<AccessLogEntry> = emptyList()
 )
@@ -70,23 +70,11 @@ enum class LogDecision(val label: String) {
     Warning("警告")
 }
 
-val defaultRules = listOf(
-    RuleEntry(
-        id = "core-adult",
-        pattern = "adult.example",
-        category = RuleCategory.Core,
-        action = RuleAction.Block
-    ),
-    RuleEntry(
-        id = "core-gambling",
-        pattern = "gambling.example",
-        category = RuleCategory.Core,
-        action = RuleAction.Block
-    ),
-    RuleEntry(
-        id = "ads-tracking",
-        pattern = "tracker.example",
-        category = RuleCategory.AdsTracking,
-        action = RuleAction.Block
-    )
-)
+val legacyPlaceholderRuleIds = setOf("core-adult", "core-gambling", "ads-tracking")
+
+fun normalizeBuiltInRules(rules: List<RuleEntry>, builtInRules: List<RuleEntry>): List<RuleEntry> {
+    val userRules = rules.filterNot { rule ->
+        rule.id in legacyPlaceholderRuleIds || builtInRules.any { it.id == rule.id }
+    }
+    return builtInRules + userRules
+}

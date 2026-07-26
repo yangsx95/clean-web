@@ -81,6 +81,13 @@ class CleanWebVpnService : VpnService() {
         val repository = CleanWebRepository(applicationContext)
         val state = repository.load()
         val runner = MihomoAndroidRunner(applicationContext)
+        repository.appendLog(
+            accessLog(
+                target = "CleanWeb 规则",
+                decision = LogDecision.Allowed,
+                reason = "已载入 ${state.rules.count { it.enabled }} 条启用规则，内置规则：${state.rules.count { it.id.startsWith("core-") }} 条。"
+            )
+        )
 
         val logFile = try {
             runner.start(state)

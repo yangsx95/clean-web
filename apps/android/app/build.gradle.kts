@@ -29,6 +29,12 @@ android {
             useLegacyPackaging = true
         }
     }
+
+    sourceSets {
+        getByName("main") {
+            assets.srcDir("../../../resources")
+        }
+    }
 }
 
 kotlin {

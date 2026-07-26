@@ -73,8 +73,15 @@ internal object MihomoAndroidConfig {
     private fun StringBuilder.appendSniffer(state: CleanWebState) {
         appendLine("sniffer:")
         appendLine("  enable: true")
+        appendLine("  force-dns-mapping: true")
+        appendLine("  parse-pure-ip: true")
+        appendLine("  override-destination: true")
         appendLine("  sniff:")
-        listOf("HTTP" to listOf("80", "8080-8880"), "TLS" to listOf("443", "8443")).forEach { (name, ports) ->
+        listOf(
+            "HTTP" to listOf("80", "8080-8880"),
+            "TLS" to listOf("443", "8443"),
+            "QUIC" to listOf("443", "8443")
+        ).forEach { (name, ports) ->
             appendLine("    $name:")
             appendLine("      ports:")
             ports.forEach { port -> appendLine("        - $port") }
