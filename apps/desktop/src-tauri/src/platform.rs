@@ -28,6 +28,12 @@ const HELPER_BINARY: &str = "/Library/Application Support/CleanWeb/CleanWebHelpe
 const HELPER_PLIST: &str = "/Library/LaunchDaemons/app.cleanweb.helper.plist";
 #[cfg(target_os = "macos")]
 const HELPER_SOCKET: &str = "/var/run/cleanweb-helper.sock";
+#[cfg(target_os = "macos")]
+const DNS_BACKUP_FILE: &str = "/Library/Application Support/CleanWeb/dns-backup.json";
+#[cfg(target_os = "macos")]
+const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
+#[cfg(target_os = "macos")]
+const HELPER_PROTOCOL_VERSION: &str = "2026-07-31-dns-takeover";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -299,6 +305,12 @@ fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
         .map_err(|value| format!("CleanWeb 特权服务请求格式无效：{value}"))?;
     let response = match request {
         HelperRequest::Ping => HelperResponse::ok(),
+        HelperRequest::Version => HelperResponse {
+            ok: true,
+            message: Some(HELPER_PROTOCOL_VERSION.into()),
+            pid: None,
+            log: None,
+        },
         HelperRequest::Stop => match helper_stop_mihomo() {
             Ok(()) => HelperResponse::ok(),
             Err(reason) => HelperResponse::err(reason),
@@ -350,7 +362,7 @@ fn helper_start_mihomo(binary: &str, config: &str) -> Result<(u32, PathBuf), Str
     let stderr = stdout
         .try_clone()
         .map_err(|value| format!("无法复制 Mihomo 日志句柄：{value}"))?;
-    let child = Command::new(&installed_binary)
+    let mut child = Command::new(&installed_binary)
         .arg("-d")
         .arg(&system_dir)
         .arg("-f")
@@ -362,6 +374,11 @@ fn helper_start_mihomo(binary: &str, config: &str) -> Result<(u32, PathBuf), Str
         .spawn()
         .map_err(|value| format!("无法启动 Mihomo：{value}"))?;
     let pid = child.id();
+    if let Err(reason) = backup_and_set_macos_dns() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(reason);
+    }
     std::mem::forget(child);
     Ok((pid, log))
 }
@@ -374,6 +391,7 @@ fn helper_stop_mihomo() -> Result<(), String> {
     }
     for _ in 0..20 {
         if pids.iter().all(|pid| !pid_running(*pid)) {
+            restore_macos_dns()?;
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -383,22 +401,154 @@ fn helper_stop_mihomo() -> Result<(), String> {
             let _ = unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
         }
     }
+    restore_macos_dns()?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
+fn backup_and_set_macos_dns() -> Result<(), String> {
+    if !Path::new(DNS_BACKUP_FILE).exists() {
+        let backup = collect_macos_dns_backup()?;
+        let body = serde_json::to_string_pretty(&backup)
+            .map_err(|value| format!("无法序列化 DNS 备份：{value}"))?;
+        fs::write(DNS_BACKUP_FILE, body).map_err(|value| format!("无法写入 DNS 备份：{value}"))?;
+        fs::set_permissions(DNS_BACKUP_FILE, fs::Permissions::from_mode(0o600))
+            .map_err(|value| format!("无法设置 DNS 备份权限：{value}"))?;
+    }
+    for service in list_macos_network_services()? {
+        let output = Command::new("/usr/sbin/networksetup")
+            .args(["-setdnsservers", &service, CLEANWEB_DNS_SERVER])
+            .output()
+            .map_err(|value| format!("无法设置系统 DNS：{value}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "无法设置网络服务 {service} 的 DNS：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn restore_macos_dns() -> Result<(), String> {
+    let path = Path::new(DNS_BACKUP_FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let body = fs::read_to_string(path).map_err(|value| format!("无法读取 DNS 备份：{value}"))?;
+    let backup: DnsBackup =
+        serde_json::from_str(&body).map_err(|value| format!("DNS 备份格式无效：{value}"))?;
+    for service in backup.services {
+        let mut command = Command::new("/usr/sbin/networksetup");
+        command.arg("-setdnsservers").arg(&service.name);
+        if service.automatic {
+            command.arg("Empty");
+        } else {
+            command.args(&service.servers);
+        }
+        let output = command
+            .output()
+            .map_err(|value| format!("无法恢复系统 DNS：{value}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "无法恢复网络服务 {} 的 DNS：{}",
+                service.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    fs::remove_file(path).map_err(|value| format!("无法删除 DNS 备份：{value}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn collect_macos_dns_backup() -> Result<DnsBackup, String> {
+    let mut services = Vec::new();
+    for service in list_macos_network_services()? {
+        let output = Command::new("/usr/sbin/networksetup")
+            .args(["-getdnsservers", &service])
+            .output()
+            .map_err(|value| format!("无法读取网络服务 DNS：{value}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "无法读取网络服务 {service} 的 DNS：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        services.push(parse_macos_dns_backup_service(
+            &service,
+            &String::from_utf8_lossy(&output.stdout),
+        ));
+    }
+    Ok(DnsBackup { services })
+}
+
+#[cfg(target_os = "macos")]
+fn list_macos_network_services() -> Result<Vec<String>, String> {
+    let output = Command::new("/usr/sbin/networksetup")
+        .arg("-listallnetworkservices")
+        .output()
+        .map_err(|value| format!("无法读取网络服务列表：{value}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "无法读取网络服务列表：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(parse_macos_network_services(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_network_services(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with("An asterisk"))
+        .filter(|line| !line.starts_with('*'))
+        .map(ToOwned::to_owned)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_dns_backup_service(name: &str, output: &str) -> DnsServiceBackup {
+    let servers: Vec<String> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.parse::<std::net::IpAddr>().is_ok())
+        .map(ToOwned::to_owned)
+        .collect();
+    DnsServiceBackup {
+        name: name.to_owned(),
+        automatic: servers.is_empty(),
+        servers,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn ensure_privileged_helper() -> Result<(), String> {
-    if call_helper(&HelperRequest::Ping).is_ok_and(|response| response.ok) {
+    if helper_protocol_is_current() {
         return Ok(());
     }
     install_privileged_helper()?;
     for _ in 0..30 {
-        if call_helper(&HelperRequest::Ping).is_ok_and(|response| response.ok) {
+        if helper_protocol_is_current() {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     Err("CleanWeb 特权服务安装后未就绪".into())
+}
+
+#[cfg(target_os = "macos")]
+fn helper_protocol_is_current() -> bool {
+    call_helper(&HelperRequest::Version).is_ok_and(|response| {
+        response.ok && response.message.as_deref() == Some(HELPER_PROTOCOL_VERSION)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -514,6 +664,7 @@ fn write_helper_log(message: &str) {
 #[serde(tag = "command", rename_all = "snake_case")]
 enum HelperRequest {
     Ping,
+    Version,
     Start { binary: String, config: String },
     Stop,
 }
@@ -525,6 +676,20 @@ struct HelperResponse {
     message: Option<String>,
     pid: Option<u32>,
     log: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize, serde::Serialize)]
+struct DnsBackup {
+    services: Vec<DnsServiceBackup>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+struct DnsServiceBackup {
+    name: String,
+    automatic: bool,
+    servers: Vec<String>,
 }
 
 #[cfg(target_os = "macos")]
@@ -705,6 +870,40 @@ mod tests {
         assert_eq!(
             parse_macos_dns_servers(output),
             vec!["10.195.85.120", "240e:479::19"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_macos_network_services_without_warning_or_disabled_marker() {
+        let output = "An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n*USB 10/100/1000 LAN\nThunderbolt Bridge\n";
+        assert_eq!(
+            parse_macos_network_services(output),
+            vec!["Wi-Fi", "Thunderbolt Bridge"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_manual_and_automatic_macos_dns_backup_services() {
+        assert_eq!(
+            parse_macos_dns_backup_service("Wi-Fi", "114.114.114.114\n8.8.8.8\n"),
+            DnsServiceBackup {
+                name: "Wi-Fi".into(),
+                automatic: false,
+                servers: vec!["114.114.114.114".into(), "8.8.8.8".into()],
+            }
+        );
+        assert_eq!(
+            parse_macos_dns_backup_service(
+                "Ethernet",
+                "There aren't any DNS Servers set on Ethernet.\n"
+            ),
+            DnsServiceBackup {
+                name: "Ethernet".into(),
+                automatic: true,
+                servers: Vec::new(),
+            }
         );
     }
 

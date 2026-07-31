@@ -896,6 +896,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
 
     let mut dns = Mapping::new();
     insert(&mut dns, "enable", Value::Bool(true));
+    insert(&mut dns, "listen", Value::String("127.0.0.1:53".into()));
     insert(&mut dns, "enhanced-mode", Value::String("fake-ip".into()));
     insert(
         &mut dns,
@@ -1725,6 +1726,13 @@ mod tests {
         assert!(
             yaml.get("mixed-port").is_none(),
             "TUN 模式不得向其他应用暴露本地代理端口"
+        );
+        assert_eq!(
+            yaml.get("dns")
+                .and_then(|dns| dns.get("listen"))
+                .and_then(Value::as_str),
+            Some("127.0.0.1:53"),
+            "macOS system DNS is pointed at the local Mihomo DNS listener"
         );
         assert_eq!(
             yaml.get("dns")

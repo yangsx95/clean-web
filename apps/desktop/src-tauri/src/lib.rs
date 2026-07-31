@@ -30,6 +30,7 @@ struct AppLifecycle {
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
@@ -39,6 +40,7 @@ fn request_quit_confirmation(app: &tauri::AppHandle) {
         .quit_requested
         .store(true, Ordering::SeqCst);
     show_main_window(app);
+    let _ = app.emit_to("main", QUIT_REQUESTED_EVENT, ());
     let _ = app.emit(QUIT_REQUESTED_EVENT, ());
 }
 

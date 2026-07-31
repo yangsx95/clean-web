@@ -89,6 +89,7 @@ fun CleanWebApp(
     onAcknowledgeAlwaysOnGuidance: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(AppTab.Protection) }
+    val parentRules = appState.rules.filter(::isParentVisibleRule)
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -142,9 +143,13 @@ fun CleanWebApp(
                     )
 
                     AppTab.Rules -> {
+                        item { RuleCategorySummary(appState.settings) }
                         item { RulesEditor(onAddRule) }
-                        items(appState.rules, key = { it.id }) { rule ->
+                        items(parentRules, key = { it.id }) { rule ->
                             RuleRow(rule, onToggleRule, onRemoveRule)
+                        }
+                        if (parentRules.isEmpty()) {
+                            item { EmptyState("还没有添加家长规则") }
                         }
                     }
 
@@ -335,7 +340,7 @@ private fun ProtectionHero(
                 onClick = onStopProtection
             )
         }
-        SummaryRow("已启用规则", state.rules.count { it.enabled }.toString(), onDark = true)
+        SummaryRow("家长规则", state.rules.count { isParentVisibleRule(it) && it.enabled }.toString(), onDark = true)
         SummaryRow("过滤内核", "Mihomo + tun2socks", onDark = true)
     }
 }
@@ -398,6 +403,55 @@ private fun PolicySwitchPanel(
         CompactToggle("短视频与游戏", "直播、短视频和游戏平台", settings.entertainmentEnabled) {
             onSettingsChange(settings.copy(entertainmentEnabled = it))
         }
+    }
+}
+
+@Composable
+private fun RuleCategorySummary(settings: ProtectionSettings) {
+    PaperCard {
+        SectionTitle("受保护类别")
+        Text(
+            text = "内置核心规则、订阅明细和严格模式补充规则由 CleanWeb 在后台维护，不在手机端逐条展示。",
+            color = PaperMuted,
+            fontSize = 12.sp,
+            lineHeight = 17.sp
+        )
+        CategoryRow("色情与擦边", true, locked = true)
+        CategoryRow("赌博、毒品、诈骗", true, locked = true)
+        CategoryRow("恶意软件与钓鱼", true, locked = true)
+        CategoryRow("短视频与游戏", settings.entertainmentEnabled, locked = false)
+        CategoryRow("广告与跟踪", settings.adsTrackingEnabled, locked = false)
+        if (settings.strictModeEnabled) {
+            CategoryRow("严格模式补充", true, locked = false)
+        }
+    }
+}
+
+@Composable
+private fun CategoryRow(label: String, enabled: Boolean, locked: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(if (enabled) PaperAccent else PaperWarn)
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(label, color = PaperInk, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+        Text(
+            text = if (locked) "强制" else if (enabled) "开启" else "关闭",
+            color = if (enabled) PaperAccent else PaperMuted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Black
+        )
     }
 }
 
@@ -794,6 +848,12 @@ private fun statusLabel(status: VpnStatus): String {
         VpnStatus.Failed -> "失败"
         VpnStatus.PermissionDenied -> "需授权"
     }
+}
+
+private fun isParentVisibleRule(rule: RuleEntry): Boolean {
+    return rule.category == RuleCategory.CustomBlock ||
+        rule.category == RuleCategory.CustomAllow ||
+        rule.category == RuleCategory.Routing
 }
 
 private fun tabTitle(tab: AppTab, status: VpnStatus): String {
