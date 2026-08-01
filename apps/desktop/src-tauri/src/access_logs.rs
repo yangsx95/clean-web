@@ -331,7 +331,20 @@ fn insert_parsed_log_event(
     let user_id = intern_access_log_string(db, Some(user))?;
     let route_id = intern_access_log_string(db, Some(event.route.as_str()))?;
     let observed_at_ms = observed_at_ms(db, observed_at)?;
+    let event_hash = connection_hash(&event.id);
     if should_rollup_event(event) {
+        if db
+            .query_row(
+                "SELECT 1 FROM access_logs WHERE connection_hash=?1",
+                params![event_hash.as_slice()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(error)?
+            .is_some()
+        {
+            return Ok(0);
+        }
         if let Some(updated) = update_recent_rollup_event(
             db,
             event,
@@ -351,11 +364,7 @@ fn insert_parsed_log_event(
     db.execute(
         "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id,repeat_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,1)",
         params![
-            if should_rollup_event(event) {
-                rollup_hash(observed_at_ms, event)
-            } else {
-                connection_hash(&event.id)
-            },
+            event_hash,
             observed_at_ms,
             domain_id,
             target_ip_id,
@@ -446,23 +455,6 @@ fn observed_at_ms(db: &rusqlite::Connection, observed_at: &str) -> Result<i64, S
         |row| row.get(0),
     )
     .map_err(error)
-}
-
-fn rollup_hash(bucket_ms: i64, event: &ParsedLogEvent) -> Vec<u8> {
-    connection_hash(&format!(
-        "rollup|{bucket_ms}|{}|{}|{}|{}|{}|{}|{}|{}",
-        event.domain.as_deref().unwrap_or(""),
-        event.target_ip.as_deref().unwrap_or(""),
-        event
-            .port
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        event.decision,
-        event.rule.as_deref().unwrap_or(""),
-        event.category.unwrap_or(""),
-        event.process_name.as_deref().unwrap_or(""),
-        event.route
-    ))
 }
 
 fn sync_mihomo_log_files(state: &AppState) -> Result<usize, String> {
