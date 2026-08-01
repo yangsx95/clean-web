@@ -5,7 +5,7 @@ import * as backend from "./backend";
 
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
 type AppDialog = "unlock" | "rules" | "editRuleSubscription" | "proxy" | "custom" | "quit" | null;
-type AppPage = "overview" | "rules" | "logs" | "subscriptions" | "proxy" | "settings";
+type AppPage = "overview" | "rules" | "logs" | "proxy" | "settings";
 type AccessLogDecisionFilter = "all" | "block" | "warning";
 const ACCESS_LOG_REFRESH_INTERVAL_MS = 3000;
 const ACCESS_LOG_SEARCH_DEBOUNCE_MS = 400;
@@ -81,6 +81,7 @@ const busyScope = {
   protection: "protection",
   createRule: "rule:create",
   createSubscription: "subscription:create",
+  refreshDueSubscriptions: "subscription:refresh-due",
   importProxy: "proxy:import",
   logs: "logs",
   setting: (key: string) => `setting:${key}`,
@@ -188,12 +189,14 @@ export function App() {
   const debouncedAccessLogSearch=useDebouncedValue(accessLogSearch,ACCESS_LOG_SEARCH_DEBOUNCE_MS);
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
-  const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "规则导入", proxy: "代理节点", settings: "设置" };
+  const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", proxy: "代理节点", settings: "设置" };
   const requestAction = (action: "rules" | "proxy", mode: ProxyImportMode = "subscription") => { if (action === "proxy") setProxyImportMode(mode); setDialog(locked ? "unlock" : action); };
   const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
   const quitApp = async (password: string) => { await backend.confirmedQuit(password); setDialog(null); };
   const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
-  const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
+  const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"||status.state==="failed"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
+  const showPolicyFailure=()=>showPolicyStatus({state:"failed",message:"操作失败，请查看错误详情"});
+  const dismissPolicyStatus=()=>{clearPolicyStatusTimer();setPolicyApplyStatus(null);};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;let checking=false;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{if(checking)return;checking=true;void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{}).finally(()=>{checking=false;});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();const timer=window.setInterval(showPendingQuitDialog,500);window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;window.clearInterval(timer);if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
   useEffect(() => { void (async () => {
@@ -212,7 +215,7 @@ export function App() {
     setReady(true);
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
-  useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(()=>reloadRuntime(sessionToken,{silent:true})).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
+  useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(count=>count>0?reloadRuntime(sessionToken,{silent:true}):undefined).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,500),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
   const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats); setLocked(true); };
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
@@ -225,7 +228,7 @@ export function App() {
       return core;
     }catch(reason){
       const notice=toErrorNotice(reason,"网络策略应用失败，请稍后重试");
-      if(!options.silent)showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});
+      if(!options.silent)showPolicyFailure();
       throw reason;
     }
   };
@@ -235,7 +238,7 @@ export function App() {
     await runScopedOperation(key==="protection_enabled"?busyScope.protection:busyScope.setting(key), async()=>{try {
       if(key==="protection_enabled"){showPolicyStatus({state:"applying",message:value==="true"?"正在启动保护…":"正在关闭保护…"});const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);setSettings(await backend.updateSetting(sessionToken,key,value));showPolicyStatus({state:"applied",message:value==="true"?"保护已开启":"保护已关闭"});}
       else {showPolicyStatus({state:"applying",message:"正在保存并应用设置…"});setSettings(await backend.updateSetting(sessionToken,key,value));await reloadRuntime(sessionToken,{applyingMessage:"正在应用设置到运行内核…"});}
-    } catch(reason) { const notice=toErrorNotice(reason,value==="true"?"保护启动失败，请稍后重试":"操作失败，请稍后重试");showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});setRuntimeError(notice); }});
+    } catch(reason) { const notice=toErrorNotice(reason,value==="true"?"保护启动失败，请稍后重试":"操作失败，请稍后重试");showPolicyFailure();setRuntimeError(notice); }});
   };
   const toggle = (key: string, enabled: boolean) => setValue(key, String(enabled));
   const createSubscription = async (input: backend.NewSubscription) => {
@@ -284,13 +287,26 @@ export function App() {
       }
     });
   };
+  const refreshDueSubscriptions=async()=>{
+    if(!sessionToken){setDialog("unlock");return;}
+    await runScopedOperation(busyScope.refreshDueSubscriptions, async()=>{
+      showPolicyStatus({state:"applying",message:"正在检查规则来源更新…"});
+      const count=await backend.refreshDueSubscriptions();
+      setSubscriptions(await backend.listSubscriptions(sessionToken));
+      if(count>0){
+        await reloadRuntime(sessionToken,{applyingMessage:`检测到 ${count} 个来源需要更新，正在应用…`});
+      }else{
+        showPolicyStatus({state:"applied",message:"规则来源已是最新"});
+      }
+    });
+  };
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);});};
-  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);await runScopedOperation(busyScope.logs, async()=>{showPolicyStatus({state:"applying",message:"正在导出访问日志…"});try{const path=await backend.saveAccessLogsCsv(sessionToken);if(path)showPolicyStatus({state:"applied",message:"访问日志已导出"});else showPolicyStatus({state:"applied",message:"已取消导出"});}catch(reason){const notice=toErrorNotice(reason,"访问日志导出失败，请稍后重试");const exportNotice={message:"访问日志导出失败，请稍后重试",detail:notice.detail??notice.message};showPolicyStatus({state:"failed",message:exportNotice.message,detail:exportNotice.detail});setRuntimeError(exportNotice);}});};
+  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);await runScopedOperation(busyScope.logs, async()=>{showPolicyStatus({state:"applying",message:"正在导出访问日志…"});try{const path=await backend.saveAccessLogsCsv(sessionToken);if(path)showPolicyStatus({state:"applied",message:"访问日志已导出"});else showPolicyStatus({state:"applied",message:"已取消导出"});}catch(reason){const notice=toErrorNotice(reason,"访问日志导出失败，请稍后重试");const exportNotice={message:"访问日志导出失败，请稍后重试",detail:notice.detail??notice.message};showPolicyFailure();setRuntimeError(exportNotice);}});};
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError(null);showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){const notice=toErrorNotice(reason,"规则已添加，但保护配置重载失败");setRuntimeError({message:"规则已添加，但保护配置重载失败",detail:notice.detail??notice.message});}});};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
-  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){const notice=toErrorNotice(reason,"代理节点切换失败，请稍后重试");showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});setRuntimeError(notice);throw reason;}};
-  const applyBrowserPolicies=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.setting("browser_policies"),async()=>{showPolicyStatus({state:"applying",message:"正在配置浏览器增强保护…"});try{const status=await backend.applyBrowserPolicies(sessionToken);setBrowserPolicyStatus(status);showPolicyStatus({state:"applied",message:"浏览器策略已写入，重启浏览器后完全生效"});}catch(reason){const notice=toErrorNotice(reason,"浏览器增强保护配置失败，请检查系统授权后重试");showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});setRuntimeError(notice);}});};
+  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){const notice=toErrorNotice(reason,"代理节点切换失败，请稍后重试");showPolicyFailure();setRuntimeError(notice);throw reason;}};
+  const applyBrowserPolicies=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.setting("browser_policies"),async()=>{showPolicyStatus({state:"applying",message:"正在配置浏览器增强保护…"});try{const status=await backend.applyBrowserPolicies(sessionToken);setBrowserPolicyStatus(status);showPolicyStatus({state:"applied",message:"浏览器策略已写入，重启浏览器后完全生效"});}catch(reason){const notice=toErrorNotice(reason,"浏览器增强保护配置失败，请检查系统授权后重试");showPolicyFailure();setRuntimeError(notice);}});};
   useEffect(()=>{
     let cancelled=false;
     let unlisten:(()=>void)|undefined;
@@ -351,7 +367,7 @@ export function App() {
     return()=>{cancelled=true;window.clearInterval(interval);if(unlisten)unlisten();};
   },[sessionToken]);
   if (!ready || !settings) return <div className="loading">正在读取 CleanWeb 配置…</div>;
-  if (locked) return <LockedStatus coreStatus={coreStatus} stats={accessLogStats} runtimeError={runtimeError} needsSetup={needsSetup} onSetupComplete={() => setNeedsSetup(false)} onUnlock={handleUnlock} dialog={dialog} setDialog={setDialog} onHideToBackground={hideToBackground} onQuitApp={quitApp} />;
+  if (locked) return <LockedStatus coreStatus={coreStatus} stats={accessLogStats} runtimeError={runtimeError} needsSetup={needsSetup} onSetupComplete={() => setNeedsSetup(false)} onUnlock={handleUnlock} dialog={dialog} setDialog={setDialog} onDismissRuntimeError={()=>setRuntimeError(null)} onHideToBackground={hideToBackground} onQuitApp={quitApp} />;
   return <div className="shell">
     <aside>
       <div className="brand"><ShieldCheck size={25}/><strong>CleanWeb</strong></div>
@@ -359,7 +375,6 @@ export function App() {
         <button className={page === "overview" ? "active" : ""} onClick={() => setPage("overview")}><Activity/>概览</button>
         <button className={page === "rules" ? "active" : ""} onClick={() => setPage("rules")}><BookOpen/>规则管理</button>
         <button className={page === "logs" ? "active" : ""} onClick={() => setPage("logs")}><ListFilter/>访问日志</button>
-        <button className={page === "subscriptions" ? "active" : ""} onClick={() => setPage("subscriptions")}><Database/>规则导入</button>
         <button className={page === "proxy" ? "active" : ""} onClick={() => setPage("proxy")}><Network/>代理节点</button>
         <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}><Settings/>设置</button>
       </nav>
@@ -367,13 +382,12 @@ export function App() {
       <div className="sidebar-version">CleanWeb v0.1.0</div>
     </aside>
     <main>
-      <header><div><span className="eyebrow">{page === "overview" ? "网络保护" : page === "logs" ? "本地隐私日志" : page === "subscriptions" ? "规则供应链" : page === "proxy" ? "受控代理层" : page === "settings" ? "管理员设置" : "策略规则模型"}</span><h1>{page === "overview" && coreStatus?.running !== true ? settings.protectionEnabled ? "保护需要恢复" : "保护未接管" : titles[page]}</h1></div></header>
-      {runtimeError&&<ErrorNoticeView notice={runtimeError}/>}
-      {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus}/>}
+      <header><div><span className="eyebrow">{page === "overview" ? "网络保护" : page === "logs" ? "本地隐私日志" : page === "proxy" ? "受控代理层" : page === "settings" ? "管理员设置" : "策略规则模型"}</span><h1>{page === "overview" && coreStatus?.running !== true ? settings.protectionEnabled ? "保护需要恢复" : "保护未接管" : titles[page]}</h1></div></header>
+      {runtimeError&&<ErrorNoticeView notice={runtimeError} onClose={()=>setRuntimeError(null)}/>}
+      {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} onClose={dismissPolicyStatus}/>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
-      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
+      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} onRefresh={refreshSubscription} onRefreshDue={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
-      {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions.filter((item)=>item.kind==="rule"&&!isBuiltinSubscription(item))} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAddRule={() => requestAction("rules")} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
       {page === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onApplyBrowserPolicies={applyBrowserPolicies} />}
     </main>
@@ -387,24 +401,25 @@ export function App() {
   </div>;
 }
 
-function PolicyApplyBanner({status}:{status:PolicyApplyStatus}) {
+function PolicyApplyBanner({status,onClose}:{status:PolicyApplyStatus;onClose?:()=>void}) {
   const label = status.state === "applying" ? "应用中" : status.state === "applied" ? "已生效" : "应用失败";
   return <div className={`policy-apply-banner ${status.state}`} role={status.state === "failed" ? "alert" : "status"} aria-live="polite">
     <span className="policy-apply-dot" />
     <b>{label}</b>
     <span>{status.message}</span>
-    {status.detail&&<details><summary>技术详情</summary><pre>{status.detail}</pre></details>}
+    {onClose&&<button type="button" className="notice-close" aria-label="关闭应用状态提示" onClick={onClose}><X size={14}/></button>}
   </div>;
 }
 
-function ErrorNoticeView({notice,compact=false}:{notice:ErrorNotice;compact?:boolean}) {
+function ErrorNoticeView({notice,compact=false,onClose}:{notice:ErrorNotice;compact?:boolean;onClose?:()=>void}) {
   return <div className={`runtime-error${compact?" compact":""}`} role="alert">
     <span>{notice.message}</span>
+    {onClose&&<button type="button" className="notice-close" aria-label="关闭错误信息" onClick={onClose}><X size={14}/></button>}
     {notice.detail&&<details><summary>技术详情</summary><pre>{notice.detail}</pre></details>}
   </div>;
 }
 
-function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog, onHideToBackground, onQuitApp }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:ErrorNotice|null;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:AppDialog;setDialog:(dialog:AppDialog)=>void;onHideToBackground:()=>Promise<void>;onQuitApp:(password:string)=>Promise<void> }) {
+function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog, onDismissRuntimeError, onHideToBackground, onQuitApp }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:ErrorNotice|null;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:AppDialog;setDialog:(dialog:AppDialog)=>void;onDismissRuntimeError:()=>void;onHideToBackground:()=>Promise<void>;onQuitApp:(password:string)=>Promise<void> }) {
   const running = coreStatus?.running === true;
   return <div className="locked-shell">
     <section className="locked-status-card" aria-label="CleanWeb 锁定状态">
@@ -412,7 +427,7 @@ function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComp
         <div className={running ? "locked-status-icon" : "locked-status-icon off"}><ShieldCheck size={26}/></div>
         <div><span className={running ? "status" : "status off"}>{running ? "保护运行中" : "保护未运行"}</span><h1>CleanWeb</h1></div>
       </div>
-      {runtimeError && <ErrorNoticeView notice={runtimeError} compact/>}
+      {runtimeError && <ErrorNoticeView notice={runtimeError} compact onClose={onDismissRuntimeError}/>}
       <div className="locked-status-stats">
         <article><span>已拦截</span><strong>{compactCount(stats.block)}</strong></article>
         <article><span>已允许</span><strong>{compactCount(stats.allow)}</strong></article>
@@ -582,20 +597,6 @@ function AccessLogRow({ log }: { log:backend.AccessLog }) {
   </div>;
 }
 
-function SubscriptionsPage({ subscriptions, refreshingId, isBusy, onRefresh, onToggle, onDelete, onEdit, onAddRule }: { subscriptions:backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggle:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAddRule:()=>void }) {
-  return <>
-    <section className="cw-page-intro"><p>导入第三方规则来源。内置规则在“规则管理”中只读展示，代理订阅在“代理节点”中管理。</p><div><button className="primary" onClick={onAddRule}>添加规则源</button></div></section>
-    <section className="cw-rule-import-layout">
-      <article className="cw-panel"><div className="cw-panel-head"><h3>外部规则来源</h3><span>失败保留旧版</span></div><SubscriptionRows items={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={onRefresh} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit}/></article>
-    </section>
-  </>;
-}
-
-function SubscriptionRows({ items, refreshingId, isBusy, onRefresh, onToggle, onDelete, onEdit }: { items:backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggle:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void }) {
-  if (items.length === 0) return <div className="table-empty">尚未添加来源</div>;
-  return <div className="subscription-rows">{items.map(item=>{const rowBusy=isBusy(busyScope.subscription(item.id));return <div className="subscription-row" key={item.id}><div className="subscription-main"><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??`${item.format??"自动检测"} · ${item.updateIntervalHours??24}小时更新`}</small></div><span className="subscription-category">{item.category??(item.kind==="proxy"?"代理":"自定义")}</span><Switch checked={item.enabled} label={`${item.name}订阅`} disabled={rowBusy} onChange={(value)=>onToggle(item.id,value)}/><div className="row-actions"><button className="row-action" disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{item.kind==="rule"&&<button className="row-action" disabled={rowBusy} onClick={()=>onEdit(item)}><Pencil size={15}/></button>}<button className="row-action" disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>;})}</div>;
-}
-
 function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onRetention, onApplyBrowserPolicies }: { settings:backend.Settings; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
   const [tab,setTab]=useState<"protection"|"browser"|"privacy">("protection");
   const retentionOptions = [{ value:"7d", label:"7 天" }, { value:"30d", label:"30 天" }, { value:"90d", label:"90 天" }, { value:"forever", label:"永久" }];
@@ -665,7 +666,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
   </button>;
 });
 
-function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
+function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, onRefresh, onRefreshDue, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onRefreshDue:()=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
   const [expandedBuiltinSources,setExpandedBuiltinSources]=useState<Record<string,boolean>>({});
   const builtinSubscriptions = subscriptions.filter(isBuiltinSubscription);
@@ -704,7 +705,6 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     const bi = builtinCategoryOrder.indexOf(b.category);
     return (ai<0?999:ai)-(bi<0?999:bi)||a.name.localeCompare(b.name,"zh-CN");
   });
-  const groupFormats = (sources: backend.Subscription[]) => Array.from(new Set(sources.map(subscriptionFormat))).join(" / ");
   const groupUpdateInterval = (sources: backend.Subscription[]) => {
     const intervals = Array.from(new Set(sources.map(updateInterval)));
     return intervals.length === 1 ? intervals[0] : "多周期更新";
@@ -736,7 +736,6 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     if ((source.importedRuleCount??0) > 0) return { label:"已同步", className:"ready", detail:"已导入规则" };
     return { label:"待同步", className:"pending", detail:"等待首次下载" };
   };
-  const builtinSourceCategory = (source: backend.Subscription) => source.category ? builtinCategoryName(source.category) : "内置来源";
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
   const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : action === "system_route" ? "系统路由" : "直连";
   const renderParentRule = (item: backend.ParentRule) => {
@@ -754,50 +753,46 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{blockRules.length===0&&<div className="table-empty">尚未添加拦截规则</div>}{blockRules.map(renderParentRule)}</section></>}
     {tab==="route"&&<><section className="toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连、走代理或按系统路由；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>出口</span><span>状态</span><span>操作</span></div>{routeRules.length===0&&<div className="table-empty">尚未添加路由规则</div>}{routeRules.map(renderParentRule)}</section></>}
-    {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
+    {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div><button className="primary" disabled={isBusy(busyScope.refreshDueSubscriptions)} onClick={()=>void onRefreshDue()}><RefreshCw size={16}/>检查更新</button></section>
     <section className="table-card builtin-rules-table">
-      <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>上次更新</span><span>操作</span></div>
       {builtinGroups.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
       {builtinGroups.map((group) => {
         const status = builtinStatus(group);
         const progress = activeProgress(group);
-        const rowBusy = group.sources.some(source=>isBusy(busyScope.subscription(source.id))||refreshingId===source.id);
-        return <div className="table-row builtin-rule-row" key={group.id}>
-          <div>
-            <b>{group.name}</b>
-            <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `CleanWeb 维护 · ${groupUpdateInterval(group.sources)}`}</small>
-            <button type="button" className="builtin-source-toggle" aria-label={`${expandedBuiltinSources[group.id]?"收起":"展开"}来源 ${group.sources.length}`} aria-expanded={Boolean(expandedBuiltinSources[group.id])} title={`${group.sources.length} 个规则来源`} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}><Database size={13}/><span>{group.sources.length}</span>{expandedBuiltinSources[group.id]?<ChevronDown size={14}/>:<ChevronRight size={14}/>}</button>
-          </div>
-          <span>{groupFormats(group.sources)}</span>
-          <div className="builtin-rule-state">
-            <strong className={status.className}>{status.label}</strong>
-            {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
-              <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
-              <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
-            </div>}
-          </div>
-          <span>{formatUpdatedAt(groupLastUpdatedAt(group.sources))}</span>
-          <div className="row-actions"><button className="row-action" aria-label={`更新${group.name}`} disabled={rowBusy} onClick={()=>void group.sources.reduce((chain,source)=>chain.then(()=>onRefresh(source.id)),Promise.resolve())}><RefreshCw size={15}/></button></div>
-          {expandedBuiltinSources[group.id]&&<div className="builtin-source-list">
-            <div className="builtin-source-list-head">
-              <div><strong>规则来源</strong><span>{group.sources.length} 个来源 · {groupFormats(group.sources)}</span></div>
-              <span>{groupUpdateInterval(group.sources)}</span>
+        return <div className="builtin-category-row" key={group.id}>
+          <div className="builtin-category-summary">
+            <button type="button" className="builtin-category-toggle" aria-label={`${expandedBuiltinSources[group.id]?"收起":"展开"}来源 ${group.sources.length}`} aria-expanded={Boolean(expandedBuiltinSources[group.id])} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}>{expandedBuiltinSources[group.id]?<ChevronDown size={16}/>:<ChevronRight size={16}/>}</button>
+            <div className="builtin-category-main">
+              <b>{group.name}</b>
+              <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `CleanWeb 维护 · ${group.sources.length} 个来源 · ${groupUpdateInterval(group.sources)}`}</small>
             </div>
-            <div className="builtin-source-grid">
+            <div className="builtin-rule-state">
+              <strong className={status.className}>{status.label}</strong>
+              {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
+                <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
+                <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
+              </div>}
+            </div>
+          </div>
+          {expandedBuiltinSources[group.id]&&<div className="builtin-source-list">
+            <div className="builtin-source-head"><span>名称</span><span>格式</span><span>状态</span><span>上次更新</span><span>操作</span></div>
+            <div className="builtin-source-rows">
               {group.sources.map(source=>{
                 const itemStatus = sourceStatus(source);
-                return <article className="builtin-source-item" key={source.id}>
+                const sourceBusy = isBusy(busyScope.subscription(source.id))||refreshingId===source.id;
+                return <div className="builtin-source-row" key={source.id}>
                   <div className="builtin-source-item-main">
                     <b title={builtinDisplayName(source.name)}>{builtinDisplayName(source.name)}</b>
                     <span title={source.url}>{source.url}</span>
                   </div>
-                  <div className="builtin-source-item-meta">
-                    <span>{subscriptionFormat(source)}</span>
-                    <span>{builtinSourceCategory(source)}</span>
+                  <span>{subscriptionFormat(source)}</span>
+                  <div className="builtin-source-status">
                     <strong className={itemStatus.className}>{itemStatus.label}</strong>
+                    {source.lastError&&<small className="error-text">{itemStatus.detail}</small>}
                   </div>
-                  <small className={source.lastError ? "error-text" : ""}>{itemStatus.detail}</small>
-                </article>;
+                  <span>{formatUpdatedAt(source.lastUpdatedAt)}</span>
+                  <div className="row-actions"><button className="row-action" aria-label={`更新${builtinDisplayName(source.name)}`} disabled={sourceBusy} onClick={()=>void onRefresh(source.id)}><RefreshCw size={15}/></button></div>
+                </div>;
               })}
             </div>
           </div>}

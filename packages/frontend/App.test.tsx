@@ -682,7 +682,7 @@ describe("management actions", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
-    expect(screen.getByText("上次更新")).toBeTruthy();
+    expect(screen.queryByText("上次更新")).toBeNull();
     expect(screen.getByText("已同步")).toBeTruthy();
     expect(screen.queryByText("953521 条规则", { exact: false })).toBeNull();
     expect(screen.getByText("待同步")).toBeTruthy();
@@ -691,9 +691,12 @@ describe("management actions", () => {
     expect(screen.queryByText("https://example.test/default")).toBeNull();
     expect(screen.queryByText("成人站点扩展")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /来源 2/ }));
+    expect(screen.getByText("上次更新")).toBeTruthy();
     expect(screen.getByText("成人站点扩展")).toBeTruthy();
     expect(screen.getByText("https://example.test/blocklist-porn")).toBeTruthy();
     expect(screen.getByText("https://example.test/default")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更新色情内容" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更新成人站点扩展" })).toBeTruthy();
     expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除内置规则 · 色情内容" })).toBeNull();
     expect(screen.queryByRole("button", { name: "编辑内置规则 · 娱乐内容补充" })).toBeNull();
@@ -705,7 +708,24 @@ describe("management actions", () => {
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
 
-  it("keeps rule import focused on external rule sources", async () => {
+  it("checks due builtin rule updates without applying when nothing is due", async () => {
+    const refreshDue = vi.spyOn(backend, "refreshDueSubscriptions").mockResolvedValue(0);
+    const reload = vi.spyOn(backend, "reloadProtection").mockResolvedValue({ running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview" });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
+    await userEvent.click(screen.getByRole("button", { name: "检查更新" }));
+
+    await screen.findByText("规则来源已是最新");
+    expect(refreshDue).toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    refreshDue.mockRestore();
+    reload.mockRestore();
+  });
+
+  it("keeps external subscriptions in rule management focused on external rule sources", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
@@ -714,10 +734,11 @@ describe("management actions", () => {
 
     render(<App />);
     await unlockManagement();
-    await userEvent.click(screen.getByRole("button", { name: "规则导入" }));
+    expect(screen.queryByRole("button", { name: "规则导入" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
 
-    expect(screen.getByRole("heading", { name: "规则导入" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "外部规则来源" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
     expect(screen.getByText("我的规则")).toBeTruthy();
     expect(screen.queryByText("内置规则 · 色情内容")).toBeNull();
     expect(screen.queryByText("我的代理")).toBeNull();
@@ -758,7 +779,6 @@ describe("management actions", () => {
     const coreStatus = vi.spyOn(backend, "getCoreStatus")
       .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
     const reload = vi.spyOn(backend, "reloadProtection")
-      .mockResolvedValueOnce({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" })
       .mockRejectedValueOnce(new Error("reload failed"));
 
     render(<App />);
@@ -771,6 +791,8 @@ describe("management actions", () => {
     expect(screen.queryByRole("dialog", { name: "添加拦截规则" })).toBeNull();
     expect(await screen.findByText("blocked.example")).toBeTruthy();
     expect(await screen.findByText(/规则已添加，但保护配置重载失败/)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "关闭错误信息" }));
+    expect(screen.queryByText(/规则已添加，但保护配置重载失败/)).toBeNull();
     reload.mockRestore();
     coreStatus.mockRestore();
   });
