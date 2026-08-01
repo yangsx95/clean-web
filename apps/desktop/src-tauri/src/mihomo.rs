@@ -1723,7 +1723,7 @@ mod tests {
             yaml.get("dns")
                 .and_then(|dns| dns.get("default-nameserver"))
                 .and_then(Value::as_sequence)
-                .map(|values| values.contains(&Value::String("223.5.5.5".into()))),
+                .map(|values| values.contains(&Value::String("223.5.5.5:53".into()))),
             Some(true),
             "代理节点域名和 DNS 上游需要直连 bootstrap DNS，避免启动时解析自举死锁"
         );

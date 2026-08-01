@@ -211,3 +211,14 @@ mappings:
     target: family.startpage.com
   - domain: startpage.com
     target: family.startpage.com
+
+  # Yandex Family Search hosts entry:
+  # https://yandex.com/support/search/en/schoolsearch
+  - domain: yandex.com
+    target: 213.180.193.56
+  - domain: www.yandex.com
+    target: 213.180.193.56
+  - domain: yandex.ru
+    target: 213.180.193.56
+  - domain: www.yandex.ru
+    target: 213.180.193.56

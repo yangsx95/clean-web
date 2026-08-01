@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    net::{SocketAddr, UdpSocket},
+    net::{IpAddr, SocketAddr, UdpSocket},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,7 +14,10 @@ use cleanweb_rules::{
     DomainDecision, DomainRuleIndex, DomainRuleInput, DomainRuleTier, MatcherKind,
 };
 use hickory_proto::op::{Message, Metadata, ResponseCode};
-use hickory_proto::rr::{rdata::CNAME, Name, RData, Record};
+use hickory_proto::rr::{
+    rdata::{A, AAAA, CNAME},
+    Name, RData, Record, RecordType,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -155,7 +158,7 @@ fn safe_search_response(
 ) -> Option<Vec<u8>> {
     let target = config.safe_search_mappings.get(domain)?;
     let query = request.queries.first()?;
-    let target = Name::from_ascii(target).ok()?;
+    let answer = safe_search_answer(query.name().clone(), query.query_type(), target)?;
     let mut response = Message::new(
         request.metadata.id,
         hickory_proto::op::MessageType::Response,
@@ -164,12 +167,32 @@ fn safe_search_response(
     response.metadata = Metadata::response_from_request(&request.metadata);
     response.metadata.recursion_available = true;
     response.add_queries(request.queries.iter().cloned());
-    response.add_answer(Record::from_rdata(
-        query.name().clone(),
+    response.add_answer(answer);
+    response.to_vec().ok()
+}
+
+fn safe_search_answer(name: Name, query_type: RecordType, target: &str) -> Option<Record> {
+    if let Ok(address) = target.parse::<IpAddr>() {
+        return match (query_type, address) {
+            (RecordType::A, IpAddr::V4(address)) => Some(Record::from_rdata(
+                name,
+                SAFE_SEARCH_CNAME_TTL,
+                RData::A(A(address)),
+            )),
+            (RecordType::AAAA, IpAddr::V6(address)) => Some(Record::from_rdata(
+                name,
+                SAFE_SEARCH_CNAME_TTL,
+                RData::AAAA(AAAA(address)),
+            )),
+            _ => None,
+        };
+    }
+    let target = Name::from_ascii(target).ok()?;
+    Some(Record::from_rdata(
+        name,
         SAFE_SEARCH_CNAME_TTL,
         RData::CNAME(CNAME(target)),
-    ));
-    response.to_vec().ok()
+    ))
 }
 
 fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, std::io::Error> {
@@ -519,6 +542,32 @@ mod tests {
             message.answers[0].data.to_string(),
             "forcesafesearch.google.com."
         );
+    }
+
+    #[test]
+    fn safe_search_ip_targets_return_address_records() {
+        let config = DnsFilterConfig {
+            domain_index: DomainRuleIndex::default(),
+            upstreams: Vec::new(),
+            safe_search_enabled: true,
+            safe_search_mappings: HashMap::from([("yandex.ru".into(), "213.180.193.56".into())]),
+        };
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("yandex.ru.").unwrap(),
+            RecordType::A,
+        ));
+        let response = handle_dns_packet(
+            &request.to_vec().unwrap(),
+            &config,
+            None,
+            "127.0.0.1:12345".parse().unwrap(),
+        )
+        .unwrap();
+        let message = Message::from_vec(&response).unwrap();
+
+        assert_eq!(message.answers.len(), 1);
+        assert_eq!(message.answers[0].data.to_string(), "213.180.193.56");
     }
 
     #[test]
