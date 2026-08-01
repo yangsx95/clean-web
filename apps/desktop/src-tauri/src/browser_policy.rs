@@ -1,5 +1,6 @@
-use std::{fs, path::Path, process::Command};
+use std::{collections::HashMap, fs, path::Path, process::Command};
 
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use tauri::State;
 
@@ -25,7 +26,9 @@ pub struct BrowserPolicyBrowserStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserPolicyDetail {
+    key: &'static str,
     label: &'static str,
+    enabled: bool,
     configured: bool,
     current_value: Option<String>,
     expected_value: &'static str,
@@ -36,12 +39,12 @@ struct BrowserPolicy {
     id: &'static str,
     name: &'static str,
     app_path: &'static str,
-    domain: &'static str,
-    managed_path: &'static str,
+    managed_domains: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PolicyKey {
+    setting_key: &'static str,
     key: &'static str,
     label: &'static str,
     value_type: PolicyValueType,
@@ -60,42 +63,70 @@ const BROWSERS: &[BrowserPolicy] = &[
         id: "chrome",
         name: "Chrome",
         app_path: "/Applications/Google Chrome.app",
-        domain: "com.google.Chrome",
-        managed_path: "/Library/Managed Preferences/com.google.Chrome.plist",
+        managed_domains: &["com.google.Chrome"],
     },
     BrowserPolicy {
         id: "edge",
         name: "Edge",
         app_path: "/Applications/Microsoft Edge.app",
-        domain: "com.microsoft.Edge",
-        managed_path: "/Library/Managed Preferences/com.microsoft.Edge.plist",
+        managed_domains: &["com.microsoft.Edge"],
+    },
+    BrowserPolicy {
+        id: "brave",
+        name: "Brave",
+        app_path: "/Applications/Brave Browser.app",
+        managed_domains: &["com.brave.Browser"],
+    },
+    BrowserPolicy {
+        id: "vivaldi",
+        name: "Vivaldi",
+        app_path: "/Applications/Vivaldi.app",
+        managed_domains: &["com.vivaldi.Vivaldi"],
+    },
+    BrowserPolicy {
+        id: "chromium",
+        name: "Chromium",
+        app_path: "/Applications/Chromium.app",
+        managed_domains: &["org.chromium.Chromium"],
     },
 ];
 
 const POLICY_KEYS: &[PolicyKey] = &[
     PolicyKey {
+        setting_key: "browser_policy.force_google_safe_search",
         key: "ForceGoogleSafeSearch",
         label: "强制 Google SafeSearch",
         value_type: PolicyValueType::Bool,
         expected_value: "true",
     },
     PolicyKey {
+        setting_key: "browser_policy.force_youtube_restrict",
         key: "ForceYouTubeRestrict",
         label: "YouTube 受限模式",
         value_type: PolicyValueType::Int,
         expected_value: "2",
     },
     PolicyKey {
+        setting_key: "browser_policy.disable_doh",
         key: "DnsOverHttpsMode",
         label: "关闭浏览器 DoH",
         value_type: PolicyValueType::String,
         expected_value: "off",
     },
+    PolicyKey {
+        setting_key: "browser_policy.use_system_dns_client",
+        key: "BuiltInDnsClientEnabled",
+        label: "使用系统 DNS 客户端",
+        value_type: PolicyValueType::Bool,
+        expected_value: "false",
+    },
 ];
 
 #[tauri::command]
-pub fn get_browser_policy_status() -> Result<BrowserPolicyStatus, String> {
-    browser_policy_status()
+pub fn get_browser_policy_status(
+    state: State<'_, AppState>,
+) -> Result<BrowserPolicyStatus, String> {
+    browser_policy_status(&state)
 }
 
 #[tauri::command]
@@ -104,25 +135,35 @@ pub fn apply_browser_policies(
     state: State<'_, AppState>,
 ) -> Result<BrowserPolicyStatus, String> {
     state.require_session(&session_token)?;
-    apply_browser_policies_inner()?;
-    browser_policy_status()
+    apply_browser_policies_inner(&state)?;
+    browser_policy_status(&state)
 }
 
-fn browser_policy_status() -> Result<BrowserPolicyStatus, String> {
+fn browser_policy_status(state: &AppState) -> Result<BrowserPolicyStatus, String> {
+    let enabled = enabled_policy_settings(state)?;
     Ok(BrowserPolicyStatus {
-        browsers: BROWSERS.iter().map(browser_status).collect(),
+        browsers: BROWSERS
+            .iter()
+            .map(|browser| browser_status(browser, &enabled))
+            .collect(),
     })
 }
 
-fn browser_status(browser: &BrowserPolicy) -> BrowserPolicyBrowserStatus {
+fn browser_status(
+    browser: &BrowserPolicy,
+    enabled: &HashMap<&'static str, bool>,
+) -> BrowserPolicyBrowserStatus {
     let installed = Path::new(browser.app_path).exists();
     let details: Vec<BrowserPolicyDetail> = POLICY_KEYS
         .iter()
         .map(|policy| {
+            let enabled = enabled.get(policy.setting_key).copied().unwrap_or(true);
             let current_value = read_policy_value(browser, policy.key).ok();
             BrowserPolicyDetail {
+                key: policy.setting_key,
                 label: policy.label,
-                configured: current_value.as_deref() == Some(policy.expected_value),
+                enabled,
+                configured: !enabled || current_value.as_deref() == Some(policy.expected_value),
                 current_value,
                 expected_value: policy.expected_value,
             }
@@ -139,50 +180,85 @@ fn browser_status(browser: &BrowserPolicy) -> BrowserPolicyBrowserStatus {
     }
 }
 
-fn apply_browser_policies_inner() -> Result<(), String> {
+fn apply_browser_policies_inner(state: &AppState) -> Result<(), String> {
+    let enabled = enabled_policy_settings(state)?;
+    let active_policies = POLICY_KEYS
+        .iter()
+        .copied()
+        .filter(|policy| enabled.get(policy.setting_key).copied().unwrap_or(true))
+        .collect::<Vec<_>>();
     let temp_dir = std::env::temp_dir().join("cleanweb-browser-policies");
     fs::create_dir_all(&temp_dir).map_err(|reason| format!("无法创建浏览器策略缓存：{reason}"))?;
     let mut install_commands = vec!["set -e".to_string()];
     install_commands.push("/bin/mkdir -p '/Library/Managed Preferences'".to_string());
-    if let Some(user) = console_user() {
+    let user = console_user();
+    if let Some(user) = user.as_deref() {
         install_commands.push(format!(
             "/bin/mkdir -p {}",
             shell_quote(&Path::new("/Library/Managed Preferences").join(&user))
         ));
     }
+    let mut installed_browser_count = 0;
     for browser in BROWSERS {
         if !Path::new(browser.app_path).exists() {
             continue;
         }
-        let temp_file = temp_dir.join(format!("{}.plist", browser.domain));
-        fs::write(&temp_file, browser_policy_plist())
-            .map_err(|reason| format!("无法写入浏览器策略文件：{reason}"))?;
-        install_commands.push(format!(
-            "/usr/bin/install -o root -g wheel -m 644 {} {}",
-            shell_quote(&temp_file),
-            shell_quote(Path::new(browser.managed_path))
-        ));
-        if let Some(user) = console_user() {
+        installed_browser_count += 1;
+        for domain in browser.managed_domains {
+            let temp_file = temp_dir.join(format!("{domain}.plist"));
+            fs::write(&temp_file, browser_policy_plist(&active_policies))
+                .map_err(|reason| format!("无法写入浏览器策略文件：{reason}"))?;
             install_commands.push(format!(
                 "/usr/bin/install -o root -g wheel -m 644 {} {}",
                 shell_quote(&temp_file),
-                shell_quote(&user_managed_policy_path(&user, browser.domain))
+                shell_quote(&managed_policy_path(domain))
             ));
+            if let Some(user) = user.as_deref() {
+                install_commands.push(format!(
+                    "/usr/bin/install -o root -g wheel -m 644 {} {}",
+                    shell_quote(&temp_file),
+                    shell_quote(&user_managed_policy_path(user, domain))
+                ));
+            }
         }
     }
-    if install_commands.len() == 2 {
+    if installed_browser_count == 0 {
         return Ok(());
     }
     run_admin_shell(&install_commands.join("; "))?;
     Ok(())
 }
 
+fn enabled_policy_settings(state: &AppState) -> Result<HashMap<&'static str, bool>, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    Ok(enabled_policy_settings_from_db(&db))
+}
+
+fn enabled_policy_settings_from_db(db: &Connection) -> HashMap<&'static str, bool> {
+    let mut result = HashMap::new();
+    for policy in POLICY_KEYS {
+        let enabled = db
+            .query_row(
+                "SELECT value FROM settings WHERE key=?1",
+                params![policy.setting_key],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|value| value == "true")
+            .unwrap_or(true);
+        result.insert(policy.setting_key, enabled);
+    }
+    result
+}
+
 fn read_policy_value(browser: &BrowserPolicy, key: &str) -> Result<String, String> {
     let mut candidates = Vec::new();
-    if let Some(user) = console_user() {
-        candidates.push(user_managed_policy_path(&user, browser.domain));
+    let user = console_user();
+    for domain in browser.managed_domains {
+        if let Some(user) = user.as_deref() {
+            candidates.push(user_managed_policy_path(user, domain));
+        }
+        candidates.push(managed_policy_path(domain));
     }
-    candidates.push(Path::new(browser.managed_path).to_path_buf());
     for path in candidates {
         let output = Command::new("/usr/libexec/PlistBuddy")
             .args(["-c", &format!("Print :{key}"), &path.to_string_lossy()])
@@ -197,11 +273,11 @@ fn read_policy_value(browser: &BrowserPolicy, key: &str) -> Result<String, Strin
     Err("浏览器策略尚未配置".into())
 }
 
-fn browser_policy_plist() -> String {
+fn browser_policy_plist(policies: &[PolicyKey]) -> String {
     let mut body = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n",
     );
-    for policy in POLICY_KEYS {
+    for policy in policies {
         body.push_str(&format!("  <key>{}</key>\n", policy.key));
         match policy.value_type {
             PolicyValueType::Bool => {
@@ -290,6 +366,10 @@ fn user_managed_policy_path(user: &str, domain: &str) -> std::path::PathBuf {
         .join(format!("{domain}.plist"))
 }
 
+fn managed_policy_path(domain: &str) -> std::path::PathBuf {
+    Path::new("/Library/Managed Preferences").join(format!("{domain}.plist"))
+}
+
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -300,7 +380,7 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_policy_plist, normalize_defaults_value};
+    use super::{browser_policy_plist, normalize_defaults_value, POLICY_KEYS};
 
     #[test]
     fn normalizes_defaults_boolean_values() {
@@ -312,12 +392,27 @@ mod tests {
 
     #[test]
     fn writes_managed_browser_policy_plist() {
-        let plist = browser_policy_plist();
+        let plist = browser_policy_plist(POLICY_KEYS);
         assert!(plist.contains("<key>ForceGoogleSafeSearch</key>"));
         assert!(plist.contains("<true/>"));
         assert!(plist.contains("<key>ForceYouTubeRestrict</key>"));
         assert!(plist.contains("<integer>2</integer>"));
         assert!(plist.contains("<key>DnsOverHttpsMode</key>"));
         assert!(plist.contains("<string>off</string>"));
+        assert!(plist.contains("<key>BuiltInDnsClientEnabled</key>"));
+        assert!(plist.contains("<false/>"));
+    }
+
+    #[test]
+    fn omits_disabled_browser_policy_keys_from_plist() {
+        let policies = POLICY_KEYS
+            .iter()
+            .copied()
+            .filter(|policy| policy.key != "DnsOverHttpsMode")
+            .collect::<Vec<_>>();
+        let plist = browser_policy_plist(&policies);
+
+        assert!(plist.contains("<key>ForceGoogleSafeSearch</key>"));
+        assert!(!plist.contains("<key>DnsOverHttpsMode</key>"));
     }
 }

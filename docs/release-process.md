@@ -48,16 +48,18 @@ scripts/release/bump-version.sh 0.2.0
 先运行自动检查：
 
 ```bash
-scripts/release/preflight.sh
+mise run check
 ```
 
-该脚本按项目当前验证要求执行：
+该任务按项目当前验证要求执行：
 
 ```bash
-npm test
-npm run build
-cd apps/desktop/src-tauri && cargo test
-cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
+mise run rules-check
+mise run test
+mise run build
+mise run rust-fmt
+mise run rust-test
+mise run rust-lint
 ```
 
 如果本次修改涉及 UI 布局，还需启动应用并在相关视口做视觉验证。

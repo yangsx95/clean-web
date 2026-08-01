@@ -90,7 +90,7 @@ V1 不解密 HTTPS，不检测网页正文、图片、视频、AI 对话或完�
 
 ## 安全搜索
 
-在浏览器策略支持的范围内强制 Google SafeSearch、YouTube 受限模式，并关闭浏览器内置 DoH，避免浏览器绕过本机 DNS 接管。V1 先覆盖 Chrome 与 Edge；不把抖音、小红书或 B 站青少年模式纳入安全搜索范围。
+在浏览器策略支持的范围内强制 Google SafeSearch、YouTube 受限模式，并关闭浏览器内置 DoH，避免浏览器绕过本机 DNS 接管。V1 覆盖 Chrome、Edge 以及支持 Chromium 托管策略的 Brave、Vivaldi、Chromium；Firefox 和 Safari 需要独立策略机制，不复用 Chromium 策略文件。不把抖音、小红书或 B 站青少年模式纳入安全搜索范围。
 
 安全搜索不再通过 Mihomo hosts 实现，也不作为规则订阅格式导入。CleanWeb DNS 过滤组件可以对官方支持的搜索安全入口做本地 DNS 补强；浏览器策略仍是 Chrome、Edge、YouTube 受限模式和关闭浏览器 DoH 的主防线。后续新增浏览器或搜索服务时应扩展浏览器策略模块或 CleanWeb DNS 过滤组件，而不是把厂商安全搜索映射写入 Mihomo 内核配置。
 

@@ -10,6 +10,7 @@ export type Settings = {
   strictModeEnabled: boolean;
   logRetention: string;
   categories: Record<string, boolean>;
+  browserPolicy: Record<string, boolean>;
 };
 export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string; importedRuleCount?:number; activeRuleCount?:number };
 export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|"lastError"|"importedRuleCount">;
@@ -29,7 +30,9 @@ export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:stri
 export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
 export type ParentRule={id:string;action:"allow"|"block"|"proxy"|"system_route";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
-export type BrowserPolicyDetail={label:string;configured:boolean;currentValue?:string|null;expectedValue:string};
+export type RuleDiagnosticMatch={id:string;source:string;action:"allow"|"block"|"proxy"|"system_route"|string;kind:string;pattern:string;category:string;priority:number};
+export type RuleDiagnosticResult={query:string;normalizedDomain?:string|null;targetIp?:string|null;matched?:RuleDiagnosticMatch|null;candidates:RuleDiagnosticMatch[]};
+export type BrowserPolicyDetail={key:string;label:string;enabled:boolean;configured:boolean;currentValue?:string|null;expectedValue:string};
 export type BrowserPolicyBrowserStatus={id:string;name:string;installed:boolean;configured:boolean;needsRestart:boolean;details:BrowserPolicyDetail[]};
 export type BrowserPolicyStatus={browsers:BrowserPolicyBrowserStatus[]};
 const previewSettingsKey = "cleanweb.preview.settings";
@@ -49,6 +52,7 @@ const defaultSettings: Settings = {
   strictModeEnabled: false,
   logRetention: "30d",
   categories: { pornography: true, gambling: true, drugs: true, violence: true, self_harm: true, hate_extremism: true, fraud: true, phishing: true, malware: true, ads: true, tracking: true, entertainment: false },
+  browserPolicy: { force_google_safe_search: true, force_youtube_restrict: true, disable_doh: true, use_system_dns_client: true },
 };
 const defaultCoreStatus: CoreStatus = { running: false, controller: "127.0.0.1:19090", configPath: "preview" };
 
@@ -65,7 +69,9 @@ const isBuiltinSubscription = (item: Pick<Subscription, "id" | "name" | "url">) 
 function loadPreviewSettings(): Settings {
   try {
     const raw = window.localStorage.getItem(previewSettingsKey);
-    return raw ? { ...structuredClone(defaultSettings), ...JSON.parse(raw) } : structuredClone(defaultSettings);
+    if(!raw)return structuredClone(defaultSettings);
+    const parsed=JSON.parse(raw);
+    return { ...structuredClone(defaultSettings), ...parsed, categories:{...defaultSettings.categories,...parsed.categories}, browserPolicy:{...defaultSettings.browserPolicy,...parsed.browserPolicy} };
   } catch {
     return structuredClone(defaultSettings);
   }
@@ -168,6 +174,7 @@ export async function updateSetting(sessionToken: string, key: string, value: st
   if (key === "strict_mode_enabled") defaults.strictModeEnabled = value === "true";
   if (key === "log_retention") defaults.logRetention = value;
   if (key.startsWith("category.")) defaults.categories[key.slice(9)] = value === "true";
+  if (key.startsWith("browser_policy.")) defaults.browserPolicy[key.slice(15)] = value === "true";
   savePreviewSettings();
   return structuredClone(defaults);
 }
@@ -229,6 +236,7 @@ export type SubscriptionProxyGroup={name:string;groupType:string;members:string[
 export type SubscriptionProxyInfo={proxies:SubscriptionProxyNode[];groups:SubscriptionProxyGroup[]};
 export type ProxyDelayResult={delays:Record<string,number>};
 export type ProxySelectionResult={requiresReload:boolean};
+export type ProxyConnectivityResult={url:string;group:string;delay:number};
 export async function getProxies(sessionToken:string):Promise<ProxyGroup[]>{return isTauri()?invoke<ProxyGroup[]>("get_proxies",{sessionToken}):[];}
 export async function getSavedProxySelection(sessionToken:string):Promise<string|undefined>{return isTauri()?invoke<string|null>("get_saved_proxy_selection",{sessionToken}).then(value=>value??undefined):undefined;}
 export async function getSubscriptionProxies(sessionToken:string,subscriptionId:string):Promise<SubscriptionProxyInfo>{if(isTauri())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{sessionToken,subscriptionId});return{proxies:[],groups:[]};}
@@ -238,6 +246,11 @@ export async function selectProxy(sessionToken:string,group:string,name:string):
   return result??{requiresReload:false};
 }
 export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(isTauri())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});return{delays:{}};}
+export async function testProxyConnectivity(sessionToken:string,target:string,group="CleanWeb"):Promise<ProxyConnectivityResult>{
+  if(isTauri())return invoke<ProxyConnectivityResult>("test_proxy_connectivity",{sessionToken,target,group});
+  const url=target.includes("://")?target:`https://${target}`;
+  return{url,group,delay:128};
+}
 export async function syncAccessLogs():Promise<number>{return isTauri()?invoke("sync_access_logs"):0;}
 export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return isTauri()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}
 export async function getAccessLogStats(sessionToken:string):Promise<AccessLogStats>{
@@ -312,22 +325,39 @@ export async function listParentRules(sessionToken:string):Promise<ParentRule[]>
 export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(isTauri())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:crypto.randomUUID(),enabled:true};previewParentRules.unshift(item);savePreviewParentRules();return item;}
 export async function setParentRuleEnabled(sessionToken:string,id:string,enabled:boolean):Promise<void>{if(isTauri())return invoke("set_parent_rule_enabled",{sessionToken,id,enabled});const item=previewParentRules.find(value=>value.id===id);if(item){item.enabled=enabled;savePreviewParentRules();}}
 export async function deleteParentRule(sessionToken:string,id:string):Promise<void>{if(isTauri())return invoke("delete_parent_rule",{sessionToken,id});const index=previewParentRules.findIndex(value=>value.id===id);if(index>=0){previewParentRules.splice(index,1);savePreviewParentRules();}}
+export async function diagnoseRuleMatch(sessionToken:string,query:string):Promise<RuleDiagnosticResult>{
+  if(isTauri())return invoke("diagnose_rule_match",{sessionToken,query});
+  const normalized=query.trim().replace(/^https?:\/\//,"").split(/[/:]/)[0].toLowerCase();
+  const candidates=previewParentRules.filter(rule=>rule.enabled&&previewRuleMatches(rule,normalized)).map(rule=>({id:rule.id,source:"手动规则",action:rule.action,kind:rule.kind,pattern:rule.pattern,category:rule.category,priority:rule.action==="block"?20:rule.action==="allow"?30:80}));
+  candidates.sort((a,b)=>a.priority-b.priority);
+  return{query,normalizedDomain:normalized,targetIp:undefined,matched:candidates[0]??null,candidates};
+}
+function previewRuleMatches(rule:ParentRule,target:string):boolean{
+  const pattern=rule.pattern.toLowerCase();
+  if(rule.kind==="exact")return target===pattern;
+  if(rule.kind==="suffix")return target===pattern||target.endsWith(`.${pattern}`);
+  if(rule.kind==="contains")return target.includes(pattern);
+  if(rule.kind==="wildcard")return new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g,"\\$&").replace(/\*/g,".*").replace(/\?/g,".")}$`,"i").test(target);
+  if(rule.kind==="regex")try{return new RegExp(pattern,"i").test(target);}catch{return false;}
+  return target===pattern;
+}
+function previewBrowserPolicyDetails():BrowserPolicyDetail[]{return [
+    {key:"browser_policy.force_google_safe_search",label:"强制 Google SafeSearch",enabled:true,configured:false,expectedValue:"true"},
+    {key:"browser_policy.force_youtube_restrict",label:"YouTube 受限模式",enabled:true,configured:false,expectedValue:"2"},
+    {key:"browser_policy.disable_doh",label:"关闭浏览器 DoH",enabled:true,configured:false,expectedValue:"off"},
+    {key:"browser_policy.use_system_dns_client",label:"使用系统 DNS 客户端",enabled:true,configured:false,expectedValue:"false"},
+  ];}
 const previewBrowserPolicyStatus:BrowserPolicyStatus={browsers:[
-  {id:"chrome",name:"Chrome",installed:true,configured:false,needsRestart:false,details:[
-    {label:"强制 Google SafeSearch",configured:false,expectedValue:"true"},
-    {label:"YouTube 受限模式",configured:false,expectedValue:"2"},
-    {label:"关闭浏览器 DoH",configured:false,expectedValue:"off"},
-  ]},
-  {id:"edge",name:"Edge",installed:true,configured:false,needsRestart:false,details:[
-    {label:"强制 Google SafeSearch",configured:false,expectedValue:"true"},
-    {label:"YouTube 受限模式",configured:false,expectedValue:"2"},
-    {label:"关闭浏览器 DoH",configured:false,expectedValue:"off"},
-  ]},
+  {id:"chrome",name:"Chrome",installed:true,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"edge",name:"Edge",installed:true,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"brave",name:"Brave",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"vivaldi",name:"Vivaldi",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"chromium",name:"Chromium",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
 ]};
 export async function getBrowserPolicyStatus():Promise<BrowserPolicyStatus>{return isTauri()?invoke("get_browser_policy_status"):structuredClone(previewBrowserPolicyStatus);}
 export async function applyBrowserPolicies(sessionToken:string):Promise<BrowserPolicyStatus>{
   if(isTauri())return invoke("apply_browser_policies",{sessionToken});
   const applied=structuredClone(previewBrowserPolicyStatus);
-  applied.browsers=applied.browsers.map(browser=>({...browser,configured:true,needsRestart:true,details:browser.details.map(detail=>({...detail,configured:true,currentValue:detail.expectedValue}))}));
+  applied.browsers=applied.browsers.map(browser=>({...browser,configured:true,needsRestart:true,details:browser.details.map(detail=>{const settingKey=detail.key.replace("browser_policy.","");const enabled=defaults.browserPolicy[settingKey]??true;return {...detail,enabled,configured:true,currentValue:enabled?detail.expectedValue:null};})}));
   return applied;
 }

@@ -1,0 +1,90 @@
+[tools]
+node = "22"
+rust = "stable"
+
+[tasks.install]
+description = "Install JavaScript dependencies"
+run = "npm ci"
+
+[tasks.dev]
+description = "Run the desktop development app"
+run = "npm run tauri dev"
+
+[tasks.dev-web]
+description = "Run the desktop Vite dev server only"
+run = "npm run dev"
+
+[tasks.dev-mobile]
+description = "Run the mobile Vite dev server only"
+run = "npm run dev:mobile"
+
+[tasks.test]
+description = "Run JavaScript and React tests"
+run = "npm test"
+
+[tasks.build]
+description = "Build the desktop frontend"
+run = "npm run build"
+
+[tasks.build-mobile]
+description = "Build the mobile frontend"
+run = "npm run build:mobile"
+
+[tasks.rules-check]
+description = "Validate bundled Clash rule resources"
+run = "npm run rules:check"
+
+[tasks.rust-fmt]
+description = "Check Rust formatting"
+run = "cd apps/desktop/src-tauri && cargo fmt --check"
+
+[tasks.rust-test]
+description = "Run desktop Rust tests"
+run = "cd apps/desktop/src-tauri && cargo test"
+
+[tasks.rust-lint]
+description = "Run desktop Rust clippy"
+run = "cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings"
+
+[tasks.rust-targets-macos]
+description = "Install Rust targets for macOS universal desktop builds"
+run = "rustup target add x86_64-apple-darwin aarch64-apple-darwin"
+
+[tasks.rust-targets-android]
+description = "Install Rust targets for Android mobile builds"
+run = "rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android"
+
+[tasks.rust-targets-ios]
+description = "Install Rust targets for unsigned iOS simulator builds"
+run = "rustup target add aarch64-apple-ios-sim x86_64-apple-ios"
+
+[tasks.desktop-build]
+description = "Build the default desktop Tauri bundle"
+run = "npm run tauri -- build"
+
+[tasks.desktop-build-macos]
+description = "Build an unsigned macOS universal DMG"
+run = "npm run tauri -- build --target universal-apple-darwin --bundles dmg"
+
+[tasks.desktop-build-windows]
+description = "Build an unsigned Windows NSIS installer"
+run = "npm run tauri -- build --bundles nsis"
+
+[tasks.android-build]
+description = "Build an unsigned Android APK"
+run = "npm run tauri:mobile -- android build --apk"
+
+[tasks.ios-build-sim]
+description = "Build an unsigned iOS simulator app"
+run = "npm run tauri:mobile -- ios build --target aarch64-sim --no-sign --ci"
+
+[tasks.check]
+description = "Run the full local verification suite"
+run = """
+mise run rules-check
+mise run test
+mise run build
+mise run rust-fmt
+mise run rust-test
+mise run rust-lint
+"""

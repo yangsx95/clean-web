@@ -137,7 +137,7 @@ impl CompiledRule {
         Ok(Self { source, matcher })
     }
 
-    fn matches(&self, domain: Option<&str>, ip: Option<IpAddr>) -> bool {
+    pub fn matches(&self, domain: Option<&str>, ip: Option<IpAddr>) -> bool {
         match (&self.matcher, self.source.kind.clone()) {
             (Matcher::Domain(expected), MatcherKind::Exact) => {
                 domain.is_some_and(|d| d == expected)

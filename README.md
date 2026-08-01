@@ -56,22 +56,21 @@ CleanWeb is built with:
 Install dependencies:
 
 ```bash
-npm install
+mise trust
+mise install
+mise run install
 ```
 
 Run the desktop app:
 
 ```bash
-npm run tauri dev
+mise run dev
 ```
 
 Run checks:
 
 ```bash
-npm test
-npm run build
-cd apps/desktop/src-tauri && cargo test
-cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
+mise run check
 ```
 
 ## Build
@@ -79,22 +78,23 @@ cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 Build locally:
 
 ```bash
-npm run tauri -- build
+mise run desktop-build
 ```
 
 Build macOS Universal DMG:
 
 ```bash
-npm run tauri -- build --target universal-apple-darwin --bundles dmg
+mise run rust-targets-macos
+mise run desktop-build-macos
 ```
 
 Build Windows NSIS installer on Windows:
 
 ```bash
-npm run tauri -- build --bundles nsis
+mise run desktop-build-windows
 ```
 
-GitHub Actions builds unsigned Windows and macOS artifacts. Pushing a `v*` tag publishes those artifacts to GitHub Releases.
+GitHub Actions uses the same mise tasks to build unsigned Windows, macOS, Android, and iOS simulator artifacts. Pushing a `v*` tag publishes those artifacts to GitHub Releases.
 
 ## Website
 

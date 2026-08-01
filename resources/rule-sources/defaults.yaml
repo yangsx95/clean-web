@@ -1,48 +1,48 @@
 default_rule_sources:
   - id: default:stevenblack:porn
-    name: 内置规则 · StevenBlack porn-only
+    name: StevenBlack · Porn-only Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
     format: hosts
     category: pornography
     update_interval_hours: 24
   - id: default:blocklistproject:porn
-    name: 内置规则 · BlocklistProject porn-nl
+    name: The Block List Project · Porn (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
     format: domain-list
     category: pornography
     update_interval_hours: 24
   - id: default:stevenblack:gambling
-    name: 内置规则 · StevenBlack gambling-only
+    name: StevenBlack · Gambling-only Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
     format: hosts
     category: gambling
     update_interval_hours: 24
   - id: default:blocklistproject:drugs
-    name: 内置规则 · BlocklistProject drugs-nl
+    name: The Block List Project · Drugs (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt
     format: domain-list
     category: drugs
     update_interval_hours: 24
   - id: default:blocklistproject:fraud
-    name: 内置规则 · BlocklistProject fraud-nl
+    name: The Block List Project · Fraud (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt
     format: domain-list
     category: fraud
     update_interval_hours: 24
   - id: default:blocklistproject:phishing
-    name: 内置规则 · BlocklistProject phishing-nl
+    name: The Block List Project · Phishing (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt
     format: domain-list
     category: phishing
     update_interval_hours: 24
   - id: default:urlhaus:malware
-    name: 内置规则 · URLhaus hostfile
+    name: URLhaus · Malware Hostfile
     url: https://urlhaus.abuse.ch/downloads/hostfile/
     format: hosts
     category: malware
     update_interval_hours: 24
   - id: default:cleanweb:adult-supplement
-    name: 内置规则 · CleanWeb adult-supplement
+    name: CleanWeb · Adult Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-adult-supplement.clash
     legacy_urls:
       - builtin://cleanweb/adult-supplement
@@ -50,7 +50,7 @@ default_rule_sources:
     category: pornography
     update_interval_hours: 24
   - id: default:cleanweb:security-supplement
-    name: 内置规则 · CleanWeb security-supplement
+    name: CleanWeb · Security Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-security-supplement.clash
     legacy_urls:
       - builtin://cleanweb/security-supplement
@@ -58,13 +58,13 @@ default_rule_sources:
     category: phishing
     update_interval_hours: 24
   - id: default:cleanweb:safe-search
-    name: 内置规则 · CleanWeb SafeSearch
+    name: CleanWeb · SafeSearch DNS Mappings
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml
     format: safe-search
     category: custom
     update_interval_hours: 24
   - id: local:cleanweb:entertainment-cdn
-    name: 内置规则 · CleanWeb entertainment-cdn
+    name: CleanWeb · Entertainment CDN Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-cdn-supplement.clash
     legacy_urls:
       - builtin://cleanweb/entertainment-cdn
@@ -72,7 +72,7 @@ default_rule_sources:
     category: entertainment
     update_interval_hours: 24
   - id: default:loyalsoldier:cncidr
-    name: 内置路由 · Loyalsoldier cncidr
+    name: Loyalsoldier · China CIDR Routes
     url: https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt
     format: clash
     category: direct
@@ -80,7 +80,7 @@ default_rule_sources:
 
 rule_packs:
   - id: default:cleanweb:strict-supplement
-    name: 内置规则 · CleanWeb strict-supplement
+    name: CleanWeb · Strict Mode Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash
     legacy_urls:
       - builtin://cleanweb/strict-supplement

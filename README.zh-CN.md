@@ -56,22 +56,21 @@ CleanWeb 使用：
 安装依赖：
 
 ```bash
-npm install
+mise trust
+mise install
+mise run install
 ```
 
 启动桌面应用：
 
 ```bash
-npm run tauri dev
+mise run dev
 ```
 
 运行检查：
 
 ```bash
-npm test
-npm run build
-cd apps/desktop/src-tauri && cargo test
-cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
+mise run check
 ```
 
 ## 构建
@@ -79,22 +78,23 @@ cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 本地构建：
 
 ```bash
-npm run tauri -- build
+mise run desktop-build
 ```
 
 构建 macOS Universal DMG：
 
 ```bash
-npm run tauri -- build --target universal-apple-darwin --bundles dmg
+mise run rust-targets-macos
+mise run desktop-build-macos
 ```
 
 在 Windows 上构建 NSIS 安装包：
 
 ```bash
-npm run tauri -- build --bundles nsis
+mise run desktop-build-windows
 ```
 
-GitHub Actions 会构建未签名的 Windows 和 macOS 产物。推送 `v*` tag 时会将产物发布到 GitHub Releases。
+GitHub Actions 使用同一套 mise tasks 构建未签名的 Windows、macOS、Android 和 iOS 模拟器产物。推送 `v*` tag 时会将产物发布到 GitHub Releases。
 
 ## 官网
 

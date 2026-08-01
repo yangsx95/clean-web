@@ -22,6 +22,7 @@ on:
       - "v*"
     paths:
       - ".github/workflows/build.yml"
+      - ".mise.toml"
       - "package.json"
       - "package-lock.json"
       - "apps/desktop/**"
@@ -35,6 +36,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/build.yml"
+      - ".mise.toml"
       - "package.json"
       - "package-lock.json"
       - "apps/desktop/**"
@@ -89,7 +91,7 @@ jobs:
 
             while IFS= read -r file; do
               case "$file" in
-                .github/workflows/build.yml|package.json|package-lock.json|packages/frontend/*)
+                .github/workflows/build.yml|.mise.toml|package.json|package-lock.json|packages/frontend/*)
                   desktop=true
                   mobile=true
                   ;;
@@ -119,14 +121,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup mise
+        uses: jdx/mise-action@v2
         with:
-          node-version: 22
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+          install: true
+          cache: true
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -134,24 +133,22 @@ jobs:
           workspaces: apps/desktop/src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: mise run install
 
       - name: Test frontend
-        run: npm test
+        run: mise run test
 
       - name: Build frontend
-        run: npm run build
+        run: mise run build
 
       - name: Test Rust
-        working-directory: apps/desktop/src-tauri
-        run: cargo test
+        run: mise run rust-test
 
       - name: Lint Rust
-        working-directory: apps/desktop/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: mise run rust-lint
 
       - name: Build Tauri NSIS installer
-        run: npm run tauri -- build --bundles nsis
+        run: mise run desktop-build-windows
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
@@ -172,16 +169,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup mise
+        uses: jdx/mise-action@v2
         with:
-          node-version: 22
-          cache: npm
+          install: true
+          cache: true
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - name: Install Rust targets
+        run: mise run rust-targets-macos
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -189,24 +184,22 @@ jobs:
           workspaces: apps/desktop/src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: mise run install
 
       - name: Test frontend
-        run: npm test
+        run: mise run test
 
       - name: Build frontend
-        run: npm run build
+        run: mise run build
 
       - name: Test Rust
-        working-directory: apps/desktop/src-tauri
-        run: cargo test
+        run: mise run rust-test
 
       - name: Lint Rust
-        working-directory: apps/desktop/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: mise run rust-lint
 
       - name: Build Tauri Universal DMG
-        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+        run: mise run desktop-build-macos
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
@@ -227,11 +220,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup mise
+        uses: jdx/mise-action@v2
         with:
-          node-version: 22
-          cache: npm
+          install: true
+          cache: true
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -242,10 +235,8 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - name: Install Rust targets
+        run: mise run rust-targets-android
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -253,13 +244,13 @@ jobs:
           workspaces: apps/mobile/src-tauri -> target
 
       - name: Install dependencies
-        run: npm ci
+        run: mise run install
 
       - name: Test shared frontend
-        run: npm test
+        run: mise run test
 
       - name: Build Android APK
-        run: npm run tauri:mobile -- android build --apk
+        run: mise run android-build
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v7
@@ -280,16 +271,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup mise
+        uses: jdx/mise-action@v2
         with:
-          node-version: 22
-          cache: npm
+          install: true
+          cache: true
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Install Rust targets
+        run: mise run rust-targets-ios
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -297,13 +286,13 @@ jobs:
           workspaces: apps/mobile/src-tauri -> target
 
       - name: Install dependencies
-        run: npm ci
+        run: mise run install
 
       - name: Test shared frontend
-        run: npm test
+        run: mise run test
 
       - name: Build unsigned iOS simulator app
-        run: npm run tauri:mobile -- ios build --target aarch64-sim --no-sign --ci
+        run: mise run ios-build-sim
 
       - name: Package iOS artifacts
         shell: bash

@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
+    dns_filter::CLEANWEB_DNS_LISTEN,
     mihomo::{controller_secret, mihomo_data_plane_failed, recover_data_plane_failure},
     platform,
     storage::AppState,
@@ -238,7 +239,12 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let categories = rule_categories(state)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
     for connection in response.connections {
+        let target_port = connection.metadata.destination_port.parse::<i64>().ok();
+        if is_cleanweb_dns_port(target_port) {
+            continue;
+        }
         let route = if connection.chains.is_empty() {
             None
         } else {
@@ -281,7 +287,7 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
             intern_access_log_string(&db, Some(connection.metadata.destination_ip.as_str()))?;
         inserted += db.execute(
             "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,process_path_string_id,operating_system_string_id,system_user_string_id,source_ip_string_id,route_string_id,proxy_group_string_id) VALUES(?1,CAST(COALESCE((julianday(?2)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER),?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            params![connection_hash(&connection.id),connection.start,domain_id,target_ip_id,connection.metadata.destination_port.parse::<i64>().ok(),decision_code(decision),rule_id,category_id,process_name_id,process_path_id,operating_system_id,system_user_id,source_ip_id,route_id,proxy_group_id]
+            params![connection_hash(&connection.id),connection.start,domain_id,target_ip_id,target_port,decision_code(decision),rule_id,category_id,process_name_id,process_path_id,operating_system_id,system_user_id,source_ip_id,route_id,proxy_group_id]
         ).map_err(error)?;
     }
     cleanup_retention(&db)?;
@@ -308,6 +314,7 @@ fn insert_mihomo_log_line_inner(
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
     let inserted = insert_parsed_log_event(&db, &event, &observed_at, &os, &user)?;
     if cleanup {
         cleanup_retention(&db)?;
@@ -319,6 +326,9 @@ fn parse_mihomo_log_event(line: &str) -> Option<ParsedLogEvent> {
     let message = log_message(line);
     let route = log_route(&message)?;
     let (target, port) = log_target(&message)?;
+    if is_cleanweb_dns_port(port) {
+        return None;
+    }
     let rule = log_rule(&message);
     let decision = if route.eq_ignore_ascii_case("REJECT") {
         "block"
@@ -543,6 +553,7 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
     let mut inserted = 0;
     for event in events {
         let observed_at = event.observed_at.as_deref().unwrap_or(&fallback_timestamp);
@@ -688,6 +699,27 @@ fn is_dns_resolution_connection(connection: &Connection) -> bool {
             .any(|item| item.eq_ignore_ascii_case("REJECT"))
 }
 
+fn is_cleanweb_dns_port(port: Option<i64>) -> bool {
+    port == cleanweb_dns_port()
+}
+
+fn cleanweb_dns_port() -> Option<i64> {
+    CLEANWEB_DNS_LISTEN
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<i64>().ok())
+}
+
+fn prune_internal_cleanweb_dns_logs(db: &rusqlite::Connection) -> Result<usize, String> {
+    let Some(port) = cleanweb_dns_port() else {
+        return Ok(0);
+    };
+    db.execute(
+        "DELETE FROM access_logs WHERE target_port=?1",
+        params![port],
+    )
+    .map_err(error)
+}
+
 #[cfg(test)]
 fn normalize_dns_resolution_rows(db: &rusqlite::Connection) -> Result<(), String> {
     let category_id = intern_access_log_string(db, Some("DNS 解析"))?;
@@ -760,6 +792,7 @@ pub fn list_access_logs(
 ) -> Result<Vec<AccessLog>, String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
     let limit = limit.unwrap_or(500).min(5000);
     let decision_code = match decision.as_deref() {
         None => None,
@@ -897,6 +930,7 @@ pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogSt
 
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
     db.query_row(
         "WITH cutoff AS (
            SELECT CAST(strftime('%s','now','localtime','start of day') AS INTEGER) * 1000 AS today_ms
@@ -964,6 +998,7 @@ pub fn export_access_logs_csv_to_path(
 
 fn export_access_logs_csv_inner(state: &AppState) -> Result<String, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
     let mut statement = db
         .prepare(
             "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
@@ -1025,6 +1060,7 @@ fn export_access_logs_csv_inner(state: &AppState) -> Result<String, String> {
 }
 
 fn cleanup_retention(db: &rusqlite::Connection) -> Result<(), String> {
+    prune_internal_cleanweb_dns_logs(db)?;
     let retention: String = db
         .query_row(
             "SELECT value FROM settings WHERE key='log_retention'",
@@ -1489,6 +1525,50 @@ mod tests {
         assert_eq!(decision, "allow");
         assert_eq!(category, "DNS 解析");
         assert_eq!(process, "mihomo");
+    }
+
+    #[test]
+    fn ignores_cleanweb_dns_forward_logs() {
+        let state = AppState::open(":memory:").unwrap();
+        let line = r#"time="2026-08-01T23:45:10.239991000+08:00" level=info msg="[UDP] mihomo --> 127.0.0.1:19053 match Match() using DIRECT""#;
+
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 0);
+
+        let db = state.db.lock().unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM access_logs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn identifies_cleanweb_dns_connection_port_from_dns_listener() {
+        let port = CLEANWEB_DNS_LISTEN
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<i64>().ok());
+        assert!(is_cleanweb_dns_port(port));
+    }
+
+    #[test]
+    fn prunes_existing_cleanweb_dns_access_logs() {
+        let state = AppState::open(":memory:").unwrap();
+        let port = cleanweb_dns_port().unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            insert_test_access_log(
+                &db,
+                "cleanweb-dns",
+                "2026-08-01T23:45:10+08:00",
+                "allow",
+                Some(port),
+                Some("DIRECT"),
+            );
+            assert_eq!(prune_internal_cleanweb_dns_logs(&db).unwrap(), 1);
+            let count: i64 = db
+                .query_row("SELECT COUNT(*) FROM access_logs", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+        }
     }
 
     #[test]

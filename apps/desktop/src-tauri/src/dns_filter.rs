@@ -398,6 +398,9 @@ fn normalize_domain(value: String) -> String {
 
 fn normalize_target(value: String) -> String {
     let value = value.trim().trim_end_matches('.');
+    if value.parse::<IpAddr>().is_ok() {
+        return value.to_owned();
+    }
     format!("{value}.")
 }
 
@@ -606,6 +609,39 @@ mod tests {
 
         assert_eq!(message.answers.len(), 1);
         assert_eq!(message.answers[0].data.to_string(), "213.180.193.56");
+    }
+
+    #[test]
+    fn safe_search_mapping_loader_preserves_ip_targets() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,enabled,created_at)
+                 VALUES('safe','rule','safe','https://x/safe.yml','safe-search',1,'2026-08-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line)
+                 VALUES('safe','www.google.com.','forcesafesearch.google.com.',1),
+                       ('safe','yandex.ru.','213.180.193.56',2)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = state.db.lock().unwrap();
+        let mappings = load_safe_search_mappings(&db).unwrap();
+
+        assert_eq!(
+            mappings.get("www.google.com").map(String::as_str),
+            Some("forcesafesearch.google.com.")
+        );
+        assert_eq!(
+            mappings.get("yandex.ru").map(String::as_str),
+            Some("213.180.193.56")
+        );
     }
 
     #[test]

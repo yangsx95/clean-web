@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::Child,
     sync::{atomic::AtomicBool, Mutex},
@@ -10,6 +11,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use ipnet::IpNet;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,7 +23,9 @@ use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 #[cfg(debug_assertions)]
 use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
 pub use crate::rule_sources::RecommendedSource;
-use crate::rule_sources::{default_rule_sources, recommended_rule_sources};
+use crate::rule_sources::{
+    builtin_source_display_names, default_rule_sources, recommended_rule_sources,
+};
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
 
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
@@ -60,6 +64,7 @@ pub struct Settings {
     pub strict_mode_enabled: bool,
     pub log_retention: String,
     pub categories: HashMap<String, bool>,
+    pub browser_policy: HashMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +119,28 @@ pub struct ParentRuleRecord {
     pub pattern: String,
     pub category: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDiagnosticResult {
+    pub query: String,
+    pub normalized_domain: Option<String>,
+    pub target_ip: Option<String>,
+    pub matched: Option<RuleDiagnosticMatch>,
+    pub candidates: Vec<RuleDiagnosticMatch>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDiagnosticMatch {
+    pub id: String,
+    pub source: String,
+    pub action: String,
+    pub kind: String,
+    pub pattern: String,
+    pub category: String,
+    pub priority: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +287,10 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
         ("dns_upstreams", "223.5.5.5:53,119.29.29.29:53"),
         ("strict_mode_enabled", "false"),
         ("log_retention", "30d"),
+        ("browser_policy.force_google_safe_search", "true"),
+        ("browser_policy.force_youtube_restrict", "true"),
+        ("browser_policy.disable_doh", "true"),
+        ("browser_policy.use_system_dns_client", "true"),
         ("category.pornography", "true"),
         ("category.gambling", "true"),
         ("category.drugs", "true"),
@@ -307,6 +338,7 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
             ],
         )?;
     }
+    sync_builtin_subscription_names(db)?;
     db.execute(
         "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%' OR url LIKE 'builtin://%'",
         [],
@@ -320,6 +352,16 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         "DELETE FROM subscriptions WHERE id LIKE 'builtin:blackmatrix7:%' OR id='default:blocklistproject:malware'",
         [],
     )?;
+    Ok(())
+}
+
+fn sync_builtin_subscription_names(db: &Connection) -> rusqlite::Result<()> {
+    for (id, name) in builtin_source_display_names() {
+        db.execute(
+            "UPDATE subscriptions SET name=?2 WHERE id=?1",
+            params![id, name],
+        )?;
+    }
     Ok(())
 }
 
@@ -1107,6 +1149,291 @@ pub fn delete_parent_rule(
     Ok(())
 }
 
+#[tauri::command]
+pub fn diagnose_rule_match(
+    query: String,
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<RuleDiagnosticResult, String> {
+    state.require_session(&session_token)?;
+    let parsed = parse_diagnostic_query(&query)?;
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let settings = settings_map(&db).map_err(error)?;
+    let mut rules = load_diagnostic_rules(&db, &settings)?;
+    rules.sort_by_key(|rule| rule.priority);
+    let candidates = rules
+        .into_iter()
+        .filter(|rule| {
+            CompiledRule::compile(RuleInput {
+                id: rule.id.clone(),
+                action: diagnostic_action(&rule.action),
+                priority: rule.priority,
+                kind: diagnostic_kind(&rule.kind),
+                pattern: rule.pattern.clone(),
+                category: rule.category.clone(),
+            })
+            .is_ok_and(|compiled| compiled.matches(parsed.domain.as_deref(), parsed.ip))
+        })
+        .collect::<Vec<_>>();
+    Ok(RuleDiagnosticResult {
+        query: query.trim().to_owned(),
+        normalized_domain: parsed.domain,
+        target_ip: parsed.ip.map(|value| value.to_string()),
+        matched: candidates.first().cloned(),
+        candidates,
+    })
+}
+
+struct ParsedDiagnosticQuery {
+    domain: Option<String>,
+    ip: Option<IpAddr>,
+}
+
+fn parse_diagnostic_query(query: &str) -> Result<ParsedDiagnosticQuery, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("请输入要诊断的域名、URL、IP 或 CIDR".into());
+    }
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return Ok(ParsedDiagnosticQuery {
+            domain: None,
+            ip: Some(ip),
+        });
+    }
+    if let Ok(network) = trimmed.parse::<IpNet>() {
+        return Ok(ParsedDiagnosticQuery {
+            domain: None,
+            ip: Some(network.addr()),
+        });
+    }
+    let without_scheme = if trimmed.contains("://") {
+        url::Url::parse(trimmed)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_else(|| trimmed.to_owned())
+    } else {
+        trimmed
+            .split_once('/')
+            .map(|(host, _)| host)
+            .unwrap_or(trimmed)
+            .to_owned()
+    };
+    let candidate_host = without_scheme
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.');
+    let host = if candidate_host.matches(':').count() == 1 {
+        candidate_host
+            .split_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(candidate_host)
+    } else {
+        candidate_host
+    };
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(ParsedDiagnosticQuery {
+            domain: None,
+            ip: Some(ip),
+        });
+    }
+    if let Ok(network) = host.parse::<IpNet>() {
+        return Ok(ParsedDiagnosticQuery {
+            domain: None,
+            ip: Some(network.addr()),
+        });
+    }
+    let domain = CompiledRule::compile(RuleInput {
+        id: "diagnostic-domain".into(),
+        action: Action::Block,
+        priority: 1,
+        kind: MatcherKind::Exact,
+        pattern: host.to_owned(),
+        category: "diagnostic".into(),
+    })
+    .map_err(|_| "请输入有效的域名、URL 或 IP".to_string())?
+    .source
+    .pattern;
+    Ok(ParsedDiagnosticQuery {
+        domain: Some(domain),
+        ip: None,
+    })
+}
+
+fn load_diagnostic_rules(
+    db: &Connection,
+    settings: &HashMap<String, String>,
+) -> Result<Vec<RuleDiagnosticMatch>, String> {
+    let mut rules = Vec::new();
+    append_parent_diagnostic_rules(db, &mut rules)?;
+    append_imported_diagnostic_rules(db, settings, &mut rules)?;
+    Ok(rules)
+}
+
+fn append_parent_diagnostic_rules(
+    db: &Connection,
+    rules: &mut Vec<RuleDiagnosticMatch>,
+) -> Result<(), String> {
+    let mut statement = db
+        .prepare(
+            "SELECT id,action,kind,pattern,category
+             FROM parent_rules
+             WHERE enabled=1
+             ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'allow' THEN 1 WHEN 'proxy' THEN 2 ELSE 3 END,created_at",
+        )
+        .map_err(error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    for (id, action, kind, pattern, category) in rows {
+        rules.push(RuleDiagnosticMatch {
+            id,
+            source: "手动规则".into(),
+            action: action.clone(),
+            kind: normalize_stored_kind(&kind),
+            pattern,
+            category,
+            priority: match action.as_str() {
+                "block" => 20,
+                "allow" => 30,
+                "proxy" => 80,
+                "system_route" => 81,
+                _ => 90,
+            },
+        });
+    }
+    Ok(())
+}
+
+fn append_imported_diagnostic_rules(
+    db: &Connection,
+    settings: &HashMap<String, String>,
+    rules: &mut Vec<RuleDiagnosticMatch>,
+) -> Result<(), String> {
+    let mut statement = db
+        .prepare(
+            "SELECT r.rule_id,r.matcher_kind,r.pattern,r.action,r.category,s.name,s.id
+             FROM imported_rules r
+             JOIN subscriptions s ON s.id=r.subscription_id
+             WHERE s.enabled=1
+             ORDER BY s.created_at,r.source_line",
+        )
+        .map_err(error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    for (rule_id, kind, pattern, action, category, source_name, subscription_id) in rows {
+        if !diagnostic_category_enabled(settings, &category) {
+            continue;
+        }
+        let normalized_action = normalize_stored_action(&action);
+        rules.push(RuleDiagnosticMatch {
+            id: format!("{subscription_id}:{rule_id}"),
+            source: source_name,
+            action: normalized_action.clone(),
+            kind: normalize_stored_kind(&kind),
+            pattern,
+            category: category.clone(),
+            priority: imported_rule_priority(&normalized_action, &category),
+        });
+    }
+    Ok(())
+}
+
+fn diagnostic_category_enabled(settings: &HashMap<String, String>, category: &str) -> bool {
+    if category == "strict"
+        && settings
+            .get("strict_mode_enabled")
+            .is_some_and(|value| value != "true")
+    {
+        return false;
+    }
+    settings
+        .get(&format!("category.{category}"))
+        .is_none_or(|value| value != "false")
+}
+
+fn imported_rule_priority(action: &str, category: &str) -> u16 {
+    if matches!(category, "fraud" | "phishing" | "malware") && action == "block" {
+        10
+    } else if action == "block" {
+        50
+    } else if action == "allow" {
+        70
+    } else {
+        80
+    }
+}
+
+fn normalize_stored_kind(value: &str) -> String {
+    match value {
+        "Exact" | "exact" => "exact",
+        "Suffix" | "suffix" => "suffix",
+        "Contains" | "contains" => "contains",
+        "Wildcard" | "wildcard" => "wildcard",
+        "Regex" | "regex" => "regex",
+        "Ip" | "ip" => "ip",
+        "Cidr" | "cidr" => "cidr",
+        _ => value,
+    }
+    .into()
+}
+
+fn normalize_stored_action(value: &str) -> String {
+    match value {
+        "Allow" | "allow" => "allow",
+        "Block" | "block" => "block",
+        "Proxy" | "proxy" => "proxy",
+        "SystemRoute" | "system_route" => "system_route",
+        _ => value,
+    }
+    .into()
+}
+
+fn diagnostic_kind(value: &str) -> MatcherKind {
+    match value {
+        "exact" => MatcherKind::Exact,
+        "suffix" => MatcherKind::Suffix,
+        "contains" => MatcherKind::Contains,
+        "wildcard" => MatcherKind::Wildcard,
+        "regex" => MatcherKind::Regex,
+        "ip" => MatcherKind::Ip,
+        "cidr" => MatcherKind::Cidr,
+        _ => MatcherKind::Exact,
+    }
+}
+
+fn diagnostic_action(value: &str) -> Action {
+    match value {
+        "allow" => Action::Allow,
+        "proxy" => Action::Proxy,
+        "system_route" => Action::SystemRoute,
+        _ => Action::Block,
+    }
+}
+
 fn read_settings(db: &Connection) -> rusqlite::Result<Settings> {
     let mut statement = db.prepare("SELECT key, value FROM settings")?;
     let pairs = statement
@@ -1122,6 +1449,13 @@ fn read_settings(db: &Connection) -> rusqlite::Result<Settings> {
                 .map(|category| (category.to_owned(), value == "true"))
         })
         .collect();
+    let browser_policy = pairs
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("browser_policy.")
+                .map(|policy| (policy.to_owned(), value == "true"))
+        })
+        .collect();
     Ok(Settings {
         protection_enabled: boolean("protection_enabled"),
         proxy_enabled: boolean("proxy_enabled"),
@@ -1134,6 +1468,7 @@ fn read_settings(db: &Connection) -> rusqlite::Result<Settings> {
             .cloned()
             .unwrap_or_else(|| "30d".into()),
         categories,
+        browser_policy,
     })
 }
 
@@ -1149,6 +1484,12 @@ fn allowed_setting(key: &str, value: &str) -> bool {
     ) || matches!(
         key,
         "category.ads" | "category.tracking" | "category.entertainment"
+    ) || matches!(
+        key,
+        "browser_policy.force_google_safe_search"
+            | "browser_policy.force_youtube_restrict"
+            | "browser_policy.disable_doh"
+            | "browser_policy.use_system_dns_client"
     );
     (boolean_key && matches!(value, "true" | "false"))
         || (key == "log_retention" && matches!(value, "7d" | "30d" | "90d" | "forever"))
@@ -1181,6 +1522,10 @@ mod tests {
         assert!(settings.access_logging_enabled);
         assert!(settings.categories["pornography"]);
         assert!(!settings.categories["entertainment"]);
+        assert!(settings.browser_policy["force_google_safe_search"]);
+        assert!(settings.browser_policy["force_youtube_restrict"]);
+        assert!(settings.browser_policy["disable_doh"]);
+        assert!(settings.browser_policy["use_system_dns_client"]);
     }
 
     #[test]
@@ -1192,8 +1537,19 @@ mod tests {
         assert!(allowed_setting("safe_search_enabled", "false"));
         assert!(allowed_setting("strict_mode_enabled", "true"));
         assert!(allowed_setting("strict_mode_enabled", "false"));
+        assert!(allowed_setting(
+            "browser_policy.force_google_safe_search",
+            "false"
+        ));
+        assert!(allowed_setting("browser_policy.disable_doh", "true"));
+        assert!(allowed_setting(
+            "browser_policy.use_system_dns_client",
+            "false"
+        ));
         assert!(!allowed_setting("safe_search_enabled", "yes"));
         assert!(!allowed_setting("strict_mode_enabled", "yes"));
+        assert!(!allowed_setting("browser_policy.disable_doh", "yes"));
+        assert!(!allowed_setting("browser_policy.unknown", "true"));
         assert!(!allowed_setting("category.pornography", "false"));
         assert!(!allowed_setting("category.malware", "false"));
         assert!(allowed_setting("category.ads", "false"));
@@ -1291,6 +1647,83 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_rules_report_effective_priority_matches() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO parent_rules(id,action,kind,pattern,category,enabled) VALUES('manual-allow','allow','Exact','safe.example','custom',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO parent_rules(id,action,kind,pattern,category,enabled) VALUES('manual-block','block','Suffix','example','custom',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('rules','rule','第三方规则','https://example.test/rules.txt',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('rules','r1','Exact','safe.example','Block','pornography',1)",
+            [],
+        )
+        .unwrap();
+
+        let parsed = parse_diagnostic_query("https://safe.example/path").unwrap();
+        let settings = settings_map(&db).unwrap();
+        let mut candidates = load_diagnostic_rules(&db, &settings)
+            .unwrap()
+            .into_iter()
+            .filter(|rule| {
+                CompiledRule::compile(RuleInput {
+                    id: rule.id.clone(),
+                    action: diagnostic_action(&rule.action),
+                    priority: rule.priority,
+                    kind: diagnostic_kind(&rule.kind),
+                    pattern: rule.pattern.clone(),
+                    category: rule.category.clone(),
+                })
+                .unwrap()
+                .matches(parsed.domain.as_deref(), parsed.ip)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|rule| rule.priority);
+
+        assert_eq!(parsed.domain.as_deref(), Some("safe.example"));
+        assert_eq!(candidates[0].id, "manual-block");
+        assert_eq!(candidates[0].action, "block");
+        assert!(candidates.iter().any(|rule| rule.id == "manual-allow"));
+    }
+
+    #[test]
+    fn diagnostic_rules_skip_disabled_categories() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE settings SET value='false' WHERE key='category.entertainment'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('fun','rule','娱乐规则','https://example.test/fun.txt',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('fun','game','Suffix','game.example','Block','entertainment',1)",
+            [],
+        )
+        .unwrap();
+
+        let settings = settings_map(&db).unwrap();
+        let rules = load_diagnostic_rules(&db, &settings).unwrap();
+
+        assert!(rules.is_empty());
+    }
+
+    #[test]
     fn existing_default_sources_are_forced_enabled_without_url_restore() {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
@@ -1310,6 +1743,41 @@ mod tests {
         assert_eq!(enabled, 1, "内置规则必须恢复启用");
         assert_eq!(url, "https://example.test/legacy.txt");
         assert!(delete_subscription_inner(&db, "default:legacy:source").is_err());
+    }
+
+    #[test]
+    fn builtin_source_names_are_synced_to_provider_display_names() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('default:blocklistproject:porn','rule','内置规则 · BlocklistProject porn-nl','https://example.test/porn.txt','domain-list','pornography',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('local:cleanweb:entertainment-cdn','rule','内置规则 · CleanWeb entertainment-cdn','https://example.test/entertainment.txt','clash','entertainment',1)",
+            [],
+        )
+        .unwrap();
+
+        seed_default_rule_subscriptions(&db).unwrap();
+
+        let blocklist_name: String = db
+            .query_row(
+                "SELECT name FROM subscriptions WHERE id='default:blocklistproject:porn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let cleanweb_name: String = db
+            .query_row(
+                "SELECT name FROM subscriptions WHERE id='local:cleanweb:entertainment-cdn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(blocklist_name, "The Block List Project · Porn (NL)");
+        assert_eq!(cleanweb_name, "CleanWeb · Entertainment CDN Supplement");
     }
 
     #[test]

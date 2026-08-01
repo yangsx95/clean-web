@@ -56,6 +56,14 @@ describe("management actions", () => {
     initialize.mockRestore();
   });
 
+  it("allows Command+A in password inputs even when the IME reports keyCode 229", async () => {
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "点击解锁" }));
+    const input = screen.getByLabelText("管理密码");
+
+    expect(fireEvent.keyDown(input, { key: "a", code: "KeyA", keyCode: 229, metaKey: true })).toBe(true);
+  });
+
   it("navigates to rules and opens subscription form after unlocking", async () => {
     render(<App />);
     await unlockManagement();
@@ -106,7 +114,7 @@ describe("management actions", () => {
           configured: true,
           needsRestart: true,
           details: [
-            { label: "强制 Google SafeSearch", configured: true, currentValue: "true", expectedValue: "true" },
+            { key:"browser_policy.force_google_safe_search", label: "强制 Google SafeSearch", enabled:true, configured: true, currentValue: "true", expectedValue: "true" },
           ],
         },
       ],
@@ -118,10 +126,28 @@ describe("management actions", () => {
     expect(screen.queryByText("运行健康状态")).toBeNull();
     expect(screen.queryByRole("tab", { name: "管理会话" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "浏览器保护" }));
+    expect(screen.getByRole("switch", { name: "Chrome 关闭浏览器 DoH" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Chrome 使用系统 DNS 客户端" })).toBeTruthy();
     await userEvent.click(await screen.findByRole("button", { name: "应用浏览器保护" }));
 
     expect(apply).toHaveBeenCalledWith("browser-preview");
     expect(await screen.findByText("浏览器策略已写入，重启浏览器后完全生效")).toBeTruthy();
+    apply.mockRestore();
+  });
+
+  it("saves browser policy toggles without applying system policies", async () => {
+    const update = vi.spyOn(backend, "updateSetting");
+    const apply = vi.spyOn(backend, "applyBrowserPolicies");
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("tab", { name: "浏览器保护" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Chrome 使用系统 DNS 客户端" }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith("browser-preview", "browser_policy.use_system_dns_client", "false"));
+    expect(apply).not.toHaveBeenCalled();
+    update.mockRestore();
     apply.mockRestore();
   });
 
@@ -598,6 +624,33 @@ describe("management actions", () => {
     expect(screen.getByText("部分节点检测失败：1/2")).toBeTruthy();
   });
 
+  it("tests proxy connectivity to a custom address", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    window.localStorage.setItem("cleanweb.preview.coreStatus", JSON.stringify({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" }));
+    vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+    const connectivity = vi.spyOn(backend, "testProxyConnectivity").mockResolvedValue({
+      url: "https://google.com/",
+      group: "CleanWeb",
+      delay: 238,
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.clear(screen.getByLabelText("代理连通性检测地址"));
+    await userEvent.type(screen.getByLabelText("代理连通性检测地址"), "google.com");
+    await userEvent.click(screen.getByRole("button", { name: "检测连通性" }));
+
+    await waitFor(() => expect(connectivity).toHaveBeenCalledWith("browser-preview", "google.com", "CleanWeb"));
+    expect(await screen.findByText("连通")).toBeTruthy();
+    expect(screen.getByText("https://google.com/ · CleanWeb")).toBeTruthy();
+    expect(screen.getByText("238 ms")).toBeTruthy();
+    connectivity.mockRestore();
+  });
+
   it("keeps proxy node selection available while delay testing is running", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
@@ -671,9 +724,9 @@ describe("management actions", () => {
 
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
-      {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · StevenBlack porn-only",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128},
-      {id:"default:blocklistproject:porn",kind:"rule",name:"内置规则 · BlocklistProject porn-nl",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:953393},
-      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · CleanWeb entertainment-cdn",url:"https://example.test/cleanweb-entertainment-cdn.txt",format:"clash",category:"entertainment",enabled:true},
+      {id:"default:stevenblack:porn",kind:"rule",name:"StevenBlack · Porn-only Hosts",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128},
+      {id:"default:blocklistproject:porn",kind:"rule",name:"The Block List Project · Porn (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:953393},
+      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"CleanWeb · Entertainment CDN Supplement",url:"https://example.test/cleanweb-entertainment-cdn.txt",format:"clash",category:"entertainment",enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
     render(<App />);
@@ -684,26 +737,29 @@ describe("management actions", () => {
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
     expect(screen.queryByText("上次更新")).toBeNull();
     expect(screen.getByText("已生效")).toBeTruthy();
-    expect(screen.getByText("953521/953521 条规则生效")).toBeTruthy();
+    expect(screen.getByText("954k/954k")).toBeTruthy();
+    expect(screen.getAllByText("规则生效").length).toBeGreaterThan(0);
     expect(screen.getByText("待同步")).toBeTruthy();
     expect(screen.queryByRole("progressbar", { name: /下载应用进度/ })).toBeNull();
     expect(screen.getByText("娱乐内容")).toBeTruthy();
-    expect(screen.queryByText("StevenBlack porn-only")).toBeNull();
-    expect(screen.queryByText("BlocklistProject porn-nl")).toBeNull();
+    expect(screen.queryByText("StevenBlack · Porn-only Hosts")).toBeNull();
+    expect(screen.queryByText("The Block List Project · Porn (NL)")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /来源 2/ }));
     expect(await screen.findByText("上次更新")).toBeTruthy();
-    expect(screen.getByText("BlocklistProject porn-nl")).toBeTruthy();
-    expect(screen.getByText("StevenBlack porn-only")).toBeTruthy();
+    expect(screen.getByText("规则数")).toBeTruthy();
+    expect(screen.getByText("953k/953k")).toBeTruthy();
+    expect(screen.getByText("The Block List Project · Porn (NL)")).toBeTruthy();
+    expect(screen.getByText("StevenBlack · Porn-only Hosts")).toBeTruthy();
     expect(screen.queryByText("https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt")).toBeNull();
-    expect(screen.getByRole("button", { name: "更新StevenBlack porn-only" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "更新BlocklistProject porn-nl" })).toBeTruthy();
-    expect(screen.queryByRole("switch", { name: "内置规则 · StevenBlack porn-only订阅" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "删除内置规则 · StevenBlack porn-only" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "编辑内置规则 · CleanWeb entertainment-cdn" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "删除内置规则 · CleanWeb entertainment-cdn" })).toBeNull();
+    expect(screen.getByRole("button", { name: "更新StevenBlack · Porn-only Hosts" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更新The Block List Project · Porn (NL)" })).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "StevenBlack · Porn-only Hosts订阅" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除StevenBlack · Porn-only Hosts" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "编辑CleanWeb · Entertainment CDN Supplement" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除CleanWeb · Entertainment CDN Supplement" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
     expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
-    expect(screen.queryByText("内置规则 · CleanWeb entertainment-cdn")).toBeNull();
+    expect(screen.queryByText("CleanWeb · Entertainment CDN Supplement")).toBeNull();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
@@ -827,6 +883,28 @@ describe("management actions", () => {
       category: "routing",
     });
     create.mockRestore();
+  });
+
+  it("diagnoses rule matches from the rules page", async () => {
+    const diagnose = vi.spyOn(backend, "diagnoseRuleMatch").mockResolvedValueOnce({
+      query: "bad.example",
+      normalizedDomain: "bad.example",
+      targetIp: null,
+      matched: { id:"rule-1", source:"手动规则", action:"block", kind:"suffix", pattern:"example", category:"custom", priority:20 },
+      candidates: [{ id:"rule-1", source:"手动规则", action:"block", kind:"suffix", pattern:"example", category:"custom", priority:20 }],
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: "规则诊断" }));
+    await userEvent.type(screen.getByLabelText("规则诊断目标"), "bad.example");
+    await userEvent.click(screen.getByRole("button", { name: "开始诊断" }));
+
+    expect(diagnose).toHaveBeenCalledWith("browser-preview", "bad.example");
+    expect(await screen.findByText("bad.example")).toBeTruthy();
+    expect(screen.getByText("手动规则 · custom · 域名及子域名 · 优先级 20")).toBeTruthy();
+    diagnose.mockRestore();
   });
 
   it("adds system route rules from the routing dialog", async () => {

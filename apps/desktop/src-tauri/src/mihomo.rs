@@ -68,6 +68,14 @@ pub struct DelayResult {
     pub delay: u64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyConnectivityResult {
+    pub url: String,
+    pub group: String,
+    pub delay: u64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyNode {
@@ -371,13 +379,36 @@ pub async fn test_proxy_group(
 ) -> Result<DelayResult, String> {
     state.require_session(&session_token)?;
     let secret = controller_secret(&state)?;
+    let delay = proxy_group_delay(&secret, &group, "https://www.gstatic.com/generate_204").await?;
+    Ok(DelayResult { delay })
+}
+
+#[tauri::command]
+pub async fn test_proxy_connectivity(
+    target: String,
+    group: String,
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<ProxyConnectivityResult, String> {
+    state.require_session(&session_token)?;
+    let target = normalize_connectivity_target(&target)?;
+    let secret = controller_secret(&state)?;
+    let delay = proxy_group_delay(&secret, &group, &target).await?;
+    Ok(ProxyConnectivityResult {
+        url: target,
+        group,
+        delay,
+    })
+}
+
+async fn proxy_group_delay(secret: &str, group: &str, target: &str) -> Result<u64, String> {
     let mut url = Url::parse(&format!("http://{CONTROLLER}/proxies")).map_err(error)?;
     url.path_segments_mut()
         .map_err(|_| "控制器地址无效")?
-        .push(&group)
+        .push(group)
         .push("delay");
     url.query_pairs_mut()
-        .append_pair("url", "https://www.gstatic.com/generate_204")
+        .append_pair("url", target)
         .append_pair("timeout", "5000");
     let value = reqwest::Client::new()
         .get(url)
@@ -394,7 +425,27 @@ pub async fn test_proxy_group(
         .get("delay")
         .and_then(|value| value.as_u64())
         .ok_or("测速响应无效")?;
-    Ok(DelayResult { delay })
+    Ok(delay)
+}
+
+fn normalize_connectivity_target(target: &str) -> Result<String, String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("请输入要检测的网址或域名".into());
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_owned()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let parsed = Url::parse(&candidate).map_err(|_| "请输入有效的网址或域名")?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("仅支持 HTTP/HTTPS 连通性检测".into());
+    }
+    if parsed.host_str().is_none() {
+        return Err("请输入包含域名或 IP 的地址".into());
+    }
+    Ok(parsed.to_string())
 }
 
 #[tauri::command]
