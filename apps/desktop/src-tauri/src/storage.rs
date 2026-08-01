@@ -1274,13 +1274,14 @@ fn settings_map(db: &Connection) -> Result<HashMap<String, String>, String> {
     let mut statement = db
         .prepare("SELECT key,value FROM settings")
         .map_err(error)?;
-    statement
+    let settings = statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(error)?
         .collect::<rusqlite::Result<HashMap<_, _>>>()
-        .map_err(error)
+        .map_err(error)?;
+    Ok(settings)
 }
 
 fn append_parent_diagnostic_rules(

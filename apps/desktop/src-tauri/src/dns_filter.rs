@@ -13,7 +13,8 @@ use std::{
 use std::{ffi::CString, os::fd::AsRawFd};
 
 use cleanweb_rules::{
-    DomainDecision, DomainRuleIndexBuilder, DomainRuleInput, DomainRuleTier, MatcherKind,
+    DomainDecision, DomainRuleIndex, DomainRuleIndexBuilder, DomainRuleInput, DomainRuleTier,
+    MatcherKind,
 };
 use hickory_proto::op::{Message, Metadata, ResponseCode};
 use hickory_proto::rr::{
