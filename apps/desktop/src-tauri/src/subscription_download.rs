@@ -7,7 +7,6 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::{
-    builtin_rules,
     proxy_crypto::encrypt_proxy_payload,
     storage::{AppState, SubscriptionRecord},
     subscriptions::{import_text, SubscriptionFormat},
@@ -71,37 +70,33 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
         )
         .map_err(|_| "订阅不存在")?
     };
-    let text = if let Some(text) = builtin_rules::text_for_url(&url) {
-        text.to_owned()
-    } else {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("clash-verge/v2.0")
-            .build()
-            .map_err(error)?;
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|value| format!("订阅下载失败：{value}"))?;
-        if !response.status().is_success() {
-            return record_error(state, &id, format!("服务器返回 {}", response.status()));
-        }
-        if response
-            .headers()
-            .get(CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<usize>().ok())
-            .is_some_and(|size| size > MAX_SUBSCRIPTION_BYTES)
-        {
-            return record_error(state, &id, "订阅文件超过20MB限制".into());
-        }
-        let bytes = response.bytes().await.map_err(error)?;
-        if bytes.len() > MAX_SUBSCRIPTION_BYTES {
-            return record_error(state, &id, "订阅文件超过20MB限制".into());
-        }
-        String::from_utf8(bytes.to_vec()).map_err(|_| "订阅不是有效UTF-8文本")?
-    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("clash-verge/v2.0")
+        .build()
+        .map_err(error)?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|value| format!("订阅下载失败：{value}"))?;
+    if !response.status().is_success() {
+        return record_error(state, &id, format!("服务器返回 {}", response.status()));
+    }
+    if response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|size| size > MAX_SUBSCRIPTION_BYTES)
+    {
+        return record_error(state, &id, "订阅文件超过20MB限制".into());
+    }
+    let bytes = response.bytes().await.map_err(error)?;
+    if bytes.len() > MAX_SUBSCRIPTION_BYTES {
+        return record_error(state, &id, "订阅文件超过20MB限制".into());
+    }
+    let text = String::from_utf8(bytes.to_vec()).map_err(|_| "订阅不是有效UTF-8文本")?;
 
     let report = if kind == "rule" {
         refresh_rules(

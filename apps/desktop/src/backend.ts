@@ -50,7 +50,10 @@ let previewCoreStatus: CoreStatus = loadPreviewCoreStatus();
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const isBuiltinSubscription = (item: Pick<Subscription, "id" | "name" | "url">) =>
   item.id.startsWith("default:") ||
-  item.url.startsWith("builtin://");
+  item.id.startsWith("local:cleanweb:") ||
+  item.url.startsWith("builtin://") ||
+  item.name.startsWith("内置规则") ||
+  item.name.startsWith("内置路由");
 function loadPreviewSettings(): Settings {
   try {
     const raw = window.localStorage.getItem(previewSettingsKey);
@@ -198,31 +201,7 @@ export async function deleteSubscription(sessionToken:string,id:string) {
   const index=previewSubscriptions.findIndex((value)=>value.id===id); if(index>=0){previewSubscriptions.splice(index,1);savePreviewSubscriptions();}
 }
 export type RecommendedSource={name:string;url:string;format:string;category:string;description:string};
-const previewRecommendedSources:RecommendedSource[]=[
-  // hosts
-  {name:"综合广告与恶意软件",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",format:"hosts",category:"ads",description:"Steven Black 维护的合并去重 hosts 列表，覆盖广告、恶意软件与跟踪域名"},
-  {name:"AdAway 广告拦截",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",description:"AdAway 官方 hosts 列表，专注移动广告拦截"},
-  {name:"Dan Pollock hosts",url:"https://someonewhocares.org/hosts/zero/hosts",format:"hosts",category:"ads",description:"Dan Pollock 维护的经典 hosts 列表，拦截广告与跟踪域名"},
-  {name:"赌博网站拦截",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts",format:"hosts",category:"gambling",description:"Steven Black 赌博分类 hosts 列表"},
-  {name:"色情内容拦截",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts",format:"hosts",category:"pornography",description:"Steven Black 色情分类 hosts 列表"},
-  {name:"恶意软件域名",url:"https://urlhaus.abuse.ch/downloads/hostfile/",format:"hosts",category:"malware",description:"URLhaus 实时恶意软件分发域名列表"},
-  // adblock
-  {name:"EasyList 广告过滤",url:"https://easylist.to/easylist/easylist.txt",format:"adblock",category:"ads",description:"Adblock 生态中最广泛使用的英文广告过滤列表"},
-  {name:"EasyList China",url:"https://easylist-downloads.adblockplus.org/easylistchina.txt",format:"adblock",category:"ads",description:"EasyList 中文补充规则，覆盖国内网站广告"},
-  {name:"AdGuard 中文过滤",url:"https://filters.adtidy.org/extension/chromium/filters/224.txt",format:"adblock",category:"ads",description:"AdGuard 维护的中文广告过滤规则"},
-  {name:"uBlock 隐私保护",url:"https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt",format:"adblock",category:"ads",description:"uBlock Origin 隐私保护规则，拦截跟踪器和指纹收集"},
-  // domain-list
-  {name:"Loyalsoldier 直连域名",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt",format:"domain-list",category:"direct",description:"国内常用域名直连列表，避免不必要的代理"},
-  {name:"GFW 域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt",format:"domain-list",category:"routing",description:"常见被封锁域名列表，用于精确代理"},
-  {name:"广告域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt",format:"domain-list",category:"ads",description:"广告与跟踪域名列表，纯域名格式"},
-  // ip-list
-  {name:"中国 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",format:"clash",category:"direct",description:"中国大陆 IP 地址段，用于直连或分流策略"},
-  {name:"恶意 IP 地址段",url:"https://www.spamhaus.org/drop/drop.txt",format:"ip-list",category:"malware",description:"Spamhaus DROP 列表，已知恶意网络地址段"},
-  {name:"私有 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/private.txt",format:"ip-list",category:"custom",description:"私有与保留 IP 地址段，确保内网流量直连"},
-  // clash
-  {name:"Loyalsoldier Clash 规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt",format:"clash",category:"ads",description:"Loyalsoldier 维护的 Clash 广告拦截规则集"},
-  {name:"Clash 域名直连规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt",format:"clash",category:"direct",description:"Clash 格式的国内直连域名规则"},
-];
+const previewRecommendedSources:RecommendedSource[]=[];
 export async function getRecommendedSources():Promise<RecommendedSource[]>{return isTauri()?invoke<RecommendedSource[]>("get_recommended_sources"):previewRecommendedSources;}
 export async function refreshSubscription(sessionToken:string,id:string):Promise<RefreshReport>{
   if(isTauri())return invoke("refresh_subscription",{sessionToken,id});

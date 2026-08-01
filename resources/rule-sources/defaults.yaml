@@ -1,0 +1,168 @@
+default_rule_sources:
+  - id: default:stevenblack:porn
+    name: 内置规则 · 色情内容
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
+    format: hosts
+    category: pornography
+    update_interval_hours: 24
+  - id: default:stevenblack:gambling
+    name: 内置规则 · 赌博网站
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
+    format: hosts
+    category: gambling
+    update_interval_hours: 24
+  - id: default:blocklistproject:drugs
+    name: 内置规则 · 毒品网站
+    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt
+    format: domain-list
+    category: drugs
+    update_interval_hours: 24
+  - id: default:blocklistproject:fraud
+    name: 内置规则 · 诈骗网站
+    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt
+    format: domain-list
+    category: fraud
+    update_interval_hours: 24
+  - id: default:blocklistproject:phishing
+    name: 内置规则 · 钓鱼网站
+    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt
+    format: domain-list
+    category: phishing
+    update_interval_hours: 24
+  - id: default:urlhaus:malware
+    name: 内置规则 · 恶意软件
+    url: https://urlhaus.abuse.ch/downloads/hostfile/
+    format: hosts
+    category: malware
+    update_interval_hours: 24
+  - id: default:cleanweb:adult-supplement
+    name: 内置规则 · 成人站点补充
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-adult-supplement.clash
+    legacy_urls:
+      - builtin://cleanweb/adult-supplement
+    format: clash
+    category: pornography
+    update_interval_hours: 24
+  - id: default:cleanweb:security-supplement
+    name: 内置规则 · DNS 防绕过
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-security-supplement.clash
+    legacy_urls:
+      - builtin://cleanweb/security-supplement
+    format: clash
+    category: phishing
+    update_interval_hours: 24
+  - id: local:cleanweb:entertainment-cdn
+    name: 内置规则 · 娱乐内容补充
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-cdn-supplement.clash
+    legacy_urls:
+      - builtin://cleanweb/entertainment-cdn
+    format: clash
+    category: entertainment
+    update_interval_hours: 24
+  - id: default:loyalsoldier:cncidr
+    name: 内置路由 · 中国 IP 直连
+    url: https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt
+    format: clash
+    category: direct
+    update_interval_hours: 24
+
+rule_packs:
+  - id: default:cleanweb:strict-supplement
+    name: 内置规则 · 严格模式补充
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash
+    legacy_urls:
+      - builtin://cleanweb/strict-supplement
+    format: clash
+    category: strict
+
+recommended_rule_sources:
+  - name: 综合广告与恶意软件
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+    format: hosts
+    category: ads
+    description: Steven Black 维护的合并去重 hosts 列表，覆盖广告、恶意软件与跟踪域名
+  - name: AdAway 广告拦截
+    url: https://adaway.org/hosts.txt
+    format: hosts
+    category: ads
+    description: AdAway 官方 hosts 列表，专注移动广告拦截
+  - name: Dan Pollock hosts
+    url: https://someonewhocares.org/hosts/zero/hosts
+    format: hosts
+    category: ads
+    description: Dan Pollock 维护的经典 hosts 列表，拦截广告与跟踪域名
+  - name: 赌博网站拦截
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts
+    format: hosts
+    category: gambling
+    description: Steven Black 赌博分类 hosts 列表
+  - name: 色情内容拦截
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts
+    format: hosts
+    category: pornography
+    description: Steven Black 色情分类 hosts 列表
+  - name: 恶意软件域名
+    url: https://urlhaus.abuse.ch/downloads/hostfile/
+    format: hosts
+    category: malware
+    description: URLhaus 实时恶意软件分发域名列表
+  - name: EasyList 广告过滤
+    url: https://easylist.to/easylist/easylist.txt
+    format: adblock
+    category: ads
+    description: Adblock 生态中最广泛使用的英文广告过滤列表
+  - name: EasyList China
+    url: https://easylist-downloads.adblockplus.org/easylistchina.txt
+    format: adblock
+    category: ads
+    description: EasyList 中文补充规则，覆盖国内网站广告
+  - name: AdGuard 中文过滤
+    url: https://filters.adtidy.org/extension/chromium/filters/224.txt
+    format: adblock
+    category: ads
+    description: AdGuard 维护的中文广告过滤规则
+  - name: uBlock 隐私保护
+    url: https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt
+    format: adblock
+    category: ads
+    description: uBlock Origin 隐私保护规则，拦截跟踪器和指纹收集
+  - name: Loyalsoldier 直连域名
+    url: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
+    format: domain-list
+    category: direct
+    description: 国内常用域名直连列表，避免不必要的代理
+  - name: GFW 域名列表
+    url: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+    format: domain-list
+    category: routing
+    description: 常见被封锁域名列表，用于精确代理
+  - name: 广告域名列表
+    url: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
+    format: domain-list
+    category: ads
+    description: 广告与跟踪域名列表，纯域名格式
+  - name: 中国 IP 地址段
+    url: https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt
+    format: clash
+    category: direct
+    description: 中国大陆 IP 地址段，用于直连或分流策略
+  - name: 恶意 IP 地址段
+    url: https://www.spamhaus.org/drop/drop.txt
+    format: ip-list
+    category: malware
+    description: Spamhaus DROP 列表，已知恶意网络地址段
+  - name: 私有 IP 地址段
+    url: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/private.txt
+    format: ip-list
+    category: custom
+    description: 私有与保留 IP 地址段，确保内网流量直连
+  - name: Loyalsoldier Clash 规则
+    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
+    format: clash
+    category: ads
+    description: Loyalsoldier 维护的 Clash 广告拦截规则集
+  - name: Clash 域名直连规则
+    url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt
+    format: clash
+    category: direct
+    description: Clash 格式的国内直连域名规则

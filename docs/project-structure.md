@@ -120,11 +120,12 @@ docs/
 
 ```text
 resources/
-  rules/                         # 内置 CleanWeb 规则补充包
+  rule-sources/                  # 官方和推荐规则源元数据发布素材
+  rules/                         # CleanWeb 规则补充包发布素材
   safe-search/                   # 安全搜索映射清单
 ```
 
-这些资源是跨平台语义资源。桌面端当前通过 `include_str!` 编译期嵌入；移动端接入规则和安全搜索能力时应从这里复用同一份资源。
+这些资源是跨平台语义资源和发布素材。桌面端不打包、不编译 `resources/rule-sources/` 和 `resources/rules/`；官方规则源和规则正文应通过在线同步写入本地数据库。移动端接入规则能力时也应遵守同一供应链边界。
 
 ## 共享模块
 

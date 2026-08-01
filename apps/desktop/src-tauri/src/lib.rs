@@ -1,9 +1,9 @@
 pub mod access_logs;
 pub mod browser_policy;
-pub mod builtin_rules;
 pub mod mihomo;
 pub mod platform;
 pub mod proxy_crypto;
+pub mod rule_sources;
 pub mod rules;
 pub mod storage;
 pub mod subscription_download;

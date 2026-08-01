@@ -16,17 +16,12 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::builtin_rules::{
-    CLEANWEB_ADULT_SUPPLEMENT_ID, CLEANWEB_ADULT_SUPPLEMENT_TEXT, CLEANWEB_ADULT_SUPPLEMENT_URL,
-    CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID, CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_TEXT,
-    CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL, CLEANWEB_SECURITY_SUPPLEMENT_ID,
-    CLEANWEB_SECURITY_SUPPLEMENT_TEXT, CLEANWEB_SECURITY_SUPPLEMENT_URL,
-};
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 #[cfg(debug_assertions)]
 use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
+use crate::rule_sources::recommended_rule_sources;
+pub use crate::rule_sources::RecommendedSource;
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
-use crate::subscriptions::{import_text, SubscriptionFormat};
 
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
 
@@ -100,151 +95,9 @@ pub struct UpdateSubscription {
     pub update_interval_hours: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecommendedSource {
-    pub name: String,
-    pub url: String,
-    pub format: String,
-    pub category: String,
-    pub description: String,
-}
-
 /// 返回内置推荐规则源列表，供用户在添加订阅时快速选择
 pub fn get_recommended_rule_sources() -> Vec<RecommendedSource> {
-    vec![
-        // ── hosts 格式 ──
-        RecommendedSource {
-            name: "综合广告与恶意软件".into(),
-            url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts".into(),
-            format: "hosts".into(),
-            category: "ads".into(),
-            description: "Steven Black 维护的合并去重 hosts 列表，覆盖广告、恶意软件与跟踪域名".into(),
-        },
-        RecommendedSource {
-            name: "AdAway 广告拦截".into(),
-            url: "https://adaway.org/hosts.txt".into(),
-            format: "hosts".into(),
-            category: "ads".into(),
-            description: "AdAway 官方 hosts 列表，专注移动广告拦截".into(),
-        },
-        RecommendedSource {
-            name: "Dan Pollock hosts".into(),
-            url: "https://someonewhocares.org/hosts/zero/hosts".into(),
-            format: "hosts".into(),
-            category: "ads".into(),
-            description: "Dan Pollock 维护的经典 hosts 列表，拦截广告与跟踪域名".into(),
-        },
-        RecommendedSource {
-            name: "赌博网站拦截".into(),
-            url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts".into(),
-            format: "hosts".into(),
-            category: "gambling".into(),
-            description: "Steven Black 赌博分类 hosts 列表".into(),
-        },
-        RecommendedSource {
-            name: "色情内容拦截".into(),
-            url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts".into(),
-            format: "hosts".into(),
-            category: "pornography".into(),
-            description: "Steven Black 色情分类 hosts 列表".into(),
-        },
-        RecommendedSource {
-            name: "恶意软件域名".into(),
-            url: "https://urlhaus.abuse.ch/downloads/hostfile/".into(),
-            format: "hosts".into(),
-            category: "malware".into(),
-            description: "URLhaus 实时恶意软件分发域名列表".into(),
-        },
-        // ── adblock 格式 ──
-        RecommendedSource {
-            name: "EasyList 广告过滤".into(),
-            url: "https://easylist.to/easylist/easylist.txt".into(),
-            format: "adblock".into(),
-            category: "ads".into(),
-            description: "Adblock 生态中最广泛使用的英文广告过滤列表".into(),
-        },
-        RecommendedSource {
-            name: "EasyList China".into(),
-            url: "https://easylist-downloads.adblockplus.org/easylistchina.txt".into(),
-            format: "adblock".into(),
-            category: "ads".into(),
-            description: "EasyList 中文补充规则，覆盖国内网站广告".into(),
-        },
-        RecommendedSource {
-            name: "AdGuard 中文过滤".into(),
-            url: "https://filters.adtidy.org/extension/chromium/filters/224.txt".into(),
-            format: "adblock".into(),
-            category: "ads".into(),
-            description: "AdGuard 维护的中文广告过滤规则".into(),
-        },
-        RecommendedSource {
-            name: "uBlock 隐私保护".into(),
-            url: "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt".into(),
-            format: "adblock".into(),
-            category: "ads".into(),
-            description: "uBlock Origin 隐私保护规则，拦截跟踪器和指纹收集".into(),
-        },
-        // ── domain-list 格式 ──
-        RecommendedSource {
-            name: "Loyalsoldier 直连域名".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt".into(),
-            format: "domain-list".into(),
-            category: "direct".into(),
-            description: "国内常用域名直连列表，避免不必要的代理".into(),
-        },
-        RecommendedSource {
-            name: "GFW 域名列表".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt".into(),
-            format: "domain-list".into(),
-            category: "routing".into(),
-            description: "常见被封锁域名列表，用于精确代理".into(),
-        },
-        RecommendedSource {
-            name: "广告域名列表".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt".into(),
-            format: "domain-list".into(),
-            category: "ads".into(),
-            description: "广告与跟踪域名列表，纯域名格式".into(),
-        },
-        // ── ip-list 格式 ──
-        RecommendedSource {
-            name: "中国 IP 地址段".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt".into(),
-            format: "clash".into(),
-            category: "direct".into(),
-            description: "中国大陆 IP 地址段，用于直连或分流策略".into(),
-        },
-        RecommendedSource {
-            name: "恶意 IP 地址段".into(),
-            url: "https://www.spamhaus.org/drop/drop.txt".into(),
-            format: "ip-list".into(),
-            category: "malware".into(),
-            description: "Spamhaus DROP 列表，已知恶意网络地址段".into(),
-        },
-        RecommendedSource {
-            name: "私有 IP 地址段".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/private.txt".into(),
-            format: "ip-list".into(),
-            category: "custom".into(),
-            description: "私有与保留 IP 地址段，确保内网流量直连".into(),
-        },
-        // ── clash 格式 ──
-        RecommendedSource {
-            name: "Loyalsoldier Clash 规则".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt".into(),
-            format: "clash".into(),
-            category: "ads".into(),
-            description: "Loyalsoldier 维护的 Clash 广告拦截规则集".into(),
-        },
-        RecommendedSource {
-            name: "Clash 域名直连规则".into(),
-            url: "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt".into(),
-            format: "clash".into(),
-            category: "direct".into(),
-            description: "Clash 格式的国内直连域名规则".into(),
-        },
-    ]
+    recommended_rule_sources()
 }
 
 #[derive(Debug, Serialize)]
@@ -422,90 +275,10 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
 }
 
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
-    const SEED_MARKER: &str = "builtin_rule_sources_v5_seeded";
     db.execute(
-        "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%' OR url LIKE 'builtin://%'",
+        "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%' OR url LIKE 'builtin://%'",
         [],
     )?;
-    let sources = [
-        (
-            "default:stevenblack:porn",
-            "内置规则 · 色情内容",
-            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
-            "hosts",
-            "pornography",
-        ),
-        (
-            "default:stevenblack:gambling",
-            "内置规则 · 赌博网站",
-            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
-            "hosts",
-            "gambling",
-        ),
-        (
-            "default:blocklistproject:drugs",
-            "内置规则 · 毒品网站",
-            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt",
-            "domain-list",
-            "drugs",
-        ),
-        (
-            "default:blocklistproject:fraud",
-            "内置规则 · 诈骗网站",
-            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt",
-            "domain-list",
-            "fraud",
-        ),
-        (
-            "default:blocklistproject:phishing",
-            "内置规则 · 钓鱼网站",
-            "https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt",
-            "domain-list",
-            "phishing",
-        ),
-        (
-            "default:urlhaus:malware",
-            "内置规则 · 恶意软件",
-            "https://urlhaus.abuse.ch/downloads/hostfile/",
-            "hosts",
-            "malware",
-        ),
-        (
-            CLEANWEB_ADULT_SUPPLEMENT_ID,
-            "内置规则 · 成人站点补充",
-            CLEANWEB_ADULT_SUPPLEMENT_URL,
-            "clash",
-            "pornography",
-        ),
-        (
-            CLEANWEB_SECURITY_SUPPLEMENT_ID,
-            "内置规则 · DNS 防绕过",
-            CLEANWEB_SECURITY_SUPPLEMENT_URL,
-            "clash",
-            "phishing",
-        ),
-        (
-            CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID,
-            "内置规则 · 娱乐内容补充",
-            CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL,
-            "clash",
-            "entertainment",
-        ),
-        (
-            "default:loyalsoldier:cncidr",
-            "内置路由 · 中国 IP 直连",
-            "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",
-            "clash",
-            "direct",
-        ),
-    ];
-    for (id, name, url, format, category) in sources {
-        db.execute(
-            "UPDATE subscriptions SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=CASE WHEN ?3 LIKE 'builtin://%' THEN NULL ELSE 24 END WHERE id=?1 AND kind='rule'",
-            params![id, name, url, format, category],
-        )?;
-    }
-
     db.execute(
         "DELETE FROM settings WHERE key LIKE 'deleted_default_source.%'",
         [],
@@ -515,60 +288,7 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         "DELETE FROM subscriptions WHERE id LIKE 'builtin:blackmatrix7:%' OR id='default:blocklistproject:malware'",
         [],
     )?;
-
-    for (id, name, url, format, category) in sources {
-        db.execute(
-            "INSERT OR IGNORE INTO subscriptions(
-               id,kind,name,url,format,category,update_interval_hours,enabled
-             ) VALUES(?1,'rule',?2,?3,?4,?5,CASE WHEN ?3 LIKE 'builtin://%' THEN NULL ELSE 24 END,1)",
-            params![id, name, url, format, category],
-        )?;
-    }
-    seed_builtin_rule_text(
-        db,
-        CLEANWEB_ADULT_SUPPLEMENT_ID,
-        CLEANWEB_ADULT_SUPPLEMENT_URL,
-        "pornography",
-        CLEANWEB_ADULT_SUPPLEMENT_TEXT,
-    )?;
-    seed_builtin_rule_text(
-        db,
-        CLEANWEB_SECURITY_SUPPLEMENT_ID,
-        CLEANWEB_SECURITY_SUPPLEMENT_URL,
-        "phishing",
-        CLEANWEB_SECURITY_SUPPLEMENT_TEXT,
-    )?;
-    seed_builtin_rule_text(
-        db,
-        CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID,
-        CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL,
-        "entertainment",
-        CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_TEXT,
-    )?;
-    db.execute(
-        "INSERT OR IGNORE INTO settings(key,value) VALUES(?1,'true')",
-        params![SEED_MARKER],
-    )?;
     Ok(())
-}
-
-fn seed_builtin_rule_text(
-    db: &Connection,
-    id: &str,
-    url: &str,
-    category: &str,
-    text: &str,
-) -> rusqlite::Result<()> {
-    let imported = import_text(SubscriptionFormat::Clash, text, id, url, category);
-    let transaction = db.unchecked_transaction()?;
-    transaction.execute(
-        "DELETE FROM imported_rules WHERE subscription_id=?1",
-        params![id],
-    )?;
-    for item in imported.rules {
-        transaction.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,item.rule.id,format!("{:?}",item.rule.kind),item.rule.pattern,format!("{:?}",item.rule.action),item.rule.category,item.source.source_line as i64])?;
-    }
-    transaction.commit()
 }
 
 fn migrate_parent_rules_action_constraint(db: &Connection) -> rusqlite::Result<()> {
@@ -1023,7 +743,7 @@ fn validate_subscription_fields(
 }
 
 fn is_builtin_subscription_record(id: &str, _name: &str, url: &str) -> bool {
-    id.starts_with("default:") || url.starts_with("builtin://")
+    id.starts_with("default:") || id.starts_with("local:cleanweb:") || url.starts_with("builtin://")
 }
 
 fn require_mutable_subscription(db: &Connection, id: &str) -> Result<(), String> {
@@ -1456,54 +1176,15 @@ mod tests {
     }
 
     #[test]
-    fn recommended_sources_have_valid_fields() {
+    fn recommended_sources_are_not_bundled() {
         let sources = get_recommended_rule_sources();
-        assert!(!sources.is_empty(), "推荐源列表不应为空");
-        let valid_categories = [
-            "ads",
-            "pornography",
-            "gambling",
-            "malware",
-            "custom",
-            "direct",
-            "routing",
-        ];
-        let valid_formats = ["hosts", "adblock", "domain-list", "ip-list", "clash"];
-        for src in &sources {
-            assert!(!src.name.is_empty(), "名称不应为空");
-            assert!(src.url.starts_with("http"), "URL 应为 HTTP(S): {}", src.url);
-            assert!(
-                valid_formats.contains(&src.format.as_str()),
-                "无效格式: {}",
-                src.format
-            );
-            assert!(
-                valid_categories.contains(&src.category.as_str()),
-                "无效分类: {}",
-                src.category
-            );
-            assert!(!src.description.is_empty(), "描述不应为空");
-        }
+        assert!(sources.is_empty(), "推荐源地址不应随 app 打包");
     }
 
     #[test]
-    fn seeds_known_default_rule_sources_once() {
+    fn does_not_seed_default_rule_sources() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cleanweb.db");
-        {
-            let state = AppState::open(&path).unwrap();
-            let db = state.db.lock().unwrap();
-            let count: i64 = db
-                .query_row(
-                    "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%' AND enabled=1 AND update_interval_hours=24",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 7);
-            assert!(delete_subscription_inner(&db, "default:blocklistproject:fraud").is_err());
-        }
-
         let state = AppState::open(&path).unwrap();
         let db = state.db.lock().unwrap();
         let count: i64 = db
@@ -1513,15 +1194,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 9, "default 内置规则必须始终存在");
-        let builtin_count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE url LIKE 'builtin://%' AND enabled=1 AND update_interval_hours IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(builtin_count, 3, "打包规则不应参与网络刷新");
+        assert_eq!(count, 0, "默认规则源不应随 app seed");
         let imported_count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%' OR subscription_id='local:cleanweb:entertainment-cdn'",
@@ -1529,51 +1202,29 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(imported_count > 0, "打包规则必须写入可执行规则表");
+        assert_eq!(imported_count, 0, "打包规则正文不应写入可执行规则表");
     }
 
     #[test]
-    fn default_sources_are_restored_and_forced_enabled() {
+    fn existing_default_sources_are_forced_enabled_without_url_restore() {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
         db.execute(
-            "UPDATE subscriptions SET enabled=0 WHERE id='default:stevenblack:porn'",
-            [],
-        )
-        .unwrap();
-        db.execute(
-            "UPDATE subscriptions SET url='https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/cncidr.txt',format='ip-list',category='custom' WHERE id='default:loyalsoldier:cncidr'",
-            [],
-        )
-        .unwrap();
-        db.execute(
-            "DELETE FROM settings WHERE key='builtin_rule_sources_v4_seeded'",
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('default:legacy:source','rule','历史内置源','https://example.test/legacy.txt','hosts','custom',0)",
             [],
         )
         .unwrap();
         seed_default_rule_subscriptions(&db).unwrap();
-        let enabled: i64 = db
+        let (url, enabled): (String, i64) = db
             .query_row(
-                "SELECT enabled FROM subscriptions WHERE id='default:stevenblack:porn'",
+                "SELECT url,enabled FROM subscriptions WHERE id='default:legacy:source'",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(enabled, 1, "内置规则必须恢复启用");
-        let (url, format, category): (String, String, String) = db
-            .query_row(
-                "SELECT url,format,category FROM subscriptions WHERE id='default:loyalsoldier:cncidr'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            url,
-            "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt"
-        );
-        assert_eq!(format, "clash");
-        assert_eq!(category, "direct");
-        assert!(delete_subscription_inner(&db, "default:stevenblack:porn").is_err());
+        assert_eq!(url, "https://example.test/legacy.txt");
+        assert!(delete_subscription_inner(&db, "default:legacy:source").is_err());
     }
 
     #[test]
@@ -1646,8 +1297,8 @@ mod tests {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
         db.execute(
-            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('legacy-builtin-url','rule','娱乐内容补充','builtin://cleanweb/entertainment-cdn','clash','entertainment',1)",
-            [],
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('legacy-builtin-url','rule','娱乐内容补充',?1,'clash','entertainment',1)",
+            params!["builtin://legacy/source"],
         )
         .unwrap();
 
@@ -1669,22 +1320,19 @@ mod tests {
     }
 
     #[test]
-    fn default_sources_are_restored_after_seed_marker_exists() {
+    fn deleted_default_sources_are_not_reseeded() {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
-        db.execute(
-            "DELETE FROM subscriptions WHERE id='default:stevenblack:porn'",
-            [],
-        )
-        .unwrap();
+        db.execute("DELETE FROM subscriptions WHERE id LIKE 'default:%'", [])
+            .unwrap();
         seed_default_rule_subscriptions(&db).unwrap();
-        let name: String = db
+        let count: i64 = db
             .query_row(
-                "SELECT name FROM subscriptions WHERE id='default:stevenblack:porn'",
+                "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(name, "内置规则 · 色情内容");
+        assert_eq!(count, 0);
     }
 }

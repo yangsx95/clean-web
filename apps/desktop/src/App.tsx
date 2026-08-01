@@ -615,7 +615,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
 
 function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
-  const isBuiltinSubscription = (item: backend.Subscription) => item.id.startsWith("default:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
+  const isBuiltinSubscription = (item: backend.Subscription) => item.id.startsWith("default:") || item.id.startsWith("local:cleanweb:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
   const builtinSubscriptions = subscriptions.filter(isBuiltinSubscription);
   const externalSubscriptions = subscriptions.filter((item) => !isBuiltinSubscription(item));
   const blockRules = parentRules.filter((item) => item.action === "block");

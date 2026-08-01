@@ -671,7 +671,7 @@ describe("management actions", () => {
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true},
-      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · 娱乐内容补充",url:"builtin://cleanweb/entertainment-cdn",format:"clash",category:"entertainment",enabled:true},
+      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · 娱乐内容补充",url:"https://example.test/cleanweb-entertainment-cdn.txt",format:"clash",category:"entertainment",enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
     render(<App />);

@@ -151,7 +151,7 @@ describe("browser preview persistence", () => {
         id: "local:cleanweb:entertainment-cdn",
         kind: "rule",
         name: "内置规则 · 娱乐内容补充",
-        url: "builtin://cleanweb/entertainment-cdn",
+        url: "https://example.test/cleanweb-entertainment-cdn.txt",
         format: "clash",
         category: "entertainment",
         enabled: true,

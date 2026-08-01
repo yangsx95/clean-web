@@ -11,7 +11,6 @@ use std::process::Command;
 #[cfg(not(target_os = "macos"))]
 use std::{fs::OpenOptions, process::Stdio};
 
-use cleanweb_subscriptions::{import_text, SubscriptionFormat};
 use flate2::read::GzDecoder;
 use reqwest::Url;
 use rusqlite::{params, OptionalExtension};
@@ -22,10 +21,6 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::{
-    builtin_rules::{
-        CLEANWEB_STRICT_SUPPLEMENT_ID, CLEANWEB_STRICT_SUPPLEMENT_TEXT,
-        CLEANWEB_STRICT_SUPPLEMENT_URL,
-    },
     platform::{self, NetworkConflicts},
     proxy_crypto::decrypt_proxy_payload,
     storage::AppState,
@@ -1231,12 +1226,6 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
     append_imported_rules(db, &enabled_categories, true, &mut result)?;
-    if enabled_categories
-        .get("strict_mode_enabled")
-        .is_some_and(|value| value == "true")
-    {
-        append_strict_mode_rules(&mut result);
-    }
     append_parent_rules(db, "action IN ('block','allow')", &mut result)?;
     if enabled_categories
         .get("category.entertainment")
@@ -1279,22 +1268,6 @@ fn append_parent_rules(
         }
     }
     Ok(())
-}
-
-fn append_strict_mode_rules(result: &mut Vec<Value>) {
-    let report = import_text(
-        SubscriptionFormat::Clash,
-        CLEANWEB_STRICT_SUPPLEMENT_TEXT,
-        CLEANWEB_STRICT_SUPPLEMENT_ID,
-        CLEANWEB_STRICT_SUPPLEMENT_URL,
-        "strict",
-    );
-    for imported in report.rules {
-        let kind = format!("{:?}", imported.rule.kind);
-        if let Some(rule) = mihomo_rule(&kind, &imported.rule.pattern, "REJECT") {
-            result.push(Value::String(rule));
-        }
-    }
 }
 
 fn append_entertainment_rules(result: &mut Vec<Value>) {
@@ -1396,6 +1369,13 @@ fn append_imported_rules(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
     for (kind, pattern, action, category) in rows {
+        if category == "strict"
+            && !settings
+                .get("strict_mode_enabled")
+                .is_some_and(|value| value == "true")
+        {
+            continue;
+        }
         if settings
             .get(&format!("category.{category}"))
             .is_some_and(|value| value == "false")
@@ -1956,10 +1936,17 @@ mod tests {
     #[test]
     fn strict_mode_adds_explicit_reject_rules_without_random_domain_heuristics() {
         let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('strict-source','rule','严格规则','https://example.test/strict.txt','clash','strict',1)",
+                [],
+            )
+            .unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('strict-source','strict-1','Suffix','strict.example','Block','strict',1)",[]).unwrap();
+        }
         let default_config = build_config(&state, "secret", true).unwrap();
-        assert!(!default_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
-        assert!(!default_config.contains("DOMAIN-SUFFIX,youtube.com,REJECT"));
-        assert!(!default_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
+        assert!(!default_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"));
         assert!(
             !default_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT")
         );
@@ -1973,11 +1960,7 @@ mod tests {
             .unwrap();
         }
         let strict_config = build_config(&state, "secret", true).unwrap();
-        assert!(strict_config.contains("DOMAIN-SUFFIX,youtube.com,REJECT"));
-        assert!(strict_config.contains("DOMAIN-KEYWORD,porn,REJECT"));
-        assert!(strict_config.contains("DOMAIN-KEYWORD,casino,REJECT"));
-        assert!(strict_config.contains("DOMAIN-KEYWORD,xvideo,REJECT"));
-        assert!(strict_config.contains("IP-CIDR,91.108.4.0/22,REJECT,no-resolve"));
+        assert!(strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"));
         assert!(
             !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
             "strict mode must not block broad random-looking domain labels by default"
