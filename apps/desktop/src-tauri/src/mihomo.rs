@@ -832,14 +832,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
-    let dns_routes = dns_route_addresses(&platform::system_dns_servers());
-    if !dns_routes.is_empty() {
-        insert(
-            &mut tun,
-            "route-address",
-            Value::Sequence(dns_routes.into_iter().map(Value::String).collect()),
-        );
-    }
     insert(
         &mut tun,
         "dns-hijack",
@@ -1081,18 +1073,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     serde_yaml::to_string(&root).map_err(error)
 }
 
-fn dns_route_addresses(servers: &[String]) -> Vec<String> {
-    servers
-        .iter()
-        .filter_map(|server| {
-            server
-                .parse::<std::net::IpAddr>()
-                .ok()
-                .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
-        })
-        .collect()
-}
-
 fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
@@ -1119,7 +1099,64 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
         &mut result,
     )?;
     append_parent_rules(db, "action IN ('proxy','system_route')", &mut result)?;
+    append_safe_search_target_routes(db, &enabled_categories, &mut result)?;
     Ok(result)
+}
+
+fn append_safe_search_target_routes(
+    db: &rusqlite::Connection,
+    settings: &std::collections::HashMap<String, String>,
+    result: &mut Vec<Value>,
+) -> Result<(), String> {
+    if !settings
+        .get("safe_search_enabled")
+        .is_some_and(|value| value == "true")
+    {
+        return Ok(());
+    }
+    let mut statement = db
+        .prepare(
+            "SELECT DISTINCT m.target FROM safe_search_mappings m
+             JOIN subscriptions s ON s.id=m.subscription_id
+             WHERE s.enabled=1
+             ORDER BY m.target",
+        )
+        .map_err(error)?;
+    let targets = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    let mut emitted = result
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    for target in targets {
+        let target = target.trim().trim_end_matches('.').to_ascii_lowercase();
+        if target.is_empty() {
+            continue;
+        }
+        let Some(rule) = safe_search_target_route(&target) else {
+            continue;
+        };
+        if emitted.insert(rule.clone()) {
+            result.push(Value::String(rule));
+        }
+    }
+    Ok(())
+}
+
+fn safe_search_target_route(target: &str) -> Option<String> {
+    if let Ok(address) = target.parse::<std::net::IpAddr>() {
+        let cidr = if address.is_ipv4() { 32 } else { 128 };
+        return Some(mihomo_rule(
+            if address.is_ipv4() { "Ip" } else { "Cidr" },
+            &format!("{address}/{cidr}"),
+            "CleanWeb",
+        )?);
+    }
+    mihomo_rule("Exact", target, "CleanWeb")
 }
 
 fn append_parent_rules(
@@ -1585,6 +1622,9 @@ mod tests {
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r2','1','Suffix','bad.example','Block','pornography',1)",[]).unwrap();
             db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('direct-cn','rule','cn','https://x/cn.txt',1)",[]).unwrap();
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('direct-cn','1','Cidr','47.103.0.0/16','Allow','direct',1)",[]).unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,format,enabled) VALUES('safe','rule','safe','https://x/safe.yml','safe-search',1)",[]).unwrap();
+            db.execute("INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('safe','www.google.com','forcesafesearch.google.com',1)",[]).unwrap();
+            db.execute("INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('safe','forcesafesearch.google.com','216.239.38.120',2)",[]).unwrap();
             db.execute(
                 "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('parent-block','block','suffix','baidu.com','custom')",
                 [],
@@ -1640,6 +1680,12 @@ mod tests {
         assert!(
             yaml.get("mixed-port").is_none(),
             "TUN 模式不得向其他应用暴露本地代理端口"
+        );
+        assert!(
+            yaml.get("tun")
+                .and_then(|tun| tun.get("route-address"))
+                .is_none(),
+            "redir-host 模式必须让 auto-route 接管默认路由，不能用 route-address 限缩到 DNS 地址"
         );
         assert_eq!(
             yaml.get("dns")
@@ -1700,19 +1746,17 @@ mod tests {
             cn_direct < fallback_match,
             "国内公网 IP 直连规则必须先于代理兜底"
         );
-        let route_addresses = yaml
-            .get("tun")
-            .and_then(|tun| tun.get("route-address"))
-            .and_then(Value::as_sequence)
-            .cloned()
-            .unwrap_or_default();
         assert!(
-            !route_addresses.contains(&Value::String("198.18.0.0/16".into())),
-            "redir-host 模式不得再路由 fake-ip 地址池"
+            config_rules.contains(&Value::String(
+                "DOMAIN,forcesafesearch.google.com,CleanWeb".into()
+            )),
+            "SafeSearch 订阅里的目标域名必须走代理，避免安全搜索 CNAME 在受限网络中直连失败"
         );
         assert!(
-            !route_addresses.contains(&Value::String("216.239.38.120/32".into())),
-            "SafeSearch is enforced by browser policy, not Mihomo host routes"
+            config_rules.contains(&Value::String(
+                "IP-CIDR,216.239.38.120/32,CleanWeb,no-resolve".into()
+            )),
+            "SafeSearch 订阅里的目标 IP 必须走代理，避免 redir-host 解析后的安全搜索 VIP 直连失败"
         );
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
@@ -1950,17 +1994,6 @@ mod tests {
 
         fs::write(&marker, format!("42\n{}\n", config_hash(config))).unwrap();
         assert!(active_config_matches(&marker, Some(42), config));
-    }
-
-    #[test]
-    fn adds_exact_tun_routes_for_lan_dns_servers() {
-        let routes =
-            dns_route_addresses(&["10.195.85.120".into(), "240e:479:4e90:3e59::19".into()]);
-
-        assert!(!routes.contains(&"0.0.0.0/1".into()));
-        assert!(!routes.contains(&"128.0.0.0/1".into()));
-        assert!(routes.contains(&"10.195.85.120/32".into()));
-        assert!(routes.contains(&"240e:479:4e90:3e59::19/128".into()));
     }
 
     #[test]
