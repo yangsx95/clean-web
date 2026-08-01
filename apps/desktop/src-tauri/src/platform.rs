@@ -71,6 +71,29 @@ pub fn system_dns_servers() -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub fn default_route_interface() -> Option<String> {
+    Command::new("/sbin/route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            parse_macos_default_route_interface(&String::from_utf8_lossy(&output.stdout))
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_default_route_interface(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("interface:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn parse_macos_dns_servers(output: &str) -> Vec<String> {
     let mut values = Vec::new();
     for line in output.lines() {
@@ -981,6 +1004,16 @@ mod tests {
         assert_eq!(
             parse_macos_dns_servers(output),
             vec!["10.195.85.120", "240e:479::19"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_default_route_interface() {
+        let output = "   route to: default\n      gateway: 10.75.80.184\n    interface: en0\n";
+        assert_eq!(
+            parse_macos_default_route_interface(output),
+            Some("en0".into())
         );
     }
 

@@ -9,6 +9,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+#[cfg(target_os = "macos")]
+use std::{ffi::CString, os::fd::AsRawFd};
 
 use cleanweb_rules::{
     DomainDecision, DomainRuleIndex, DomainRuleInput, DomainRuleTier, MatcherKind,
@@ -21,6 +23,8 @@ use hickory_proto::rr::{
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "macos")]
+use crate::platform;
 use crate::storage::AppState;
 
 pub(crate) const CLEANWEB_DNS_LISTEN: &str = "127.0.0.1:19053";
@@ -199,7 +203,8 @@ fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, st
     let mut response = [0_u8; UDP_PACKET_SIZE];
     let mut last_error = None;
     for upstream in upstreams {
-        let upstream_socket = UdpSocket::bind("127.0.0.1:0")?;
+        let upstream_socket = UdpSocket::bind("0.0.0.0:0")?;
+        bind_upstream_socket_to_default_interface(&upstream_socket)?;
         upstream_socket.set_read_timeout(Some(Duration::from_secs(2)))?;
         upstream_socket.send_to(packet, upstream)?;
         match upstream_socket.recv_from(&mut response) {
@@ -208,6 +213,39 @@ fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, st
         }
     }
     Err(last_error.unwrap_or_else(|| std::io::Error::other("DNS upstream unavailable")))
+}
+
+#[cfg(target_os = "macos")]
+fn bind_upstream_socket_to_default_interface(socket: &UdpSocket) -> Result<(), std::io::Error> {
+    let Some(interface) = platform::default_route_interface() else {
+        return Ok(());
+    };
+    let interface = CString::new(interface)
+        .map_err(|_| std::io::Error::other("default interface name is invalid"))?;
+    let index = unsafe { libc::if_nametoindex(interface.as_ptr()) };
+    if index == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let index = index as libc::c_int;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_BOUND_IF,
+            (&index as *const libc::c_int).cast(),
+            std::mem::size_of_val(&index) as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bind_upstream_socket_to_default_interface(_socket: &UdpSocket) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 fn build_dns_filter_config(db: &Connection) -> Result<DnsFilterConfig, String> {

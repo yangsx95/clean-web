@@ -898,16 +898,19 @@ pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogSt
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.query_row(
-        "SELECT
+        "WITH cutoff AS (
+           SELECT CAST(strftime('%s','now','localtime','start of day') AS INTEGER) * 1000 AS today_ms
+         )
+         SELECT
            COALESCE(SUM(CASE WHEN decision_code=1 THEN repeat_count ELSE 0 END),0),
            COALESCE(SUM(CASE WHEN decision_code=0 THEN repeat_count ELSE 0 END),0),
            COALESCE(SUM(CASE WHEN decision_code=2 THEN repeat_count ELSE 0 END),0),
            COALESCE(SUM(repeat_count),0),
-           COALESCE(SUM(CASE WHEN decision_code=1 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=0 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=2 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0)
-         FROM access_logs",
+           COALESCE(SUM(CASE WHEN decision_code=1 AND observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=0 AND observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=2 AND observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0)
+         FROM access_logs, cutoff",
         [],
         |row| {
             Ok(AccessLogStats {
