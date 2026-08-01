@@ -1225,7 +1225,14 @@ fn safe_search_route_addresses(mappings: &[SafeSearchMapping]) -> Vec<String> {
 fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     let enabled_categories = settings_map(db)?;
     let mut result = Vec::new();
-    append_imported_rules(db, &enabled_categories, true, &mut result)?;
+    let mut emitted_imported_rules = std::collections::HashSet::new();
+    append_imported_rules(
+        db,
+        &enabled_categories,
+        true,
+        &mut emitted_imported_rules,
+        &mut result,
+    )?;
     append_parent_rules(db, "action IN ('block','allow')", &mut result)?;
     if enabled_categories
         .get("category.entertainment")
@@ -1233,7 +1240,13 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
     {
         append_entertainment_rules(&mut result);
     }
-    append_imported_rules(db, &enabled_categories, false, &mut result)?;
+    append_imported_rules(
+        db,
+        &enabled_categories,
+        false,
+        &mut emitted_imported_rules,
+        &mut result,
+    )?;
     append_parent_rules(db, "action IN ('proxy','system_route')", &mut result)?;
     Ok(result)
 }
@@ -1347,6 +1360,7 @@ fn append_imported_rules(
     db: &rusqlite::Connection,
     settings: &std::collections::HashMap<String, String>,
     security_only: bool,
+    emitted: &mut std::collections::HashSet<String>,
     result: &mut Vec<Value>,
 ) -> Result<(), String> {
     let comparator = if security_only {
@@ -1388,7 +1402,9 @@ fn append_imported_rules(
             _ => "REJECT",
         };
         if let Some(rule) = mihomo_rule(&kind, &pattern, target) {
-            result.push(Value::String(rule));
+            if emitted.insert(rule.clone()) {
+                result.push(Value::String(rule));
+            }
         }
     }
     Ok(())
@@ -1762,6 +1778,8 @@ mod tests {
             let db = state.db.lock().unwrap();
             db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('r','rule','r','https://x',1)",[]).unwrap();
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r','1','Suffix','bad.example','Block','pornography',1)",[]).unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('r2','rule','r2','https://x/2',1)",[]).unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('r2','1','Suffix','bad.example','Block','pornography',1)",[]).unwrap();
             db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('direct-cn','rule','cn','https://x/cn.txt',1)",[]).unwrap();
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('direct-cn','1','Cidr','47.103.0.0/16','Allow','direct',1)",[]).unwrap();
             db.execute(
@@ -1780,6 +1798,10 @@ mod tests {
         let config = build_config(&state, "secret", true).unwrap();
         assert!(config.contains("enhanced-mode: fake-ip"));
         assert!(config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
+        assert_eq!(
+            config.matches("DOMAIN-SUFFIX,bad.example,REJECT").count(),
+            1
+        );
         let parent_block = config.find("DOMAIN-SUFFIX,baidu.com,REJECT").unwrap();
         let built_in_direct = config.find("DOMAIN-SUFFIX,baidu.com,DIRECT").unwrap();
         assert!(
