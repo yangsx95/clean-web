@@ -5,6 +5,12 @@ default_rule_sources:
     format: hosts
     category: pornography
     update_interval_hours: 24
+  - id: default:blocklistproject:porn
+    name: 内置规则 · 成人站点扩展
+    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
+    format: domain-list
+    category: pornography
+    update_interval_hours: 24
   - id: default:stevenblack:gambling
     name: 内置规则 · 赌博网站
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
@@ -101,6 +107,11 @@ recommended_rule_sources:
     format: hosts
     category: pornography
     description: Steven Black 色情分类 hosts 列表
+  - name: 成人站点扩展
+    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
+    format: domain-list
+    category: pornography
+    description: BlocklistProject 维护的大体量成人内容域名列表
   - name: 恶意软件域名
     url: https://urlhaus.abuse.ch/downloads/hostfile/
     format: hosts
