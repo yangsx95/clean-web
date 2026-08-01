@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{mihomo::controller_secret, platform, storage::AppState};
+use crate::{
+    mihomo::{controller_secret, mihomo_data_plane_failed, recover_data_plane_failure},
+    platform,
+    storage::AppState,
+};
 
 const CONTROLLER_CONNECTIONS: &str = "http://127.0.0.1:19090/connections";
 const CONTROLLER_LOGS: &str = "http://127.0.0.1:19090/logs";
@@ -124,14 +128,14 @@ pub fn start_access_log_collector(app: AppHandle) {
             .unwrap_or_else(|_| reqwest::Client::new());
         loop {
             let state = app.state::<AppState>();
-            if !setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
-                tokio_sleep(Duration::from_secs(30)).await;
-                continue;
-            }
+            let access_logging_enabled =
+                setting_bool(&state, "access_logging_enabled").unwrap_or(false);
             let secret = match controller_secret(&state) {
                 Ok(value) => value,
                 Err(_) => {
-                    sync_mihomo_log_files_and_emit(&app, &state);
+                    if access_logging_enabled {
+                        sync_mihomo_log_files_and_emit(&app, &state);
+                    }
                     tokio_sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -145,15 +149,19 @@ pub fn start_access_log_collector(app: AppHandle) {
             {
                 Ok(response) if response.status().is_success() => response,
                 _ => {
-                    sync_mihomo_log_files_and_emit(&app, &state);
+                    if access_logging_enabled {
+                        sync_mihomo_log_files_and_emit(&app, &state);
+                    }
                     tokio_sleep(Duration::from_secs(5)).await;
                     continue;
                 }
             };
-            let _ = mark_mihomo_log_files_synced_to_end(&state);
+            if access_logging_enabled {
+                let _ = mark_mihomo_log_files_synced_to_end(&state);
+            }
             let mut buffer = String::new();
             let mut last_file_sync = Instant::now();
-            while let Ok(Some(chunk)) = response.chunk().await {
+            'stream: while let Ok(Some(chunk)) = response.chunk().await {
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
                 while let Some(index) = buffer.find('\n') {
                     let line = buffer[..index].trim().to_owned();
@@ -161,19 +169,31 @@ pub fn start_access_log_collector(app: AppHandle) {
                     if line.is_empty() {
                         continue;
                     }
+                    if mihomo_data_plane_failed(&line) {
+                        recover_data_plane_failure(app.clone());
+                        break 'stream;
+                    }
                     let state = app.state::<AppState>();
-                    if insert_mihomo_log_line(&state, &line).unwrap_or(0) > 0 {
+                    let access_logging_enabled =
+                        setting_bool(&state, "access_logging_enabled").unwrap_or(false);
+                    if access_logging_enabled
+                        && insert_mihomo_log_line(&state, &line).unwrap_or(0) > 0
+                    {
                         let _ = app.emit(ACCESS_LOGS_UPDATED_EVENT, ());
                     }
                 }
                 if last_file_sync.elapsed() >= LOG_FILE_SYNC_INTERVAL {
                     let state = app.state::<AppState>();
-                    sync_mihomo_log_files_and_emit(&app, &state);
+                    if setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
+                        sync_mihomo_log_files_and_emit(&app, &state);
+                    }
                     last_file_sync = Instant::now();
                 }
             }
             let state = app.state::<AppState>();
-            sync_mihomo_log_files_and_emit(&app, &state);
+            if setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
+                sync_mihomo_log_files_and_emit(&app, &state);
+            }
             tokio_sleep(Duration::from_secs(2)).await;
         }
     });

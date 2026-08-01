@@ -1,7 +1,6 @@
 use std::{
     fs::{self, File},
-    io::{self, Read, Write},
-    net::{TcpStream, ToSocketAddrs},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
     time::Duration,
@@ -235,11 +234,11 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
                 last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into())
             );
         }
-        if tun_startup_ready(&log) || mihomo_controller_ready(&secret) {
+        if tun_startup_ready(&log) {
             break;
         }
     }
-    if !tun_startup_ready(&log) && !mihomo_controller_ready(&secret) {
+    if !tun_startup_ready(&log) {
         platform::kill_process(pid);
         let _ = fs::remove_file(runtime.join("mihomo.pid"));
         return Err(
@@ -292,22 +291,17 @@ pub async fn reload_protection(
 async fn reload_protection_inner(
     app: &AppHandle,
     state: &AppState,
-    status: CoreStatus,
+    _status: CoreStatus,
 ) -> Result<CoreStatus, String> {
-    // 只能比较当前运行实例确认加载过的配置。用户目录中的 config.yaml 可能已经
-    // 被新版本覆盖，而 root 内核仍运行旧配置；仅比较该文件会错误跳过安全搜索刷新。
+    // Mihomo 控制器可用不代表系统 TUN fd 仍然健康。热更新后曾出现
+    // "batch read packet: bad file descriptor"：代理测速和控制 API 正常，
+    // 但浏览器 fake-ip/TUN 流量全部失败。重载运行配置时保守重启内核，
+    // 重新创建 TUN 设备和路由，避免把坏数据面误判为正常。
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
     let secret = controller_secret(state)?;
     let new_config = build_config(state, &secret, true)?;
-    if active_config_matches(&runtime.join("active-config"), status.pid, &new_config)
-        && running_tun_routes_match(&secret, &new_config)
-            .await
-            .unwrap_or(false)
-    {
-        return Ok(status);
-    }
     let config_path = runtime.join("config.yaml");
     atomic_write(&config_path, new_config.as_bytes()).map_err(error)?;
     let validation = Command::new(binary)
@@ -323,68 +317,10 @@ async fn reload_protection_inner(
             String::from_utf8_lossy(&validation.stderr).trim()
         ));
     }
-
-    let mut url = Url::parse(&format!("http://{CONTROLLER}/configs")).map_err(error)?;
-    url.query_pairs_mut().append_pair("force", "true");
-    let response = reqwest::Client::new()
-        .put(url)
-        .bearer_auth(&secret)
-        .json(&serde_json::json!({ "path": config_path }))
-        .send()
-        .await
-        .map_err(|value| format!("无法连接 Mihomo 热更新接口：{value}"))?;
-    if !response.status().is_success() {
-        let status_code = response.status();
-        let detail = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Mihomo 热更新失败（HTTP {status_code}）：{detail}。如果这是升级前启动的内核，请关闭保护后重新开启一次。"
-        ));
-    }
-    if !running_tun_routes_match(&secret, &new_config)
-        .await
-        .unwrap_or(false)
-    {
-        return start_inner(app, state);
-    }
-    if let Some(pid) = status.pid {
-        atomic_write(
-            &runtime.join("active-config"),
-            format!("{pid}\n{}\n", config_hash(&new_config)).as_bytes(),
-        )
-        .map_err(error)?;
-    }
-    core_status(state)
+    start_inner(app, state)
 }
 
-async fn running_tun_routes_match(secret: &str, config: &str) -> Result<bool, String> {
-    let expected = config_tun_route_addresses(config)?;
-    let response = reqwest::Client::new()
-        .get(format!("http://{CONTROLLER}/configs"))
-        .bearer_auth(secret)
-        .send()
-        .await
-        .map_err(error)?
-        .error_for_status()
-        .map_err(error)?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(error)?;
-    let mut running: Vec<String> = response
-        .get("tun")
-        .and_then(|tun| tun.get("route-address"))
-        .and_then(serde_json::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    running.sort();
-    running.dedup();
-    Ok(running == expected)
-}
-
+#[cfg(test)]
 fn config_tun_route_addresses(config: &str) -> Result<Vec<String>, String> {
     let value: Value = serde_yaml::from_str(config).map_err(error)?;
     let mut routes: Vec<String> = value
@@ -407,6 +343,7 @@ fn config_hash(config: &str) -> String {
     format!("{:x}", Sha256::digest(config.as_bytes()))
 }
 
+#[cfg(test)]
 fn active_config_matches(path: &Path, running_pid: Option<u32>, config: &str) -> bool {
     let Some(running_pid) = running_pid else {
         return false;
@@ -1606,32 +1543,40 @@ fn tun_startup_failed(log: &str) -> bool {
     let log = log.to_ascii_lowercase();
     log.contains("start tun listening error")
         || log.contains("configure tun interface") && log.contains("operation not permitted")
+        || log.contains("batch read packet: bad file descriptor")
 }
 
-fn mihomo_controller_ready(secret: &str) -> bool {
-    let Ok(mut addrs) = CONTROLLER.to_socket_addrs() else {
-        return false;
-    };
-    let Some(addr) = addrs.next() else {
-        return false;
-    };
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(100)) else {
-        return false;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-    let request = format!(
-        "GET /configs HTTP/1.1\r\nHost: {CONTROLLER}\r\nAuthorization: Bearer {secret}\r\nConnection: close\r\n\r\n"
-    );
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
-    }
-    let mut response = [0_u8; 64];
-    let Ok(read) = stream.read(&mut response) else {
-        return false;
-    };
-    response[..read].starts_with(b"HTTP/1.1 200") || response[..read].starts_with(b"HTTP/1.0 200")
+pub(crate) fn mihomo_data_plane_failed(log: &str) -> bool {
+    log.to_ascii_lowercase()
+        .contains("batch read packet: bad file descriptor")
 }
+
+pub(crate) fn recover_data_plane_failure(app: AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let protection_enabled = {
+            let Ok(db) = state.db.lock() else {
+                return;
+            };
+            setting_bool(&db, "protection_enabled").unwrap_or(false)
+        };
+        if !protection_enabled {
+            return;
+        }
+        if state
+            .reload_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        if let Err(reason) = start_inner(&app, &state) {
+            eprintln!("CleanWeb failed to recover Mihomo data plane: {reason}");
+        }
+        state.reload_in_progress.store(false, Ordering::Release);
+    });
+}
+
 fn error(value: impl std::fmt::Display) -> String {
     value.to_string()
 }
@@ -2021,6 +1966,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_live_core_when_tun_fd_breaks_after_startup() {
+        let log = r#"{"type":"error","payload":"batch read packet: bad file descriptor"}"#;
+        assert!(!tun_startup_ready(log));
+        assert!(tun_startup_failed(log));
+        assert!(mihomo_data_plane_failed(log));
+    }
+
+    #[test]
     fn accepts_only_an_explicit_tun_ready_log() {
         // 旧版 mihomo 日志格式
         assert!(tun_startup_ready(
@@ -2032,6 +1985,9 @@ mod tests {
         ));
         assert!(!tun_startup_failed(
             "level=info msg=\"Tun[0] proxy listening at: utun5\""
+        ));
+        assert!(!mihomo_data_plane_failed(
+            r#"time="2026-08-01T17:58:02+08:00" level=info msg="[TCP] 198.18.0.1:54135 --> example.com:443 match Match() using DIRECT""#
         ));
     }
 
