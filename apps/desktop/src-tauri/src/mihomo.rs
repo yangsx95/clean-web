@@ -1031,11 +1031,11 @@ fn append_safe_search_target_routes(
 fn safe_search_target_route(target: &str) -> Option<String> {
     if let Ok(address) = target.parse::<std::net::IpAddr>() {
         let cidr = if address.is_ipv4() { 32 } else { 128 };
-        return Some(mihomo_rule(
+        return mihomo_rule(
             if address.is_ipv4() { "Ip" } else { "Cidr" },
             &format!("{address}/{cidr}"),
             "CleanWeb",
-        )?);
+        );
     }
     mihomo_rule("Exact", target, "CleanWeb")
 }
