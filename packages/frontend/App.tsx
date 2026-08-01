@@ -767,7 +767,7 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
           <div>
             <b>{group.name}</b>
             <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `由 CleanWeb 维护，合并 ${group.sources.length} 个开源规则来源 · ${groupUpdateInterval(group.sources)}`}</small>
-            <button type="button" className="builtin-source-toggle" aria-expanded={Boolean(expandedBuiltinSources[group.id])} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}>{expandedBuiltinSources[group.id]?<ChevronDown size={14}/>:<ChevronRight size={14}/>}来源 <span>{group.sources.length}</span></button>
+            <button type="button" className="builtin-source-toggle" aria-label={`${expandedBuiltinSources[group.id]?"收起":"展开"}来源 ${group.sources.length}`} aria-expanded={Boolean(expandedBuiltinSources[group.id])} title={`${group.sources.length} 个规则来源`} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}><Database size={13}/><span>{group.sources.length}</span>{expandedBuiltinSources[group.id]?<ChevronDown size={14}/>:<ChevronRight size={14}/>}</button>
           </div>
           <span>{groupFormats(group.sources)}</span>
           <div className="builtin-rule-state">

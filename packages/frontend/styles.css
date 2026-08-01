@@ -2015,16 +2015,18 @@ h1 {
 .builtin-source-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 5px;
   margin-top: 8px;
-  padding: 4px 7px;
+  min-width: 48px;
+  height: 26px;
+  padding: 0 6px;
   border: 1px solid var(--cw-line);
-  border-radius: 7px;
+  border-radius: var(--radius-full);
   background: #fff;
-  color: var(--cw-muted);
-  font-size: 11px;
-  line-height: 15px;
+  color: var(--color-text-secondary);
   font-weight: 800;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
 }
 
 .builtin-source-toggle:hover {
@@ -2034,8 +2036,22 @@ h1 {
 }
 
 .builtin-source-toggle span {
-  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: #f3f4f6;
+  color: var(--color-text);
   font-size: 10px;
+  line-height: 18px;
+}
+
+.builtin-source-toggle:hover span {
+  background: #fff;
+  color: var(--color-primary);
 }
 
 .builtin-source-list {
