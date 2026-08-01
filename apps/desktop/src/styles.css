@@ -1972,6 +1972,68 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.builtin-source-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px 7px;
+  border: 1px solid var(--cw-line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--cw-muted);
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 800;
+}
+
+.builtin-source-toggle:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.builtin-source-toggle span {
+  color: inherit;
+  font-size: 10px;
+}
+
+.builtin-source-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--cw-line);
+  border-radius: 8px;
+  background: #f7f9f7;
+}
+
+.builtin-source-item {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.builtin-source-item b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cw-ink);
+  font-size: 12px;
+}
+
+.builtin-source-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--cw-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .builtin-rule-progress {
   grid-column: 1 / -1;
   display: grid;
@@ -3007,4 +3069,5 @@ header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--
   .cw-access-row .access-meta { display: none; }
   .subscription-row { grid-template-columns: minmax(0, 1fr) 50px; }
   .subscription-row > span, .subscription-row .row-actions { grid-column: 1 / -1; }
+  .builtin-source-item { grid-template-columns: 1fr; gap: 3px; }
 }

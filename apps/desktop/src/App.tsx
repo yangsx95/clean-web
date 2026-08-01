@@ -645,6 +645,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
 
 function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
+  const [expandedBuiltinSources,setExpandedBuiltinSources]=useState<Record<string,boolean>>({});
   const isBuiltinSubscription = (item: backend.Subscription) => item.id.startsWith("default:") || item.id.startsWith("local:cleanweb:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
   const builtinSubscriptions = subscriptions.filter(isBuiltinSubscription);
   const externalSubscriptions = subscriptions.filter((item) => !isBuiltinSubscription(item));
@@ -658,21 +659,57 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     if (Number.isNaN(date.getTime())) return value;
     return new Intl.DateTimeFormat("zh-CN", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }).format(date);
   };
-  const builtinStatus = (item: backend.Subscription) => {
-    const progress = refreshProgress[item.id];
+  const builtinCategoryName = (category: string) => ({
+    pornography:"内置规则 · 色情内容",
+    gambling:"内置规则 · 赌博网站",
+    drugs:"内置规则 · 毒品网站",
+    fraud:"内置规则 · 诈骗网站",
+    phishing:"内置规则 · 钓鱼与 DNS 防绕过",
+    malware:"内置规则 · 恶意软件",
+    entertainment:"内置规则 · 娱乐内容",
+    direct:"内置路由 · 中国 IP 直连",
+    strict:"内置规则 · 严格模式",
+  }[category] ?? "内置规则 · 自定义");
+  const builtinCategoryOrder = ["pornography","gambling","drugs","fraud","phishing","malware","entertainment","direct","strict"];
+  const builtinGroups = Array.from(builtinSubscriptions.reduce((groups,item)=>{
+    const category = item.category ?? item.id;
+    const existing = groups.get(category) ?? { id:`builtin:${category}`, category, name:builtinCategoryName(category), sources:[] as backend.Subscription[] };
+    existing.sources.push(item);
+    groups.set(category,existing);
+    return groups;
+  },new Map<string,{id:string;category:string;name:string;sources:backend.Subscription[]}>()).values()).sort((a,b)=>{
+    const ai = builtinCategoryOrder.indexOf(a.category);
+    const bi = builtinCategoryOrder.indexOf(b.category);
+    return (ai<0?999:ai)-(bi<0?999:bi)||a.name.localeCompare(b.name,"zh-CN");
+  });
+  const groupFormats = (sources: backend.Subscription[]) => Array.from(new Set(sources.map(subscriptionFormat))).join(" / ");
+  const groupUpdateInterval = (sources: backend.Subscription[]) => {
+    const intervals = Array.from(new Set(sources.map(updateInterval)));
+    return intervals.length === 1 ? intervals[0] : "多周期更新";
+  };
+  const groupLastUpdatedAt = (sources: backend.Subscription[]) => {
+    const values = sources.map(source=>source.lastUpdatedAt).filter(Boolean).sort();
+    return values[values.length-1];
+  };
+  const groupActiveProgress = (sources: backend.Subscription[]) => sources.map(source=>refreshProgress[source.id]).find(progress=>progress&&progress.phase!=="complete");
+  const builtinStatus = (group: {sources:backend.Subscription[]}) => {
+    const progress = groupActiveProgress(group.sources);
     if (progress?.phase === "failed") return { label:"更新失败", className:"failed", detail:progress.message };
-    if (item.lastError) return { label:"更新失败", className:"failed", detail:item.lastError };
+    const failed = group.sources.filter(source=>source.lastError);
+    if (failed.length > 0) return { label:"更新失败", className:"failed", detail:failed.length === 1 ? failed[0].lastError! : `${failed.length} 个来源更新失败` };
     if (progress && progress.phase !== "complete") return { label:progress.phase === "applying" ? "应用中" : "更新中", className:"updating", detail:progress.message };
-    if (!item.enabled) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
-    if ((item.importedRuleCount ?? 0) > 0) return { label:"已同步", className:"ready", detail:`${item.importedRuleCount} 条规则 · ${formatUpdatedAt(item.lastUpdatedAt)}` };
-    if (item.lastUpdatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(item.lastUpdatedAt)} 更新` };
+    if (group.sources.every(source=>!source.enabled)) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
+    const importedRuleCount = group.sources.reduce((sum,source)=>sum+(source.importedRuleCount??0),0);
+    const updatedAt = groupLastUpdatedAt(group.sources);
+    if (importedRuleCount > 0) return { label:"已同步", className:"ready", detail:`${importedRuleCount} 条规则 · ${formatUpdatedAt(updatedAt)}` };
+    if (updatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(updatedAt)} 更新` };
     return { label:"待同步", className:"pending", detail:"点击刷新后下载并应用" };
   };
-  const builtinProgress = (item: backend.Subscription): SubscriptionProgress => {
-    const progress = refreshProgress[item.id];
+  const builtinProgress = (group: {sources:backend.Subscription[]}): SubscriptionProgress => {
+    const progress = groupActiveProgress(group.sources);
     if (progress) return progress;
-    if (item.lastError) return { phase:"failed", percent:100, message:"更新失败，保留上次有效规则" };
-    if ((item.importedRuleCount ?? 0) > 0 || item.lastUpdatedAt) return { phase:"complete", percent:100, message:"已下载并应用" };
+    if (group.sources.some(source=>source.lastError)) return { phase:"failed", percent:100, message:"更新失败，保留上次有效规则" };
+    if (group.sources.some(source=>(source.importedRuleCount??0)>0 || source.lastUpdatedAt)) return { phase:"complete", percent:100, message:"已下载并应用" };
     return { phase:"queued", percent:0, message:"尚未下载" };
   };
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
@@ -685,7 +722,7 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     <section className="rules-tabs" role="tablist" aria-label="规则管理分类">
       <button role="tab" aria-selected={tab==="block"} className={tab==="block"?"active":""} onClick={()=>setTab("block")}>访问拦截 <span>{blockRules.length}</span></button>
       <button role="tab" aria-selected={tab==="route"} className={tab==="route"?"active":""} onClick={()=>setTab("route")}>路由设置 <span>{routeRules.length}</span></button>
-      <button role="tab" aria-selected={tab==="builtin"} className={tab==="builtin"?"active":""} onClick={()=>setTab("builtin")}>内置规则 <span>{builtinSubscriptions.length}</span></button>
+      <button role="tab" aria-selected={tab==="builtin"} className={tab==="builtin"?"active":""} onClick={()=>setTab("builtin")}>内置规则 <span>{builtinGroups.length}</span></button>
       <button role="tab" aria-selected={tab==="external"} className={tab==="external"?"active":""} onClick={()=>setTab("external")}>外部订阅 <span>{externalSubscriptions.length}</span></button>
     </section>
     {tab==="block"&&<><section className="toolbar"><div><h2>访问拦截</h2><p>手动阻止指定域名、关键词、IP 或网段，优先于普通内容和路由规则。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("block")}><Plus size={16}/>添加拦截</button></section>
@@ -695,25 +732,30 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
-      {builtinSubscriptions.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
-      {builtinSubscriptions.map((item) => {
-        const status = builtinStatus(item);
-        const progress = builtinProgress(item);
-        return <div className="table-row builtin-rule-row" key={item.id}>
+      {builtinGroups.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
+      {builtinGroups.map((group) => {
+        const status = builtinStatus(group);
+        const progress = builtinProgress(group);
+        const rowBusy = group.sources.some(source=>isBusy(busyScope.subscription(source.id))||refreshingId===source.id);
+        return <div className="table-row builtin-rule-row" key={group.id}>
           <div>
-            <b>{item.name}</b>
-            <small className={item.lastError ? "error-text" : ""}>{item.lastError ?? `由 CleanWeb 维护，合并开源规则来源 · ${updateInterval(item)}`}</small>
+            <b>{group.name}</b>
+            <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `由 CleanWeb 维护，合并 ${group.sources.length} 个开源规则来源 · ${groupUpdateInterval(group.sources)}`}</small>
+            <button type="button" className="builtin-source-toggle" aria-expanded={Boolean(expandedBuiltinSources[group.id])} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}>{expandedBuiltinSources[group.id]?<ChevronDown size={14}/>:<ChevronRight size={14}/>}来源 <span>{group.sources.length}</span></button>
           </div>
-          <span>{subscriptionFormat(item)}</span>
+          <span>{groupFormats(group.sources)}</span>
           <div className="builtin-rule-state">
             <strong className={status.className}>{status.label}</strong>
             <small>{status.detail}</small>
           </div>
-          <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={isBusy(busyScope.subscription(item.id))||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button></div>
-          <div className={`builtin-rule-progress ${progress.phase}`} aria-label={`${item.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
+          <div className="row-actions"><button className="row-action" aria-label={`更新${group.name}`} disabled={rowBusy} onClick={()=>void group.sources.reduce((chain,source)=>chain.then(()=>onRefresh(source.id)),Promise.resolve())}><RefreshCw size={15}/></button></div>
+          <div className={`builtin-rule-progress ${progress.phase}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
             <div><span style={{width:`${progress.percent}%`}}/></div>
             <small>{progress.message}</small>
           </div>
+          {expandedBuiltinSources[group.id]&&<div className="builtin-source-list">
+            {group.sources.map(source=><div className="builtin-source-item" key={source.id}><b>{source.name}</b><span>{source.url}</span></div>)}
+          </div>}
         </div>;
       })}
     </section></>}

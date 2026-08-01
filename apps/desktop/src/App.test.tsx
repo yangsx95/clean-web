@@ -671,6 +671,7 @@ describe("management actions", () => {
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128},
+      {id:"default:blocklistproject:porn",kind:"rule",name:"内置规则 · 成人站点扩展",url:"https://example.test/blocklist-porn",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:953393},
       {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · 娱乐内容补充",url:"https://example.test/cleanweb-entertainment-cdn.txt",format:"clash",category:"entertainment",enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
@@ -681,11 +682,16 @@ describe("management actions", () => {
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
     expect(screen.getByText("已同步")).toBeTruthy();
-    expect(screen.getByText("128 条规则", { exact: false })).toBeTruthy();
+    expect(screen.getByText("953521 条规则", { exact: false })).toBeTruthy();
     expect(screen.getByText("待同步")).toBeTruthy();
     expect(screen.getAllByRole("progressbar", { name: /下载应用进度/ })).toHaveLength(2);
-    expect(screen.getByText("内置规则 · 娱乐内容补充")).toBeTruthy();
+    expect(screen.getByText("内置规则 · 娱乐内容")).toBeTruthy();
     expect(screen.queryByText("https://example.test/default")).toBeNull();
+    expect(screen.queryByText("内置规则 · 成人站点扩展")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /来源 2/ }));
+    expect(screen.getByText("内置规则 · 成人站点扩展")).toBeTruthy();
+    expect(screen.getByText("https://example.test/blocklist-porn")).toBeTruthy();
+    expect(screen.getByText("https://example.test/default")).toBeTruthy();
     expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除内置规则 · 色情内容" })).toBeNull();
     expect(screen.queryByRole("button", { name: "编辑内置规则 · 娱乐内容补充" })).toBeNull();
