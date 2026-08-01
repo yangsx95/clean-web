@@ -704,6 +704,26 @@ describe("management actions", () => {
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
 
+  it("keeps rule import focused on external rule sources", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",enabled:true},
+      {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "规则导入" }));
+
+    expect(screen.getByRole("heading", { name: "规则导入" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "外部规则来源" })).toBeTruthy();
+    expect(screen.getByText("我的规则")).toBeTruthy();
+    expect(screen.queryByText("内置规则 · 色情内容")).toBeNull();
+    expect(screen.queryByText("我的代理")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "代理来源" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加代理源" })).toBeNull();
+  });
+
   it("edits an external rule subscription", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"custom-source",kind:"rule",name:"旧规则源",url:"https://example.test/old",format:"hosts",category:"custom",updateIntervalHours:24,enabled:true},

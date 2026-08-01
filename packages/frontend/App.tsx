@@ -1,6 +1,6 @@
 import React, { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
+import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Search, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
 
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
@@ -9,6 +9,10 @@ type AppPage = "overview" | "rules" | "logs" | "subscriptions" | "proxy" | "sett
 type AccessLogDecisionFilter = "all" | "block" | "warning";
 const ACCESS_LOG_REFRESH_INTERVAL_MS = 3000;
 const ACCESS_LOG_SEARCH_DEBOUNCE_MS = 400;
+
+function isBuiltinSubscription(item: backend.Subscription) {
+  return item.id.startsWith("default:") || item.id.startsWith("local:cleanweb:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
+}
 
 async function decodeQrImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
@@ -181,7 +185,7 @@ export function App() {
   const debouncedAccessLogSearch=useDebouncedValue(accessLogSearch,ACCESS_LOG_SEARCH_DEBOUNCE_MS);
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
-  const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "订阅导入", proxy: "代理节点", settings: "设置" };
+  const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "规则导入", proxy: "代理节点", settings: "设置" };
   const requestAction = (action: "rules" | "proxy", mode: ProxyImportMode = "subscription") => { if (action === "proxy") setProxyImportMode(mode); setDialog(locked ? "unlock" : action); };
   const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
   const quitApp = async (password: string) => { await backend.confirmedQuit(password); setDialog(null); };
@@ -334,7 +338,7 @@ export function App() {
         <button className={page === "overview" ? "active" : ""} onClick={() => setPage("overview")}><Activity/>概览</button>
         <button className={page === "rules" ? "active" : ""} onClick={() => setPage("rules")}><BookOpen/>规则管理</button>
         <button className={page === "logs" ? "active" : ""} onClick={() => setPage("logs")}><ListFilter/>访问日志</button>
-        <button className={page === "subscriptions" ? "active" : ""} onClick={() => setPage("subscriptions")}><Database/>订阅导入</button>
+        <button className={page === "subscriptions" ? "active" : ""} onClick={() => setPage("subscriptions")}><Database/>规则导入</button>
         <button className={page === "proxy" ? "active" : ""} onClick={() => setPage("proxy")}><Network/>代理节点</button>
         <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}><Settings/>设置</button>
       </nav>
@@ -348,7 +352,7 @@ export function App() {
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
-      {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{if(item.kind==="rule"){setEditingSubscription(item);setDialog("editRuleSubscription");}}} onAddRule={() => requestAction("rules")} onAddProxy={(mode) => requestAction("proxy", mode)} />}
+      {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions.filter((item)=>item.kind==="rule"&&!isBuiltinSubscription(item))} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAddRule={() => requestAction("rules")} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
       {page === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onApplyBrowserPolicies={applyBrowserPolicies} />}
     </main>
@@ -521,7 +525,11 @@ function LogsPage({ locked, logs, logStats, decisionFilter, search, isBusy, sett
       </div>
       <article className="cw-log-table">
         <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills" role="group" aria-label="日志筛选"><button className={decisionFilter==="all"?"active":""} onClick={()=>onDecisionFilterChange("all")}>全部</button><button className={decisionFilter==="block"?"active":""} onClick={()=>onDecisionFilterChange("block")}>已拦截</button><button className={decisionFilter==="warning"?"active":""} onClick={()=>onDecisionFilterChange("warning")}>未知 IP</button></div></div>
-        <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>onSearchChange(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" />
+        <div className="log-search-wrap">
+          <Search size={16} aria-hidden="true" />
+          <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>onSearchChange(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" />
+          {search&&<button type="button" className="log-search-clear" aria-label="清空日志搜索" onClick={()=>onSearchChange("")}><X size={14} /></button>}
+        </div>
         <div className="cw-log-list">
           {locked ? <div className="empty">解锁管理台后查看访问详情</div> : logs.length === 0 ? (search.trim() || decisionFilter !== "all" ? <div className="empty">没有匹配的访问记录</div> : <SampleLogs />) : logs.map(log=><AccessLogRow log={log} key={log.id}/>)}
         </div>
@@ -553,19 +561,11 @@ function AccessLogRow({ log }: { log:backend.AccessLog }) {
   </div>;
 }
 
-function SubscriptionsPage({ subscriptions, refreshingId, isBusy, onRefresh, onToggle, onDelete, onEdit, onAddRule, onAddProxy }: { subscriptions:backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggle:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAddRule:()=>void; onAddProxy:(mode:ProxyImportMode)=>void }) {
-  const ruleSubs = subscriptions.filter(item=>item.kind==="rule");
-  const proxySubs = subscriptions.filter(item=>item.kind==="proxy");
+function SubscriptionsPage({ subscriptions, refreshingId, isBusy, onRefresh, onToggle, onDelete, onEdit, onAddRule }: { subscriptions:backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggle:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAddRule:()=>void }) {
   return <>
-    <section className="cw-page-intro"><p>安全导入规则和代理来源。CleanWeb 会验证格式、大小、分类和编译结果，再原子替换最后一次有效版本。</p><div><button className="secondary" onClick={onAddRule}>添加规则源</button><button className="primary" onClick={()=>onAddProxy("subscription")}>添加代理源</button></div></section>
-    <section className="cw-sub-layout">
-      <div className="cw-sub-main">
-        <article className="cw-panel"><div className="cw-panel-head"><h3>启用中的规则来源</h3><span>失败保留旧版</span></div><SubscriptionRows items={ruleSubs} refreshingId={refreshingId} isBusy={isBusy} onRefresh={onRefresh} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit}/></article>
-      </div>
-      <div className="cw-sub-side">
-        <article className="cw-dark-card compact-boundary"><h3>代理订阅边界</h3><p>只保留节点和代理组；DNS、TUN、脚本、控制器、本地端口和绕过规则都会被丢弃。</p></article>
-        <article className="cw-panel"><div className="cw-panel-head"><h3>代理来源</h3><span>{proxySubs.length}</span></div><SubscriptionRows items={proxySubs} refreshingId={refreshingId} isBusy={isBusy} onRefresh={onRefresh} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit}/><div className="import-actions"><button className="secondary" onClick={()=>onAddProxy("file")}>配置文件</button><button className="secondary" onClick={()=>onAddProxy("qr")}>二维码</button><button className="secondary" onClick={()=>onAddProxy("clipboard")}>剪贴板</button></div></article>
-      </div>
+    <section className="cw-page-intro"><p>导入第三方规则来源。内置规则在“规则管理”中只读展示，代理订阅在“代理节点”中管理。</p><div><button className="primary" onClick={onAddRule}>添加规则源</button></div></section>
+    <section className="cw-rule-import-layout">
+      <article className="cw-panel"><div className="cw-panel-head"><h3>外部规则来源</h3><span>失败保留旧版</span></div><SubscriptionRows items={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={onRefresh} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit}/></article>
     </section>
   </>;
 }
@@ -577,6 +577,7 @@ function SubscriptionRows({ items, refreshingId, isBusy, onRefresh, onToggle, on
 
 function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onRetention, onApplyBrowserPolicies }: { settings:backend.Settings; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
   const [tab,setTab]=useState<"protection"|"browser"|"privacy">("protection");
+  const retentionOptions = [{ value:"7d", label:"7 天" }, { value:"30d", label:"30 天" }, { value:"90d", label:"90 天" }, { value:"forever", label:"永久" }];
   return <>
     <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、浏览器增强保护和日志保留。</p></section>
     <section className="rules-tabs settings-tabs" role="tablist" aria-label="设置分类">
@@ -587,7 +588,7 @@ function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onReten
     <section className="cw-settings-layout">
       {tab==="protection"&&<article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>}
       {tab==="browser"&&<BrowserPolicyPanel status={browserPolicyStatus} busy={isBusy(busyScope.setting("browser_policies"))} onApply={onApplyBrowserPolicies}/>}
-      {tab==="privacy"&&<article className="cw-panel management-panel"><h3>日志隐私</h3><SettingToggle title="访问日志" note="最终网络决策仅保存在本机" checked={settings.accessLoggingEnabled} disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">日志保留：7 天</option><option value="30d">日志保留：30 天</option><option value="90d">日志保留：90 天</option><option value="forever">日志保留：永久</option></select><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>}
+      {tab==="privacy"&&<article className="cw-panel privacy-panel settings-privacy-panel"><h3>日志隐私</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><div className="retention-tabs" role="group" aria-label="日志保留时间">{retentionOptions.map((option)=><button key={option.value} className={settings.logRetention===option.value?"active":""} disabled={isBusy(busyScope.setting("log_retention"))} onClick={()=>void onRetention(option.value)}>保留期：{option.label}</button>)}</div><p>访问日志页也可以管理日志开关、保留期、导出和清空；诊断包导出仍会默认脱敏。</p></article>}
     </section>
   </>;
 }
@@ -646,7 +647,6 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
 function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
   const [expandedBuiltinSources,setExpandedBuiltinSources]=useState<Record<string,boolean>>({});
-  const isBuiltinSubscription = (item: backend.Subscription) => item.id.startsWith("default:") || item.id.startsWith("local:cleanweb:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
   const builtinSubscriptions = subscriptions.filter(isBuiltinSubscription);
   const externalSubscriptions = subscriptions.filter((item) => !isBuiltinSubscription(item));
   const blockRules = parentRules.filter((item) => item.action === "block");

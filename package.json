@@ -9,6 +9,7 @@
     "build": "tsc -p apps/desktop/tsconfig.json && vite build --config apps/desktop/vite.config.ts",
     "build:mobile": "tsc -p apps/mobile/tsconfig.json && vite build --config apps/mobile/vite.config.ts",
     "test": "vitest run",
+    "rules:check": "node scripts/rules/validate-clash-rules.mjs",
     "icons:generate": "scripts/assets/generate-icons.sh",
     "release:bump": "scripts/release/bump-version.sh",
     "release:preflight": "scripts/release/preflight.sh",
