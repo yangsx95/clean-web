@@ -321,7 +321,7 @@ async fn reload_protection_inner(
 ) -> Result<CoreStatus, String> {
     // Mihomo 控制器可用不代表系统 TUN fd 仍然健康。热更新后曾出现
     // "batch read packet: bad file descriptor"：代理测速和控制 API 正常，
-    // 但浏览器 fake-ip/TUN 流量全部失败。重载运行配置时保守重启内核，
+    // 但浏览器 TUN 流量全部失败。重载运行配置时保守重启内核，
     // 重新创建 TUN 设备和路由，避免把坏数据面误判为正常。
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
@@ -799,7 +799,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut root, "secret", Value::String(secret.into()));
     let mut profile = Mapping::new();
     insert(&mut profile, "store-selected", Value::Bool(true));
-    insert(&mut profile, "store-fake-ip", Value::Bool(true));
     insert(&mut root, "profile", Value::Mapping(profile));
 
     let mut sniffer = Mapping::new();
@@ -854,11 +853,10 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let mut dns = Mapping::new();
     insert(&mut dns, "enable", Value::Bool(true));
     insert(&mut dns, "listen", Value::String("127.0.0.1:53".into()));
-    insert(&mut dns, "enhanced-mode", Value::String("fake-ip".into()));
     insert(
         &mut dns,
-        "fake-ip-range",
-        Value::String("198.18.0.1/16".into()),
+        "enhanced-mode",
+        Value::String("redir-host".into()),
     );
     insert(
         &mut dns,
@@ -883,7 +881,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "direct-nameserver",
         Value::Sequence(vec![Value::String(dns_filter::CLEANWEB_DNS_LISTEN.into())]),
     );
-    // 本地域名使用系统 DNS 解析，避免 fake-ip 导致无法访问路由器等内网设备
+    // 本地域名使用系统 DNS 解析，避免无法访问路由器等内网设备
     let mut ns_policy = Mapping::new();
     insert(
         &mut ns_policy,
@@ -891,33 +889,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::Sequence(dns_upstream_values),
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
-    // 排除本地域名和系统网络检测域名，使其不走 fake-ip。
-    let fake_filter: Vec<String> = vec![
-        "+.home",
-        "+.local",
-        "+.lan",
-        "+.internal",
-        "+.arpa",
-        "+.msftconnecttest.com",
-        "+.msftncsi.com",
-        "localhost.ptlogin2.qq.com",
-        "+.market.xiaomi.com",
-        "dns.msftncsi.com",
-        "www.msftncsi.com",
-        "www.msftconnecttest.com",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let fake_filter_values: Vec<Value> = fake_filter
-        .iter()
-        .map(|s| Value::String(s.clone()))
-        .collect();
-    insert(
-        &mut dns,
-        "fake-ip-filter",
-        Value::Sequence(fake_filter_values),
-    );
     insert(&mut root, "dns", Value::Mapping(dns));
 
     insert(&mut root, "proxies", Value::Sequence(proxies));
@@ -980,7 +951,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
 
     let mut rules = load_filter_rules(&db)?;
     // 局域网/私有地址直连，确保内网设备（路由器等）可正常访问
-    // 注意：不包含 198.18.0.0/16（fake-ip 范围），否则会拦截所有域名规则
     let lan_rules = [
         "IP-CIDR,1.1.1.1/32,DIRECT,no-resolve",
         "IP-CIDR,8.8.8.8/32,DIRECT,no-resolve",
@@ -1107,19 +1077,19 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "MATCH,{}",
         if proxy_enabled { "CleanWeb" } else { "DIRECT" }
     )));
-    append_direct_domain_fake_ip_filters(&mut root, &all_rules);
     insert(&mut root, "rules", Value::Sequence(all_rules));
     serde_yaml::to_string(&root).map_err(error)
 }
 
 fn dns_route_addresses(servers: &[String]) -> Vec<String> {
-    std::iter::once("198.18.0.0/16".to_owned())
-        .chain(servers.iter().filter_map(|server| {
+    servers
+        .iter()
+        .filter_map(|server| {
             server
                 .parse::<std::net::IpAddr>()
                 .ok()
                 .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
-        }))
+        })
         .collect()
 }
 
@@ -1333,42 +1303,6 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
         "Ip" | "ip" | "Cidr" | "cidr" => format!("IP-CIDR,{pattern},{target},no-resolve"),
         _ => return None,
     })
-}
-
-fn append_direct_domain_fake_ip_filters(root: &mut Mapping, rules: &[Value]) {
-    let Some(fake_filter) = root
-        .get_mut(Value::String("dns".into()))
-        .and_then(Value::as_mapping_mut)
-        .and_then(|dns| dns.get_mut(Value::String("fake-ip-filter".into())))
-        .and_then(Value::as_sequence_mut)
-    else {
-        return;
-    };
-    let mut existing = fake_filter
-        .iter()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect::<std::collections::HashSet<_>>();
-    for rule in rules.iter().filter_map(Value::as_str) {
-        let mut parts = rule.split(',');
-        let Some(kind) = parts.next() else {
-            continue;
-        };
-        let Some(pattern) = parts.next() else {
-            continue;
-        };
-        let Some(target) = parts.next() else {
-            continue;
-        };
-        let filter = match (kind, target) {
-            ("DOMAIN", "DIRECT") => pattern.to_owned(),
-            ("DOMAIN-SUFFIX", "DIRECT") => format!("+.{pattern}"),
-            _ => continue,
-        };
-        if existing.insert(filter.clone()) {
-            fake_filter.push(Value::String(filter));
-        }
-    }
 }
 
 pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
@@ -1639,7 +1573,7 @@ mod tests {
     };
     use base64::{engine::general_purpose::STANDARD, Engine};
     #[test]
-    fn generates_locked_fake_ip_config_and_filter_rules() {
+    fn generates_locked_redir_host_config_and_filter_rules() {
         let _guard = test_key_env_lock();
         std::env::set_var("CLEANWEB_TEST_PROXY_KEY_B64", STANDARD.encode([4_u8; 32]));
         let state = AppState::open(":memory:").unwrap();
@@ -1665,7 +1599,9 @@ mod tests {
             .unwrap();
         }
         let config = build_config(&state, "secret", true).unwrap();
-        assert!(config.contains("enhanced-mode: fake-ip"));
+        assert!(config.contains("enhanced-mode: redir-host"));
+        assert!(!config.contains("fake-ip-range"));
+        assert!(!config.contains("fake-ip-filter"));
         assert!(!config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
         let parent_block = config.find("DOMAIN-SUFFIX,baidu.com,REJECT").unwrap();
         let built_in_direct = config.find("DOMAIN-SUFFIX,baidu.com,DIRECT").unwrap();
@@ -1694,7 +1630,7 @@ mod tests {
             yaml.get("profile")
                 .and_then(|profile| profile.get("store-fake-ip"))
                 .and_then(Value::as_bool),
-            Some(true)
+            None
         );
         assert_eq!(yaml.get("log-level").and_then(Value::as_str), Some("info"));
         assert_eq!(
@@ -1768,26 +1704,15 @@ mod tests {
             .get("tun")
             .and_then(|tun| tun.get("route-address"))
             .and_then(Value::as_sequence)
-            .expect("tun route addresses");
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !route_addresses.contains(&Value::String("198.18.0.0/16".into())),
+            "redir-host 模式不得再路由 fake-ip 地址池"
+        );
         assert!(
             !route_addresses.contains(&Value::String("216.239.38.120/32".into())),
             "SafeSearch is enforced by browser policy, not Mihomo host routes"
-        );
-        let fake_ip_filter = yaml
-            .get("dns")
-            .and_then(|dns| dns.get("fake-ip-filter"))
-            .and_then(Value::as_sequence)
-            .unwrap();
-        assert!(!fake_ip_filter.contains(&Value::String("www.google.*".into())));
-        assert!(!fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
-        assert!(!fake_ip_filter.contains(&Value::String("216.239.38.120".into())));
-        assert!(
-            fake_ip_filter.contains(&Value::String("+.aliyuncs.com".into())),
-            "DIRECT 域名后缀必须跳过 fake-ip，否则 MySQL/RDS 等非 HTTP 连接会在直连拨号时二次解析失败"
-        );
-        assert!(
-            fake_ip_filter.contains(&Value::String("+.baidu.com".into())),
-            "手动放行或内置直连域名也必须跳过 fake-ip"
         );
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
@@ -2034,7 +1959,6 @@ mod tests {
 
         assert!(!routes.contains(&"0.0.0.0/1".into()));
         assert!(!routes.contains(&"128.0.0.0/1".into()));
-        assert!(routes.contains(&"198.18.0.0/16".into()));
         assert!(routes.contains(&"10.195.85.120/32".into()));
         assert!(routes.contains(&"240e:479:4e90:3e59::19/128".into()));
     }
@@ -2042,13 +1966,16 @@ mod tests {
     #[test]
     fn extracts_sorted_tun_routes_from_config() {
         let routes = config_tun_route_addresses(
-            "tun:\n  route-address:\n    - 216.239.38.120/32\n    - 198.18.0.0/16\n    - 216.239.38.120/32\n",
+            "tun:\n  route-address:\n    - 216.239.38.120/32\n    - 114.114.114.114/32\n    - 216.239.38.120/32\n",
         )
         .unwrap();
 
         assert_eq!(
             routes,
-            vec!["198.18.0.0/16".to_string(), "216.239.38.120/32".to_string()]
+            vec![
+                "114.114.114.114/32".to_string(),
+                "216.239.38.120/32".to_string()
+            ]
         );
     }
 

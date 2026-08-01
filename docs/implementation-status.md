@@ -28,7 +28,7 @@
 
 ## 建议实施顺序
 
-1. 用真实 Mihomo TUN 验收 DNS 接管、fake-ip 排除和代理模式下的上游 DNS 解析。
+1. 用真实 Mihomo TUN 验收 DNS 接管、CleanWeb DNS NXDOMAIN 透传和代理模式下的上游 DNS 解析。
 2. 验证 Chrome/Edge 浏览器策略对 Google SafeSearch、YouTube 受限模式和浏览器 DoH 关闭的真实生效矩阵。
 3. 用真实流量验证 Mihomo 日志流采集覆盖率，补齐 DNS、连接和规则命中事件的分类归因。
 4. 在 `apps/mobile` 中实现 Android `VpnService`、Mihomo 和 `tun2socks` Tauri 插件，并完成 iOS Packet Tunnel Provider 插件可行性验证。
