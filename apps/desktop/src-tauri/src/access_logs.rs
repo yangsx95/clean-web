@@ -1361,7 +1361,7 @@ mod tests {
         for (source_port, time) in [
             (54135, "2026-07-20T18:20:19.379133000+08:00"),
             (54136, "2026-07-20T18:20:25.379133000+08:00"),
-            (54137, "2026-07-20T18:20:40.379133000+08:00"),
+            (54137, "2026-07-20T18:26:00.379133000+08:00"),
         ] {
             let line = format!(
                 r#"time="{time}" level=info msg="[TCP] 198.18.0.1:{source_port} --> repeated.example:443 match Match() using DIRECT""#
