@@ -9,6 +9,7 @@ pub enum Action {
     Allow,
     Block,
     Proxy,
+    SystemRoute,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

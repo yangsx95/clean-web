@@ -17,14 +17,40 @@ use tauri::{Emitter, Manager};
 
 const QUIT_REQUESTED_EVENT: &str = "cleanweb-quit-requested";
 const SHOW_WINDOW_MENU_ID: &str = "cleanweb-show-window";
+const CLOSE_WINDOW_MENU_ID: &str = "cleanweb-close-window";
+const CLOSE_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+W";
 const QUIT_MENU_ID: &str = "cleanweb-quit";
 #[cfg(target_os = "macos")]
 const TRAY_ID: &str = "cleanweb-tray";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MenuAction {
+    ShowMainWindow,
+    HideMainWindow,
+    RequestQuitConfirmation,
+}
 
 #[derive(Default)]
 struct AppLifecycle {
     confirmed_exit: AtomicBool,
     quit_requested: AtomicBool,
+}
+
+fn menu_action_for_id(id: &str) -> Option<MenuAction> {
+    match id {
+        SHOW_WINDOW_MENU_ID => Some(MenuAction::ShowMainWindow),
+        CLOSE_WINDOW_MENU_ID => Some(MenuAction::HideMainWindow),
+        QUIT_MENU_ID => Some(MenuAction::RequestQuitConfirmation),
+        _ => None,
+    }
+}
+
+fn handle_menu_action(app: &tauri::AppHandle, action: MenuAction) {
+    match action {
+        MenuAction::ShowMainWindow => show_main_window(app),
+        MenuAction::HideMainWindow => hide_to_background(app),
+        MenuAction::RequestQuitConfirmation => request_quit_confirmation(app),
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -67,8 +93,7 @@ fn take_pending_quit_request(lifecycle: tauri::State<'_, AppLifecycle>) -> bool 
     lifecycle.quit_requested.swap(false, Ordering::SeqCst)
 }
 
-#[cfg(target_os = "macos")]
-fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn build_desktop_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     let menu = Menu::new(app)?;
@@ -80,9 +105,16 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<t
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
+    let close = MenuItem::with_id(
+        app,
+        CLOSE_WINDOW_MENU_ID,
+        "隐藏到后台",
+        true,
+        Some(CLOSE_WINDOW_ACCELERATOR),
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, QUIT_MENU_ID, "退出", true, Some("CmdOrCtrl+Q"))?;
-    app_menu.append_items(&[&show, &separator, &quit])?;
+    app_menu.append_items(&[&show, &close, &separator, &quit])?;
 
     menu.append(&app_menu)?;
     Ok(menu)
@@ -106,10 +138,8 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .tooltip("CleanWeb")
         .on_menu_event(|app, event| {
-            if event.id() == SHOW_WINDOW_MENU_ID {
-                show_main_window(app);
-            } else if event.id() == QUIT_MENU_ID {
-                request_quit_confirmation(app);
+            if let Some(action) = menu_action_for_id(event.id().as_ref()) {
+                handle_menu_action(app, action);
             }
         })
         .on_tray_icon_event(|tray, event| {
@@ -136,21 +166,10 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(AppLifecycle::default())
         .enable_macos_default_menu(false)
-        .menu(|app| {
-            #[cfg(target_os = "macos")]
-            {
-                build_macos_menu(app)
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                tauri::menu::Menu::new(app)
-            }
-        })
+        .menu(build_desktop_menu)
         .on_menu_event(|app, event| {
-            if event.id() == SHOW_WINDOW_MENU_ID {
-                show_main_window(app);
-            } else if event.id() == QUIT_MENU_ID {
-                request_quit_confirmation(app);
+            if let Some(action) = menu_action_for_id(event.id().as_ref()) {
+                handle_menu_action(app, action);
             }
         })
         .setup(|app| {
@@ -235,4 +254,18 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cmd_or_ctrl_w_menu_item_hides_main_window() {
+        assert_eq!(CLOSE_WINDOW_ACCELERATOR, "CmdOrCtrl+W");
+        assert_eq!(
+            menu_action_for_id(CLOSE_WINDOW_MENU_ID),
+            Some(MenuAction::HideMainWindow)
+        );
+    }
 }

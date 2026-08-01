@@ -17,8 +17,8 @@ export type ManualProxyImport = { name:string; content:string };
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
 export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string};
-export type AccessLogStats={block:number;allow:number;warning:number;total:number};
-export type ParentRule={id:string;action:"allow"|"block"|"proxy";kind:string;pattern:string;category:string;enabled:boolean};
+export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
+export type ParentRule={id:string;action:"allow"|"block"|"proxy"|"system_route";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
 export type BrowserPolicyDetail={label:string;configured:boolean;currentValue?:string|null;expectedValue:string};
 export type BrowserPolicyBrowserStatus={id:string;name:string;installed:boolean;configured:boolean;needsRestart:boolean;details:BrowserPolicyDetail[]};
@@ -47,6 +47,9 @@ let defaults: Settings = loadPreviewSettings();
 let previewCoreStatus: CoreStatus = loadPreviewCoreStatus();
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
+const isBuiltinSubscription = (item: Pick<Subscription, "id" | "name" | "url">) =>
+  item.id.startsWith("default:") ||
+  item.url.startsWith("builtin://");
 function loadPreviewSettings(): Settings {
   try {
     const raw = window.localStorage.getItem(previewSettingsKey);
@@ -169,7 +172,7 @@ export async function updateSubscription(sessionToken: string, id: string, input
   if (isTauri()) return invoke("update_subscription", { sessionToken, id, input });
   const item=previewSubscriptions.find((value)=>value.id===id);
   if(!item)throw new Error("订阅不存在");
-  if(item.id.startsWith("default:"))throw new Error("内置规则不能修改");
+  if(isBuiltinSubscription(item))throw new Error("内置规则不能修改");
   Object.assign(item, input, { lastError: undefined });
   savePreviewSubscriptions();
   return structuredClone(item);
@@ -183,10 +186,14 @@ export async function importProxyPayload(sessionToken: string, input: ManualProx
 }
 export async function setSubscriptionEnabled(sessionToken:string,id:string,enabled:boolean) {
   if (isTauri()) return invoke("set_subscription_enabled", { sessionToken,id,enabled });
-  const item=previewSubscriptions.find((value)=>value.id===id); if(item){item.enabled=enabled;savePreviewSubscriptions();}
+  const item=previewSubscriptions.find((value)=>value.id===id);
+  if(item&&isBuiltinSubscription(item)&&!enabled)throw new Error("内置规则必须保持启用");
+  if(item){item.enabled=enabled;savePreviewSubscriptions();}
 }
 export async function deleteSubscription(sessionToken:string,id:string) {
   if (isTauri()) return invoke("delete_subscription", { sessionToken,id });
+  const item=previewSubscriptions.find((value)=>value.id===id);
+  if(item&&isBuiltinSubscription(item))throw new Error("内置规则不能删除");
   const index=previewSubscriptions.findIndex((value)=>value.id===id); if(index>=0){previewSubscriptions.splice(index,1);savePreviewSubscriptions();}
 }
 export type RecommendedSource={name:string;url:string;format:string;category:string;description:string};
@@ -253,6 +260,10 @@ export async function getAccessLogStats(sessionToken:string):Promise<AccessLogSt
     allow: logs.filter(log=>log.decision==="allow").length,
     warning: logs.filter(log=>log.decision==="warning").length,
     total: logs.length,
+    todayBlock: logs.filter(log=>log.decision==="block"&&isToday(log.observedAt)).length,
+    todayAllow: logs.filter(log=>log.decision==="allow"&&isToday(log.observedAt)).length,
+    todayWarning: logs.filter(log=>log.decision==="warning"&&isToday(log.observedAt)).length,
+    todayTotal: logs.filter(log=>isToday(log.observedAt)).length,
   };
 }
 export async function getPublicAccessLogStats():Promise<AccessLogStats>{
@@ -261,6 +272,12 @@ export async function getPublicAccessLogStats():Promise<AccessLogStats>{
 }
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}
 export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"time,domain\n";}
+
+function isToday(value:string):boolean{
+  const date=new Date(value);
+  const today=new Date();
+  return !Number.isNaN(date.getTime())&&date.toDateString()===today.toDateString();
+}
 export async function onAccessLogsUpdated(callback:()=>void):Promise<()=>void>{
   if(!isTauri())return()=>{};
   const { listen } = await import("@tauri-apps/api/event");

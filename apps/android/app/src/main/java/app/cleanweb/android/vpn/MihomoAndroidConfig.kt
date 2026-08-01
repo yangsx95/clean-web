@@ -204,6 +204,10 @@ internal object MihomoAndroidConfig {
             .filter { it.enabled && it.action == RuleAction.Proxy }
             .mapNotNull { mihomoRule(it, finalPolicy) }
             .forEach { appendLine("  - $it") }
+        state.rules
+            .filter { it.enabled && it.action == RuleAction.SystemRoute }
+            .mapNotNull { mihomoRule(it, "DIRECT") }
+            .forEach { appendLine("  - $it") }
         localDirectRules.forEach { appendLine("  - $it") }
         appendLine("  - MATCH,$finalPolicy")
     }

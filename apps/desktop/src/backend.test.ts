@@ -143,4 +143,35 @@ describe("browser preview persistence", () => {
       { id: item.id, name: "New rules", url: "https://example.com/new.txt", format: "adblock", category: "ads", updateIntervalHours: 12 },
     ]);
   });
+
+  it("blocks preview edits, disables, and deletes for builtin URL subscriptions", async () => {
+    const backend = await import("./backend");
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {
+        id: "local:cleanweb:entertainment-cdn",
+        kind: "rule",
+        name: "内置规则 · 娱乐 CDN",
+        url: "builtin://cleanweb/entertainment-cdn",
+        format: "clash",
+        category: "entertainment",
+        enabled: true,
+      },
+    ]));
+
+    await backend.listSubscriptions("browser-preview", "rule");
+
+    await expect(backend.updateSubscription("browser-preview", "local:cleanweb:entertainment-cdn", {
+      name: "Changed",
+      url: "https://example.com/changed.txt",
+      format: "hosts",
+      category: "custom",
+      updateIntervalHours: 24,
+    })).rejects.toThrow("内置规则不能修改");
+    await expect(backend.setSubscriptionEnabled("browser-preview", "local:cleanweb:entertainment-cdn", false)).rejects.toThrow("内置规则必须保持启用");
+    await expect(backend.deleteSubscription("browser-preview", "local:cleanweb:entertainment-cdn")).rejects.toThrow("内置规则不能删除");
+
+    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
+      { id: "local:cleanweb:entertainment-cdn", name: "内置规则 · 娱乐 CDN", enabled: true },
+    ]);
+  });
 });

@@ -1,0 +1,8 @@
+{
+  "version": "0.1.0",
+  "channel": "beta",
+  "releaseUrl": "https://github.com/yangsx95/clean-web/releases/latest",
+  "sourceUrl": "https://github.com/yangsx95/clean-web",
+  "status": "当前版本适合功能测试和真实网络验证。正式发布前仍需要完成签名、公证、Windows 服务化和真实网络验收。"
+}
+

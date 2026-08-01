@@ -50,6 +50,7 @@ const busyScope = {
   subscription: (id: string) => `subscription:${id}`,
   rule: (id: string) => `rule:${id}`,
 };
+const emptyAccessLogStats: backend.AccessLogStats = { block:0, allow:0, warning:0, total:0, todayBlock:0, todayAllow:0, todayWarning:0, todayTotal:0 };
 
 function useScopedOperations() {
   const [busyScopes, setBusyScopes] = useState<Record<string, true>>({});
@@ -115,7 +116,7 @@ export function App() {
   const [policyApplyStatus,setPolicyApplyStatus]=useState<PolicyApplyStatus|null>(null);
   const policyStatusTimerRef=useRef<number|null>(null);
   const [accessLogs,setAccessLogs]=useState<backend.AccessLog[]>([]);
-  const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>({block:0,allow:0,warning:0,total:0});
+  const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>(emptyAccessLogStats);
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
   const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "订阅导入", proxy: "代理节点", settings: "设置" };
@@ -146,7 +147,7 @@ export function App() {
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(()=>reloadRuntime(sessionToken,{silent:true})).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,500),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
-  const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats({block:0,allow:0,warning:0,total:0}); setLocked(true); };
+  const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats); setLocked(true); };
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
     if(!options.silent)showPolicyStatus({state:"applying",message:options.applyingMessage??"正在应用网络策略…"});
     try{
@@ -191,7 +192,7 @@ export function App() {
     }
   };
   const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.subscription(id), async()=>{setRefreshingId(id);showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}});};
-  const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats({block:0,allow:0,warning:0,total:0});});};
+  const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);});};
   const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{const csv=await backend.exportAccessLogsCsv(sessionToken);const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="cleanweb-access-logs.csv";link.click();URL.revokeObjectURL(url);});};
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError("");showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){setRuntimeError(`规则已添加，但保护配置重载失败：${String(reason)}`);}});};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
@@ -370,9 +371,9 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
           <p>{protectionMessage}</p>
           <Switch checked={running} label="总保护" disabled={isBusy(busyScope.protection)} onChange={(value) => onToggle("protection_enabled", value)} />
         </article>
-        <article><span>今日拦截</span><strong>{compactCount(logStats.block)}</strong><small>访问日志总计</small></article>
-        <article><span>已允许</span><strong>{compactCount(logStats.allow)}</strong><small>正常访问请求</small></article>
-        <article><span>总请求</span><strong>{compactCount(logStats.total)}</strong><small>已记录决策</small></article>
+        <article><span>今日拦截</span><strong>{compactCount(logStats.todayBlock)}</strong><small>累计 {compactCount(logStats.block)} 次</small></article>
+        <article><span>今日放行</span><strong>{compactCount(logStats.todayAllow)}</strong><small>累计 {compactCount(logStats.allow)} 次</small></article>
+        <article><span>今日请求</span><strong>{compactCount(logStats.todayTotal)}</strong><small>累计 {compactCount(logStats.total)} 条</small></article>
       </section>
       <section className="cw-dashboard-grid">
         <article className="cw-panel">
@@ -397,14 +398,19 @@ function SettingLine({ title, active, children }: { title:string; active:boolean
 function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
   if (logs.length === 0) {
     const samples = [
-      ["10:42", "games.example.net", "拦截", "block"],
-      ["10:39", "school.portal.edu", "放行", "allow"],
-      ["10:31", "198.51.100.12", "警告", "warning"],
-      ["10:26", "search.clean", "安全", "allow"],
+      { id:"sample-1", time:"10:42", target:"games.example.net", meta:"短视频 / 443", decision:"拦截", kind:"block" },
+      { id:"sample-2", time:"10:39", target:"school.portal.edu", meta:"家长白名单 / 443", decision:"放行", kind:"allow" },
+      { id:"sample-3", time:"10:31", target:"198.51.100.12", meta:"未知 IP / 8443", decision:"警告", kind:"warning" },
+      { id:"sample-4", time:"10:26", target:"search.clean", meta:"安全搜索 / 53", decision:"放行", kind:"allow" },
     ];
-    return <div className="mini-log-list">{samples.map(row=><div className="mini-log-row" key={row[0]}><span className={`dot ${row[3]}`} /><time>{row[0]}</time><b>{row[1]}</b><span className={`decision ${row[3]}`}>{row[2]}</span></div>)}</div>;
+    return <div className="mini-log-list">{samples.map((row,index)=><div className={`mini-log-row ${index===0?"is-new":""}`} key={row.id}><span className={`dot ${row.kind}`} /><time>{row.time}</time><b title={row.target}>{row.target}</b><small title={row.meta}>{row.meta}</small><span className={`decision ${row.kind}`}>{row.decision}</span></div>)}</div>;
   }
-  return <div className="mini-log-list">{logs.map(log=><div className="mini-log-row" key={log.id}><span className={`dot ${log.decision}`} /><time>{new Date(log.observedAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</time><b>{log.domain??log.targetIp??"未知目标"}</b><span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span></div>)}</div>;
+  return <div className="mini-log-list">{logs.slice(0,8).map((log,index)=>{
+    const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
+    const target = log.domain ?? log.targetIp ?? (isDnsResolution ? "DNS 解析" : "未知目标");
+    const meta = [log.category ?? log.rule ?? "默认策略", log.targetPort ? `${log.targetPort}` : undefined, log.route].filter(Boolean).join(" / ");
+    return <div className={`mini-log-row ${index<3?"is-new":""}`} key={log.id}><span className={`dot ${log.decision}`} /><time>{new Date(log.observedAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</time><b title={target}>{target}</b><small title={meta}>{meta}</small><span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span></div>;
+  })}</div>;
 }
 
 function LogsPage({ locked, logs, logStats, isBusy, settings, onClear, onExport, onToggle, onRetention }: { locked:boolean; logs:backend.AccessLog[]; logStats:backend.AccessLogStats; isBusy:(scope:string)=>boolean; settings:backend.Settings; onClear:()=>Promise<void>; onExport:()=>Promise<void>; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void> }) {
@@ -420,7 +426,7 @@ function LogsPage({ locked, logs, logStats, isBusy, settings, onClear, onExport,
     <section className="cw-page-intro"><p>查看仅保存在本机的最终网络决策。日志支持筛选、导出 CSV、清空和按策略保留。</p><div><button className="secondary" disabled={isBusy(busyScope.logs)} onClick={()=>void onExport()}>导出 CSV</button><button className="primary danger" disabled={isBusy(busyScope.logs)} onClick={()=>void onClear()}>清空日志</button></div></section>
     <section className="cw-logs-layout">
       <div className="cw-log-side">
-        <article className="cw-dark-card"><h3>今日</h3><strong>{compactCount(logStats.total)}</strong><span>条最终决策已记录</span><div><b>{compactCount(logStats.block)}</b> 拦截 · <b>{compactCount(logStats.allow)}</b> 放行 · <b>{compactCount(logStats.warning)}</b> 警告</div></article>
+        <article className="cw-dark-card"><h3>今日处理</h3><strong>{compactCount(logStats.todayTotal)}</strong><span>条最终决策已记录</span><div><b>{compactCount(logStats.todayBlock)}</b> 拦截 · <b>{compactCount(logStats.todayAllow)}</b> 放行 · <b>{compactCount(logStats.todayWarning)}</b> 警告</div><span>累计 {compactCount(logStats.total)} 条 · {compactCount(logStats.block)} 次拦截</span></article>
         <article className="cw-panel privacy-panel"><h3>隐私控制</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">保留期：7 天</option><option value="30d">保留期：30 天</option><option value="90d">保留期：90 天</option><option value="forever">保留期：永久</option></select><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>
       </div>
       <article className="cw-log-table">
@@ -444,8 +450,9 @@ function SampleLogs() {
 }
 
 function AccessLogRow({ log }: { log:backend.AccessLog }) {
-  const target = log.domain ?? log.targetIp ?? "未知目标";
-  const endpoint = log.targetIp ? `${log.targetIp}${log.targetPort ? `:${log.targetPort}` : ""}` : log.targetPort ? `:${log.targetPort}` : "未知地址";
+  const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
+  const target = log.domain ?? log.targetIp ?? (isDnsResolution ? "DNS 解析" : "未知目标");
+  const endpoint = log.targetIp ? `${log.targetIp}${log.targetPort ? `:${log.targetPort}` : ""}` : isDnsResolution ? "DNS 服务端口 :53" : log.targetPort ? `:${log.targetPort}` : "未知地址";
   const rule = log.category ?? log.rule ?? "默认策略";
   const source = `${log.processName?.trim() || "设备流量"} / ${log.route ?? "直连"}`;
   return <div className="cw-access-row">
@@ -548,14 +555,15 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
 
 function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
-  const builtinSubscriptions = subscriptions.filter((item) => item.id.startsWith("default:"));
-  const externalSubscriptions = subscriptions.filter((item) => !item.id.startsWith("default:"));
+  const isBuiltinSubscription = (item: backend.Subscription) => item.id.startsWith("default:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
+  const builtinSubscriptions = subscriptions.filter(isBuiltinSubscription);
+  const externalSubscriptions = subscriptions.filter((item) => !isBuiltinSubscription(item));
   const blockRules = parentRules.filter((item) => item.action === "block");
   const routeRules = parentRules.filter((item) => item.action !== "block");
   const subscriptionFormat = (item: backend.Subscription) => item.format ?? "自动检测";
   const updateInterval = (item: backend.Subscription) => item.updateIntervalHours ? `${item.updateIntervalHours}小时更新` : "手动更新";
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
-  const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : "直连";
+  const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : action === "system_route" ? "系统路由" : "直连";
   const renderParentRule = (item: backend.ParentRule) => {
     const rowBusy = isBusy(busyScope.rule(item.id));
     return <div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{matchKindLabel(item.kind)} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{ruleActionLabel(item.action)}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} disabled={rowBusy} onChange={value=>onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} disabled={rowBusy} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>;
@@ -569,7 +577,7 @@ function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, on
     </section>
     {tab==="block"&&<><section className="toolbar"><div><h2>访问拦截</h2><p>手动阻止指定域名、关键词、IP 或网段，优先于普通内容和路由规则。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("block")}><Plus size={16}/>添加拦截</button></section>
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{blockRules.length===0&&<div className="table-empty">尚未添加拦截规则</div>}{blockRules.map(renderParentRule)}</section></>}
-    {tab==="route"&&<><section className="toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连或走代理；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
+    {tab==="route"&&<><section className="toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连、走代理或按系统路由；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>出口</span><span>状态</span><span>操作</span></div>{routeRules.length===0&&<div className="table-empty">尚未添加路由规则</div>}{routeRules.map(renderParentRule)}</section></>}
     {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
     <section className="table-card">
@@ -649,19 +657,29 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
       for (const node of nodes) delete next[node.name];
       return next;
     });
-    let failedCount = 0;
     try {
+      setTestingNodeName(undefined);
+      const result = await backend.testAllProxyDelays(sessionToken, "CleanWeb");
+      const nextDelays: Record<string, number> = {};
+      let failedCount = 0;
       for (const node of nodes) {
-        setTestingNodeName(node.name);
-        try {
-          const delay = await backend.testProxyGroup(sessionToken, node.name);
-          setDelays(previous => ({ ...previous, [node.name]: delay }));
-        } catch {
+        const delay = result.delays[node.name];
+        if (delay == null) {
           failedCount += 1;
-          setDelays(previous => ({ ...previous, [node.name]: 0 }));
+          nextDelays[node.name] = 0;
+        } else {
+          nextDelays[node.name] = delay;
         }
       }
+      setDelays(previous => ({ ...previous, ...nextDelays }));
       if (failedCount > 0) setDelayError(`部分节点检测失败：${failedCount}/${nodes.length}`);
+    } catch {
+      setDelayError("节点延迟检测失败");
+      setDelays(previous => {
+        const next = { ...previous };
+        for (const node of nodes) next[node.name] = 0;
+        return next;
+      });
     } finally {
       setTestingNodeName(undefined);
       setTestingSpeed(false);
@@ -678,7 +696,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
   };
   const selectableNodes=Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>subProxies[item.id]?.proxies??[]).map(node=>[node.name,node])).values());
   const chooseNode=useCallback(async(name:string)=>{
-    if(selectingRef.current||testingSpeed)return;
+    if(selectingRef.current)return;
     selectingRef.current=true;
     const previousRuntime=runtimeSelection;
     setSelecting(name);
@@ -693,7 +711,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
       selectingRef.current=false;
       setSelecting(undefined);
     }
-  },[onSelectNode,runtimeSelection,testingSpeed]);
+  },[onSelectNode,runtimeSelection]);
   const openImport=(mode:ProxyImportMode)=>{setImportMenuOpen(false);onAdd(mode);};
   return <>
     <section className="toolbar"><div><h2>代理订阅</h2><p>{subscriptions.length>0?`当前出口：${automatic?"自动选择节点":runtimeSelection??savedSelection??"尚未选择节点"}`:"导入代理后，展开来源并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={automatic||Boolean(selecting)||subscriptions.length===0||isBusy(busyScope.setting("automatic_node_selection"))} onClick={()=>void onAutomatic()}>自动选择</button><div className="import-dropdown"><button className="primary import-main" disabled={isBusy(busyScope.importProxy)} onClick={()=>openImport("subscription")}><Plus size={16}/>导入代理</button><button className="primary import-menu-trigger" disabled={isBusy(busyScope.importProxy)} aria-label="选择代理导入方式" aria-expanded={importMenuOpen} onClick={()=>setImportMenuOpen(value=>!value)}><ChevronDown size={16}/></button>{importMenuOpen&&<div className="import-menu" role="menu"><button role="menuitem" onClick={()=>openImport("subscription")}>订阅链接</button><button role="menuitem" onClick={()=>openImport("node")}>单节点链接</button><button role="menuitem" onClick={()=>openImport("file")}>配置文件</button><button role="menuitem" onClick={()=>openImport("qr")}>二维码导入</button><button role="menuitem" onClick={()=>openImport("clipboard")}>从剪贴板导入</button></div>}</div></div></section>
@@ -746,7 +764,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
                       const isTesting = testingNodeName === p.name;
                       const isCurrent = p.name === runtimeSelection || (!running && !automatic && p.name === savedSelection);
                       const isChoosing = selecting === p.name;
-                      return <SubProxyNodeButton key={p.name} name={p.name} nodeType={p.nodeType} isMember={isMember} isCurrent={isCurrent} isChoosing={isChoosing} isTesting={isTesting} delay={findDelay(p.name)} disabled={!isMember||itemBusy||testingSpeed} onChoose={chooseNode} />;
+                      return <SubProxyNodeButton key={p.name} name={p.name} nodeType={p.nodeType} isMember={isMember} isCurrent={isCurrent} isChoosing={isChoosing} isTesting={isTesting} delay={findDelay(p.name)} disabled={!isMember||itemBusy} onChoose={chooseNode} />;
                     })}
                   </div>
                 </div>
@@ -791,7 +809,7 @@ function SetupDialog({ onComplete }: { onComplete: () => void }) {
 function ParentRuleDialog({mode,onClose,onSubmit}:{mode:"block"|"route";onClose:()=>void;onSubmit:(input:backend.NewParentRule)=>Promise<void>}){
   const[error,setError]=useState("");
   const isRoute = mode === "route";
-  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="parent-rule-title"><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button><h2 id="parent-rule-title">{isRoute?"添加路由规则":"添加拦截规则"}</h2><p>{isRoute?"为匹配目标指定直连或走代理；高风险安全与手动拦截仍会优先生效。":"手动阻止指定目标；诈骗、钓鱼和恶意软件仍保持最高优先级。"}</p><form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{await onSubmit({action:String(data.get("action")) as "allow"|"block"|"proxy",kind:String(data.get("kind")),pattern:String(data.get("pattern")),category:String(data.get("category")||"custom")});}catch(reason){setError(String(reason));}}}><label htmlFor="parent-action">{isRoute?"出口":"动作"}</label>{isRoute?<select id="parent-action" name="action"><option value="allow">直连</option><option value="proxy">走代理</option></select>:<><input type="hidden" name="action" value="block"/><div className="readonly-field">拦截</div></>}<label htmlFor="parent-kind">匹配方式</label><select id="parent-kind" name="kind"><option value="suffix">域名及子域名</option><option value="exact">精确域名</option><option value="ip">IP地址</option><option value="cidr">IP网段</option><option value="contains">关键词包含</option><option value="wildcard">通配符</option><option value="regex">正则表达式</option></select><label htmlFor="parent-pattern">规则内容</label><input id="parent-pattern" name="pattern" placeholder="example.com 或 47.96.0.0/12" required autoComplete="off" spellCheck={false}/><input type="hidden" name="category" value={isRoute?"routing":"custom"}/>{error&&<span className="form-error">{error}</span>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并保存</button></div></form></section></div>;
+  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="parent-rule-title"><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button><h2 id="parent-rule-title">{isRoute?"添加路由规则":"添加拦截规则"}</h2><p>{isRoute?"为匹配目标指定直连、走代理或按系统路由；高风险安全与手动拦截仍会优先生效。":"手动阻止指定目标；诈骗、钓鱼和恶意软件仍保持最高优先级。"}</p><form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{await onSubmit({action:String(data.get("action")) as backend.ParentRule["action"],kind:String(data.get("kind")),pattern:String(data.get("pattern")),category:String(data.get("category")||"custom")});}catch(reason){setError(String(reason));}}}><label htmlFor="parent-action">{isRoute?"出口":"动作"}</label>{isRoute?<select id="parent-action" name="action"><option value="allow">直连</option><option value="proxy">走代理</option><option value="system_route">系统路由</option></select>:<><input type="hidden" name="action" value="block"/><div className="readonly-field">拦截</div></>}<label htmlFor="parent-kind">匹配方式</label><select id="parent-kind" name="kind"><option value="suffix">域名及子域名</option><option value="exact">精确域名</option><option value="ip">IP地址</option><option value="cidr">IP网段</option><option value="contains">关键词包含</option><option value="wildcard">通配符</option><option value="regex">正则表达式</option></select><label htmlFor="parent-pattern">规则内容</label><input id="parent-pattern" name="pattern" placeholder="example.com 或 47.96.0.0/12" required autoComplete="off" spellCheck={false}/><input type="hidden" name="category" value={isRoute?"routing":"custom"}/>{error&&<span className="form-error">{error}</span>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并保存</button></div></form></section></div>;
 }
 
 function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmit }: { mode: ProxyImportMode; onClose: () => void; onSubscriptionSubmit:(input:backend.NewSubscription)=>Promise<void>; onPayloadSubmit:(input:backend.ManualProxyImport)=>Promise<void> }) {

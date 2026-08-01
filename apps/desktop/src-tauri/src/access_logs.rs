@@ -2,12 +2,14 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
+    net::IpAddr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{mihomo::controller_secret, platform, storage::AppState};
@@ -67,10 +69,13 @@ struct LogLine {
 struct ParsedLogEvent {
     id: String,
     observed_at: Option<String>,
-    domain: String,
+    domain: Option<String>,
+    target_ip: Option<String>,
     port: Option<i64>,
     decision: &'static str,
     rule: Option<String>,
+    category: Option<&'static str>,
+    process_name: Option<String>,
     route: String,
 }
 
@@ -101,6 +106,10 @@ pub struct AccessLogStats {
     pub allow: i64,
     pub warning: i64,
     pub total: i64,
+    pub today_block: i64,
+    pub today_allow: i64,
+    pub today_warning: i64,
+    pub today_total: i64,
 }
 
 pub fn start_access_log_collector(app: AppHandle) {
@@ -208,17 +217,40 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
             .chains
             .iter()
             .any(|item| item.eq_ignore_ascii_case("REJECT"));
+        let dns_resolution = is_dns_resolution_connection(&connection);
         let decision = if rejected {
             "block"
+        } else if dns_resolution {
+            "allow"
         } else if connection.metadata.host.is_empty() {
             "warning"
         } else {
             "allow"
         };
-        let category = categories.get(&connection.rule_payload).cloned();
+        let category = if dns_resolution {
+            Some("DNS 解析".to_owned())
+        } else {
+            categories.get(&connection.rule_payload).cloned()
+        };
+        let rule_id = intern_access_log_string(&db, Some(connection.rule.as_str()))?;
+        let category_id = intern_access_log_string(&db, category.as_deref())?;
+        let process_name_id =
+            intern_access_log_string(&db, Some(connection.metadata.process.as_str()))?;
+        let process_path_id =
+            intern_access_log_string(&db, Some(connection.metadata.process_path.as_str()))?;
+        let operating_system_id = intern_access_log_string(&db, Some(os.as_str()))?;
+        let system_user_id = intern_access_log_string(&db, Some(user.as_str()))?;
+        let source_ip_id =
+            intern_access_log_string(&db, Some(connection.metadata.source_ip.as_str()))?;
+        let route_id = intern_access_log_string(&db, route.as_deref())?;
+        let proxy_group_id =
+            intern_access_log_string(&db, connection.chains.first().map(String::as_str))?;
+        let domain_id = intern_access_log_string(&db, Some(connection.metadata.host.as_str()))?;
+        let target_ip_id =
+            intern_access_log_string(&db, Some(connection.metadata.destination_ip.as_str()))?;
         inserted += db.execute(
-            "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_ip,target_port,decision,rule,category,process_name,process_path,operating_system,system_user,source_ip,route,proxy_group) VALUES(?1,?2,NULLIF(?3,''),NULLIF(?4,''),?5,?6,NULLIF(?7,''),?8,NULLIF(?9,''),NULLIF(?10,''),?11,?12,NULLIF(?13,''),?14,?15)",
-            params![connection.id,connection.start,connection.metadata.host,connection.metadata.destination_ip,connection.metadata.destination_port.parse::<i64>().ok(),decision,connection.rule,category,connection.metadata.process,connection.metadata.process_path,os,user,connection.metadata.source_ip,route,connection.chains.first()]
+            "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,process_path_string_id,operating_system_string_id,system_user_string_id,source_ip_string_id,route_string_id,proxy_group_string_id) VALUES(?1,CAST(COALESCE((julianday(?2)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER),?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            params![connection_hash(&connection.id),connection.start,domain_id,target_ip_id,connection.metadata.destination_port.parse::<i64>().ok(),decision_code(decision),rule_id,category_id,process_name_id,process_path_id,operating_system_id,system_user_id,source_ip_id,route_id,proxy_group_id]
         ).map_err(error)?;
     }
     cleanup_retention(&db)?;
@@ -255,20 +287,25 @@ fn insert_mihomo_log_line_inner(
 fn parse_mihomo_log_event(line: &str) -> Option<ParsedLogEvent> {
     let message = log_message(line);
     let route = log_route(&message)?;
-    let (domain, port) = log_target(&message)?;
+    let (target, port) = log_target(&message)?;
     let rule = log_rule(&message);
     let decision = if route.eq_ignore_ascii_case("REJECT") {
         "block"
     } else {
         "allow"
     };
+    let (domain, target_ip) = split_domain_and_ip(target);
+    let dns_resolution = decision == "allow" && port == Some(53);
     Some(ParsedLogEvent {
         id: format!("mihomo-log-{}", line_id_suffix(line)),
         observed_at: log_time(line),
         domain,
+        target_ip,
         port,
         decision,
         rule,
+        category: dns_resolution.then_some("DNS 解析"),
+        process_name: dns_resolution.then(|| "mihomo".to_owned()),
         route,
     })
 }
@@ -281,17 +318,20 @@ fn insert_parsed_log_event(
     user: &str,
 ) -> Result<usize, String> {
     db.execute(
-        "INSERT OR IGNORE INTO access_logs(connection_id,observed_at,domain,target_port,decision,rule,operating_system,system_user,route,proxy_group) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+        "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id) VALUES(?1,CAST(COALESCE((julianday(?2)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER),?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
         params![
-            event.id,
+            connection_hash(&event.id),
             observed_at,
-            event.domain,
+            intern_access_log_string(db, event.domain.as_deref())?,
+            intern_access_log_string(db, event.target_ip.as_deref())?,
             event.port,
-            event.decision,
-            event.rule,
-            os,
-            user,
-            event.route
+            decision_code(event.decision),
+            intern_access_log_string(db, event.rule.as_deref())?,
+            intern_access_log_string(db, event.category)?,
+            intern_access_log_string(db, event.process_name.as_deref())?,
+            intern_access_log_string(db, Some(os))?,
+            intern_access_log_string(db, Some(user))?,
+            intern_access_log_string(db, Some(event.route.as_str()))?
         ],
     )
     .map_err(error)
@@ -396,6 +436,72 @@ fn log_route(message: &str) -> Option<String> {
         .filter(|route| !route.is_empty())
 }
 
+fn split_domain_and_ip(target: String) -> (Option<String>, Option<String>) {
+    if target.parse::<IpAddr>().is_ok() {
+        (None, Some(target))
+    } else {
+        (Some(target), None)
+    }
+}
+
+fn is_dns_resolution_connection(connection: &Connection) -> bool {
+    connection.metadata.destination_port == "53"
+        && !connection
+            .chains
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case("REJECT"))
+}
+
+fn normalize_dns_resolution_rows(db: &rusqlite::Connection) -> Result<(), String> {
+    let category_id = intern_access_log_string(db, Some("DNS 解析"))?;
+    let process_id = intern_access_log_string(db, Some("mihomo"))?;
+    db.execute(
+        "UPDATE access_logs
+            SET decision_code=0,
+                category_string_id=COALESCE(category_string_id,?1),
+                process_name_string_id=COALESCE(process_name_string_id,?2)
+          WHERE decision_code=2
+            AND target_port=53
+            AND COALESCE(route_string_id,0)<>(SELECT COALESCE(MAX(id),-1) FROM access_log_strings WHERE value='REJECT')",
+        params![category_id, process_id],
+    )
+    .map(|_| ())
+    .map_err(error)
+}
+
+fn intern_access_log_string(
+    db: &rusqlite::Connection,
+    value: Option<&str>,
+) -> Result<Option<i64>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    db.execute(
+        "INSERT OR IGNORE INTO access_log_strings(value) VALUES(?1)",
+        params![value],
+    )
+    .map_err(error)?;
+    db.query_row(
+        "SELECT id FROM access_log_strings WHERE value=?1",
+        params![value],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .map_err(error)
+}
+
+fn connection_hash(value: &str) -> Vec<u8> {
+    Sha256::digest(value.as_bytes())[..8].to_vec()
+}
+
+fn decision_code(value: &str) -> i64 {
+    match value {
+        "block" => 1,
+        "warning" => 2,
+        _ => 0,
+    }
+}
+
 fn line_id_suffix(line: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(line.as_bytes()))
@@ -417,9 +523,41 @@ pub fn list_access_logs(
 ) -> Result<Vec<AccessLog>, String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    normalize_dns_resolution_rows(&db)?;
     let search = search.unwrap_or_default();
     let pattern = format!("%{search}%");
-    let mut statement=db.prepare("SELECT connection_id,observed_at,domain,target_ip,target_port,decision,rule,category,process_name,operating_system,system_user,source_ip,route,proxy_group,error FROM access_logs WHERE (?1 IS NULL OR decision=?1) AND (?2='' OR COALESCE(domain,'') LIKE ?3 OR COALESCE(target_ip,'') LIKE ?3 OR COALESCE(process_name,'') LIKE ?3) ORDER BY julianday(observed_at) DESC, observed_at DESC LIMIT ?4").map_err(error)?;
+    let mut statement=db.prepare(
+        "SELECT CAST(l.id AS TEXT),
+                strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
+                domain_s.value,
+                target_ip_s.value,
+                l.target_port,
+                CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                rule_s.value,
+                category_s.value,
+                process_s.value,
+                os_s.value,
+                user_s.value,
+                source_s.value,
+                route_s.value,
+                proxy_s.value,
+                error_s.value
+           FROM access_logs l
+           LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+           LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
+           LEFT JOIN access_log_strings rule_s ON rule_s.id=l.rule_string_id
+           LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id
+           LEFT JOIN access_log_strings process_s ON process_s.id=l.process_name_string_id
+           LEFT JOIN access_log_strings os_s ON os_s.id=l.operating_system_string_id
+           LEFT JOIN access_log_strings user_s ON user_s.id=l.system_user_string_id
+           LEFT JOIN access_log_strings source_s ON source_s.id=l.source_ip_string_id
+           LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+           LEFT JOIN access_log_strings proxy_s ON proxy_s.id=l.proxy_group_string_id
+           LEFT JOIN access_log_strings error_s ON error_s.id=l.error_string_id
+          WHERE (?1 IS NULL OR CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END=?1)
+            AND (?2='' OR COALESCE(domain_s.value,'') LIKE ?3 OR COALESCE(target_ip_s.value,'') LIKE ?3 OR COALESCE(process_s.value,'') LIKE ?3)
+          ORDER BY l.observed_at_ms DESC, l.id DESC LIMIT ?4"
+    ).map_err(error)?;
     let rows = statement
         .query_map(
             params![decision, search, pattern, limit.unwrap_or(500).min(5000)],
@@ -465,12 +603,17 @@ pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogSt
 
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    normalize_dns_resolution_rows(&db)?;
     db.query_row(
         "SELECT
-           COALESCE(SUM(CASE WHEN decision='block' THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision='allow' THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision='warning' THEN 1 ELSE 0 END),0),
-           COUNT(*)
+           COALESCE(SUM(CASE WHEN decision_code=1 THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=0 THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=2 THEN 1 ELSE 0 END),0),
+           COUNT(*),
+           COALESCE(SUM(CASE WHEN decision_code=1 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=0 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=2 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0)
          FROM access_logs",
         [],
         |row| {
@@ -479,6 +622,10 @@ fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
                 allow: row.get(1)?,
                 warning: row.get(2)?,
                 total: row.get(3)?,
+                today_block: row.get(4)?,
+                today_allow: row.get(5)?,
+                today_warning: row.get(6)?,
+                today_total: row.get(7)?,
             })
         },
     )
@@ -506,8 +653,39 @@ pub fn export_access_logs_csv(
 ) -> Result<String, String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let mut statement=db.prepare("SELECT observed_at,domain,target_ip,CAST(target_port AS TEXT),decision,rule,category,process_name,operating_system,system_user,source_ip,route,proxy_group,error FROM access_logs ORDER BY julianday(observed_at) DESC, observed_at DESC").map_err(error)?;
-    let mut output=String::from("time,domain,target_ip,target_port,decision,rule,category,process,os,user,source_ip,route,proxy_group,error\n");
+    normalize_dns_resolution_rows(&db)?;
+    let mut statement = db
+        .prepare(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
+                domain_s.value,
+                target_ip_s.value,
+                CAST(l.target_port AS TEXT),
+                CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                rule_s.value,
+                category_s.value,
+                process_s.value,
+                os_s.value,
+                user_s.value,
+                source_s.value,
+                route_s.value,
+                proxy_s.value,
+                error_s.value
+           FROM access_logs l
+           LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+           LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
+           LEFT JOIN access_log_strings rule_s ON rule_s.id=l.rule_string_id
+           LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id
+           LEFT JOIN access_log_strings process_s ON process_s.id=l.process_name_string_id
+           LEFT JOIN access_log_strings os_s ON os_s.id=l.operating_system_string_id
+           LEFT JOIN access_log_strings user_s ON user_s.id=l.system_user_string_id
+           LEFT JOIN access_log_strings source_s ON source_s.id=l.source_ip_string_id
+           LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+           LEFT JOIN access_log_strings proxy_s ON proxy_s.id=l.proxy_group_string_id
+           LEFT JOIN access_log_strings error_s ON error_s.id=l.error_string_id
+          ORDER BY l.observed_at_ms DESC, l.id DESC",
+        )
+        .map_err(error)?;
+    let mut output = String::from("time,domain,target_ip,target_port,decision,rule,category,process,os,user,source_ip,route,proxy_group,error\n");
     let rows = statement
         .query_map([], |row| {
             let values = (0..14)
@@ -550,7 +728,7 @@ fn cleanup_retention(db: &rusqlite::Connection) -> Result<(), String> {
     };
     if let Some(days) = days {
         db.execute(
-            "DELETE FROM access_logs WHERE datetime(observed_at) < datetime('now', ?1)",
+            "DELETE FROM access_logs WHERE observed_at_ms < CAST((julianday('now', ?1)-2440587.5)*86400000 AS INTEGER)",
             params![format!("-{days} days")],
         )
         .map_err(error)?;
@@ -606,11 +784,39 @@ fn error(value: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use crate::storage::AppState;
+
+    fn insert_test_access_log(
+        db: &rusqlite::Connection,
+        connection_id: &str,
+        observed_at: &str,
+        decision: &str,
+        target_port: Option<i64>,
+        route: Option<&str>,
+    ) {
+        let route_id = intern_access_log_string(db, route).unwrap();
+        let os_id = intern_access_log_string(db, Some("macOS")).unwrap();
+        let user_id = intern_access_log_string(db, Some("u")).unwrap();
+        db.execute(
+            "INSERT INTO access_logs(connection_hash,observed_at_ms,target_port,decision_code,operating_system_string_id,system_user_string_id,route_string_id)
+             VALUES(?1,CAST(COALESCE((julianday(?2)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER),?3,?4,?5,?6,?7)",
+            params![
+                connection_hash(connection_id),
+                observed_at,
+                target_port,
+                decision_code(decision),
+                os_id,
+                user_id,
+                route_id
+            ],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn retention_cleanup_removes_old_rows() {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
-        db.execute("INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES('old','2000-01-01T00:00:00Z','allow','macOS','u')",[]).unwrap();
+        insert_test_access_log(&db, "old", "2000-01-01T00:00:00Z", "allow", None, None);
         cleanup_retention(&db).unwrap();
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM access_logs", [], |row| row.get(0))
@@ -652,7 +858,10 @@ mod tests {
         let db = state.db.lock().unwrap();
         let (domain, decision): (String, String) = db
             .query_row(
-                "SELECT domain,decision FROM access_logs LIMIT 1",
+                "SELECT domain_s.value,CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+                  LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -670,12 +879,19 @@ mod tests {
         let db = state.db.lock().unwrap();
         let (observed_at, domain, decision, route): (String, String, String, String) = db
             .query_row(
-                "SELECT observed_at,domain,decision,route FROM access_logs LIMIT 1",
+                "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
+                        domain_s.value,
+                        CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                        route_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+                   LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+                  LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(observed_at, "2026-07-20T17:21:19.379133000+08:00");
+        assert_eq!(observed_at, "2026-07-20T09:21:19Z");
         assert_eq!(domain, "www.baidu.com");
         assert_eq!(decision, "block");
         assert_eq!(route, "REJECT");
@@ -689,7 +905,13 @@ mod tests {
         let db = state.db.lock().unwrap();
         let (domain, decision, route): (String, String, String) = db
             .query_row(
-                "SELECT domain,decision,route FROM access_logs LIMIT 1",
+                "SELECT domain_s.value,
+                        CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                        route_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+                   LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+                  LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -700,6 +922,92 @@ mod tests {
     }
 
     #[test]
+    fn records_dns_resolution_logs_as_allowed_dns_category() {
+        let state = AppState::open(":memory:").unwrap();
+        let line = r#"time="2026-08-01T09:16:58.239991000+08:00" level=info msg="[UDP] mihomo --> 223.5.5.5:53 match IPCIDR(223.5.5.5/32) using DIRECT""#;
+        assert_eq!(insert_mihomo_log_line(&state, line).unwrap(), 1);
+        let db = state.db.lock().unwrap();
+        let (domain, target_ip, port, decision, category, process): (
+            Option<String>,
+            String,
+            i64,
+            String,
+            String,
+            String,
+        ) = db
+            .query_row(
+                "SELECT domain_s.value,
+                        target_ip_s.value,
+                        l.target_port,
+                        CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                        category_s.value,
+                        process_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+                   LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
+                   LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id
+                   LEFT JOIN access_log_strings process_s ON process_s.id=l.process_name_string_id
+                  LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(domain, None);
+        assert_eq!(target_ip, "223.5.5.5");
+        assert_eq!(port, 53);
+        assert_eq!(decision, "allow");
+        assert_eq!(category, "DNS 解析");
+        assert_eq!(process, "mihomo");
+    }
+
+    #[test]
+    fn normalizes_legacy_dns_resolution_warnings_before_stats() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            insert_test_access_log(
+                &db,
+                "dns",
+                "2026-08-01T09:16:58+08:00",
+                "warning",
+                Some(53),
+                Some("DIRECT"),
+            );
+        }
+
+        let stats = access_log_stats_inner(&state).unwrap();
+        assert_eq!(stats.allow, 1);
+        assert_eq!(stats.warning, 0);
+
+        let db = state.db.lock().unwrap();
+        let (decision, category, process): (String, String, String) = db
+            .query_row(
+                "SELECT CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                        category_s.value,
+                        process_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id
+                  LEFT JOIN access_log_strings process_s ON process_s.id=l.process_name_string_id
+                  WHERE l.connection_hash=?1",
+                params![connection_hash("dns")],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(decision, "allow");
+        assert_eq!(category, "DNS 解析");
+        assert_eq!(process, "mihomo");
+    }
+
+    #[test]
     fn inserts_current_mihomo_proxy_route_logfmt() {
         let state = AppState::open(":memory:").unwrap();
         let line = r#"time="2026-07-26T20:39:13.539499000+08:00" level=info msg="[TCP] 198.18.0.1:54918 --> chatgpt.com:443 match Match using CleanWeb[HK-A01]""#;
@@ -707,7 +1015,15 @@ mod tests {
         let db = state.db.lock().unwrap();
         let (domain, decision, rule, route): (String, String, String, String) = db
             .query_row(
-                "SELECT domain,decision,rule,route FROM access_logs LIMIT 1",
+                "SELECT domain_s.value,
+                        CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+                        rule_s.value,
+                        route_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+                   LEFT JOIN access_log_strings rule_s ON rule_s.id=l.rule_string_id
+                   LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+                  LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
@@ -723,18 +1039,24 @@ mod tests {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
         for index in 0..150 {
-            db.execute(
-                "INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES(?1,'2026-01-01T00:00:00Z','allow','macOS','u')",
-                params![format!("allow-{index}")],
-            )
-            .unwrap();
+            insert_test_access_log(
+                &db,
+                &format!("allow-{index}"),
+                "2026-01-01T00:00:00Z",
+                "allow",
+                None,
+                None,
+            );
         }
         for index in 0..2 {
-            db.execute(
-                "INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES(?1,'2026-01-01T00:00:00Z','block','macOS','u')",
-                params![format!("block-{index}")],
-            )
-            .unwrap();
+            insert_test_access_log(
+                &db,
+                &format!("block-{index}"),
+                "2026-01-01T00:00:00Z",
+                "block",
+                None,
+                None,
+            );
         }
         drop(db);
 
@@ -748,11 +1070,29 @@ mod tests {
     fn sqlite_orders_mixed_timezone_access_log_timestamps_by_instant() {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
-        db.execute("INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES('old-local','2026-07-26T20:29:14+08:00','allow','macOS','u')",[]).unwrap();
-        db.execute("INSERT INTO access_logs(connection_id,observed_at,decision,operating_system,system_user) VALUES('new-utc','2026-07-26T12:44:19Z','allow','macOS','u')",[]).unwrap();
+        insert_test_access_log(
+            &db,
+            "old-local",
+            "2026-07-26T20:29:14+08:00",
+            "allow",
+            None,
+            Some("old-local"),
+        );
+        insert_test_access_log(
+            &db,
+            "new-utc",
+            "2026-07-26T12:44:19Z",
+            "allow",
+            None,
+            Some("new-utc"),
+        );
         let first: String = db
             .query_row(
-                "SELECT connection_id FROM access_logs ORDER BY julianday(observed_at) DESC, observed_at DESC LIMIT 1",
+                "SELECT route_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+                  ORDER BY l.observed_at_ms DESC, l.id DESC
+                  LIMIT 1",
                 [],
                 |row| row.get(0),
             )
@@ -776,7 +1116,7 @@ mod tests {
         let db = state.db.lock().unwrap();
         let blocks: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM access_logs WHERE decision='block'",
+                "SELECT COUNT(*) FROM access_logs WHERE decision_code=1",
                 [],
                 |row| row.get(0),
             )

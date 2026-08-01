@@ -12,13 +12,15 @@ use argon2::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::State;
 use uuid::Uuid;
 
 use crate::builtin_rules::{
     CLEANWEB_ADULT_SUPPLEMENT_ID, CLEANWEB_ADULT_SUPPLEMENT_TEXT, CLEANWEB_ADULT_SUPPLEMENT_URL,
-    CLEANWEB_SECURITY_SUPPLEMENT_ID, CLEANWEB_SECURITY_SUPPLEMENT_TEXT,
-    CLEANWEB_SECURITY_SUPPLEMENT_URL,
+    CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID, CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_TEXT,
+    CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL, CLEANWEB_SECURITY_SUPPLEMENT_ID,
+    CLEANWEB_SECURITY_SUPPLEMENT_TEXT, CLEANWEB_SECURITY_SUPPLEMENT_URL,
 };
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 #[cfg(debug_assertions)]
@@ -335,27 +337,32 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
            payload TEXT NOT NULL,
            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
          );
+         CREATE TABLE IF NOT EXISTS access_log_strings (
+           id INTEGER PRIMARY KEY,
+           value TEXT NOT NULL UNIQUE
+         );
          CREATE TABLE IF NOT EXISTS access_logs (
-           connection_id TEXT PRIMARY KEY,
-           observed_at TEXT NOT NULL,
-           domain TEXT,
-           target_ip TEXT,
+           id INTEGER PRIMARY KEY,
+           connection_hash BLOB NOT NULL UNIQUE,
+           observed_at_ms INTEGER NOT NULL,
+           domain_string_id INTEGER REFERENCES access_log_strings(id),
+           target_ip_string_id INTEGER REFERENCES access_log_strings(id),
            target_port INTEGER,
-           decision TEXT NOT NULL,
-           rule TEXT,
-           category TEXT,
-           process_name TEXT,
-           process_path TEXT,
-           operating_system TEXT,
-           system_user TEXT,
-           source_ip TEXT,
-           route TEXT,
-           proxy_group TEXT,
-           error TEXT
+           decision_code INTEGER NOT NULL,
+           rule_string_id INTEGER REFERENCES access_log_strings(id),
+           category_string_id INTEGER REFERENCES access_log_strings(id),
+           process_name_string_id INTEGER REFERENCES access_log_strings(id),
+           process_path_string_id INTEGER REFERENCES access_log_strings(id),
+           operating_system_string_id INTEGER REFERENCES access_log_strings(id),
+           system_user_string_id INTEGER REFERENCES access_log_strings(id),
+           source_ip_string_id INTEGER REFERENCES access_log_strings(id),
+           route_string_id INTEGER REFERENCES access_log_strings(id),
+           proxy_group_string_id INTEGER REFERENCES access_log_strings(id),
+           error_string_id INTEGER REFERENCES access_log_strings(id)
          );
          CREATE TABLE IF NOT EXISTS parent_rules (
            id TEXT PRIMARY KEY,
-           action TEXT NOT NULL CHECK(action IN ('allow','block','proxy')),
+           action TEXT NOT NULL CHECK(action IN ('allow','block','proxy','system_route')),
            kind TEXT NOT NULL,
            pattern TEXT NOT NULL,
            category TEXT NOT NULL DEFAULT 'custom',
@@ -376,7 +383,11 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
            PRIMARY KEY(subscription_id,domain)
          );",
     )?;
-    migrate_parent_rules_proxy_action(db)?;
+    migrate_parent_rules_action_constraint(db)?;
+    migrate_access_log_string_storage(db)?;
+    if migrate_compact_access_logs(db)? {
+        db.execute_batch("VACUUM")?;
+    }
     let defaults = [
         ("protection_enabled", "false"),
         ("proxy_enabled", "false"),
@@ -411,7 +422,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
     const SEED_MARKER: &str = "builtin_rule_sources_v5_seeded";
     db.execute(
-        "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%'",
+        "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%' OR url LIKE 'builtin://%'",
         [],
     )?;
     let sources = [
@@ -472,6 +483,13 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
             "phishing",
         ),
         (
+            CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID,
+            "内置规则 · 娱乐 CDN 补充",
+            CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL,
+            "clash",
+            "entertainment",
+        ),
+        (
             "default:loyalsoldier:cncidr",
             "内置路由 · 中国 IP 直连",
             "https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",
@@ -518,6 +536,13 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         "phishing",
         CLEANWEB_SECURITY_SUPPLEMENT_TEXT,
     )?;
+    seed_builtin_rule_text(
+        db,
+        CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID,
+        CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL,
+        "entertainment",
+        CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_TEXT,
+    )?;
     db.execute(
         "INSERT OR IGNORE INTO settings(key,value) VALUES(?1,'true')",
         params![SEED_MARKER],
@@ -544,7 +569,7 @@ fn seed_builtin_rule_text(
     transaction.commit()
 }
 
-fn migrate_parent_rules_proxy_action(db: &Connection) -> rusqlite::Result<()> {
+fn migrate_parent_rules_action_constraint(db: &Connection) -> rusqlite::Result<()> {
     let table_sql: Option<String> = db
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='parent_rules'",
@@ -552,9 +577,9 @@ fn migrate_parent_rules_proxy_action(db: &Connection) -> rusqlite::Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    if !table_sql
+    if table_sql
         .as_deref()
-        .is_some_and(|sql| sql.contains("CHECK(action IN ('allow','block'))"))
+        .is_some_and(|sql| sql.contains("'system_route'"))
     {
         return Ok(());
     }
@@ -562,7 +587,7 @@ fn migrate_parent_rules_proxy_action(db: &Connection) -> rusqlite::Result<()> {
         "ALTER TABLE parent_rules RENAME TO parent_rules_old;
          CREATE TABLE parent_rules (
            id TEXT PRIMARY KEY,
-           action TEXT NOT NULL CHECK(action IN ('allow','block','proxy')),
+           action TEXT NOT NULL CHECK(action IN ('allow','block','proxy','system_route')),
            kind TEXT NOT NULL,
            pattern TEXT NOT NULL,
            category TEXT NOT NULL DEFAULT 'custom',
@@ -574,6 +599,212 @@ fn migrate_parent_rules_proxy_action(db: &Connection) -> rusqlite::Result<()> {
            SELECT id,action,kind,pattern,category,enabled,created_at FROM parent_rules_old;
          DROP TABLE parent_rules_old;",
     )
+}
+
+fn migrate_access_log_string_storage(db: &Connection) -> rusqlite::Result<()> {
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS access_log_strings (
+           id INTEGER PRIMARY KEY,
+           value TEXT NOT NULL UNIQUE
+         )",
+        [],
+    )?;
+    let columns = [
+        ("rule", "rule_string_id"),
+        ("category", "category_string_id"),
+        ("process_name", "process_name_string_id"),
+        ("process_path", "process_path_string_id"),
+        ("operating_system", "operating_system_string_id"),
+        ("system_user", "system_user_string_id"),
+        ("source_ip", "source_ip_string_id"),
+        ("route", "route_string_id"),
+        ("proxy_group", "proxy_group_string_id"),
+        ("error", "error_string_id"),
+    ];
+    for (_, id_column) in columns {
+        add_access_log_string_column(db, id_column)?;
+    }
+    for (text_column, id_column) in columns {
+        if !table_has_column(db, "access_logs", text_column)? {
+            continue;
+        }
+        db.execute(
+            &format!(
+                "INSERT OR IGNORE INTO access_log_strings(value)
+                   SELECT DISTINCT {text_column}
+                   FROM access_logs
+                  WHERE {text_column} IS NOT NULL AND {text_column}<>''"
+            ),
+            [],
+        )?;
+        db.execute(
+            &format!(
+                "UPDATE access_logs
+                    SET {id_column}=(SELECT id FROM access_log_strings WHERE value={text_column}),
+                        {text_column}=NULL
+                  WHERE {text_column} IS NOT NULL AND {text_column}<>''"
+            ),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn add_access_log_string_column(db: &Connection, column: &str) -> rusqlite::Result<()> {
+    if !table_has_column(db, "access_logs", column)? {
+        db.execute(
+            &format!("ALTER TABLE access_logs ADD COLUMN {column} INTEGER REFERENCES access_log_strings(id)"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn table_has_column(db: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    Ok(db
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .any(|name| name == column))
+}
+
+fn migrate_compact_access_logs(db: &Connection) -> rusqlite::Result<bool> {
+    if table_has_column(db, "access_logs", "observed_at_ms")? {
+        return Ok(false);
+    }
+    if !table_has_column(db, "access_logs", "connection_id")? {
+        return Ok(false);
+    }
+    db.execute(
+        "INSERT OR IGNORE INTO access_log_strings(value)
+           SELECT DISTINCT domain FROM access_logs WHERE domain IS NOT NULL AND domain<>''",
+        [],
+    )?;
+    db.execute(
+        "INSERT OR IGNORE INTO access_log_strings(value)
+           SELECT DISTINCT target_ip FROM access_logs WHERE target_ip IS NOT NULL AND target_ip<>''",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE access_logs_compact (
+           id INTEGER PRIMARY KEY,
+           connection_hash BLOB NOT NULL UNIQUE,
+           observed_at_ms INTEGER NOT NULL,
+           domain_string_id INTEGER REFERENCES access_log_strings(id),
+           target_ip_string_id INTEGER REFERENCES access_log_strings(id),
+           target_port INTEGER,
+           decision_code INTEGER NOT NULL,
+           rule_string_id INTEGER REFERENCES access_log_strings(id),
+           category_string_id INTEGER REFERENCES access_log_strings(id),
+           process_name_string_id INTEGER REFERENCES access_log_strings(id),
+           process_path_string_id INTEGER REFERENCES access_log_strings(id),
+           operating_system_string_id INTEGER REFERENCES access_log_strings(id),
+           system_user_string_id INTEGER REFERENCES access_log_strings(id),
+           source_ip_string_id INTEGER REFERENCES access_log_strings(id),
+           route_string_id INTEGER REFERENCES access_log_strings(id),
+           proxy_group_string_id INTEGER REFERENCES access_log_strings(id),
+           error_string_id INTEGER REFERENCES access_log_strings(id)
+         )",
+        [],
+    )?;
+    struct Row {
+        connection_id: String,
+        observed_at_ms: i64,
+        domain_id: Option<i64>,
+        target_ip_id: Option<i64>,
+        target_port: Option<i64>,
+        decision_code: i64,
+        rule_id: Option<i64>,
+        category_id: Option<i64>,
+        process_name_id: Option<i64>,
+        process_path_id: Option<i64>,
+        operating_system_id: Option<i64>,
+        system_user_id: Option<i64>,
+        source_ip_id: Option<i64>,
+        route_id: Option<i64>,
+        proxy_group_id: Option<i64>,
+        error_id: Option<i64>,
+    }
+    let rows = {
+        let mut statement = db.prepare(
+            "SELECT l.connection_id,
+                    CAST(COALESCE((julianday(l.observed_at)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER),
+                    domain_s.id,
+                    target_ip_s.id,
+                    l.target_port,
+                    CASE l.decision WHEN 'block' THEN 1 WHEN 'warning' THEN 2 ELSE 0 END,
+                    l.rule_string_id,l.category_string_id,l.process_name_string_id,l.process_path_string_id,
+                    l.operating_system_string_id,l.system_user_string_id,l.source_ip_string_id,
+                    l.route_string_id,l.proxy_group_string_id,l.error_string_id
+               FROM access_logs l
+               LEFT JOIN access_log_strings domain_s ON domain_s.value=l.domain
+               LEFT JOIN access_log_strings target_ip_s ON target_ip_s.value=l.target_ip",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(Row {
+                    connection_id: row.get(0)?,
+                    observed_at_ms: row.get(1)?,
+                    domain_id: row.get(2)?,
+                    target_ip_id: row.get(3)?,
+                    target_port: row.get(4)?,
+                    decision_code: row.get(5)?,
+                    rule_id: row.get(6)?,
+                    category_id: row.get(7)?,
+                    process_name_id: row.get(8)?,
+                    process_path_id: row.get(9)?,
+                    operating_system_id: row.get(10)?,
+                    system_user_id: row.get(11)?,
+                    source_ip_id: row.get(12)?,
+                    route_id: row.get(13)?,
+                    proxy_group_id: row.get(14)?,
+                    error_id: row.get(15)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    db.execute_batch("BEGIN IMMEDIATE")?;
+    let insert_result = (|| {
+        let mut insert = db.prepare(
+            "INSERT OR IGNORE INTO access_logs_compact(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,process_path_string_id,operating_system_string_id,system_user_string_id,source_ip_string_id,route_string_id,proxy_group_string_id,error_string_id)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+        )?;
+        for row in rows {
+            let hash = Sha256::digest(row.connection_id.as_bytes())[..8].to_vec();
+            insert.execute(params![
+                hash,
+                row.observed_at_ms,
+                row.domain_id,
+                row.target_ip_id,
+                row.target_port,
+                row.decision_code,
+                row.rule_id,
+                row.category_id,
+                row.process_name_id,
+                row.process_path_id,
+                row.operating_system_id,
+                row.system_user_id,
+                row.source_ip_id,
+                row.route_id,
+                row.proxy_group_id,
+                row.error_id
+            ])?;
+        }
+        Ok::<(), rusqlite::Error>(())
+    })();
+    if insert_result.is_ok() {
+        db.execute_batch(
+            "DROP TABLE access_logs;
+             ALTER TABLE access_logs_compact RENAME TO access_logs;",
+        )?;
+        db.execute_batch("COMMIT")?;
+    } else {
+        db.execute_batch("ROLLBACK")?;
+        insert_result?;
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -778,6 +1009,48 @@ fn validate_subscription_fields(
     Ok(())
 }
 
+fn is_builtin_subscription_record(id: &str, _name: &str, url: &str) -> bool {
+    id.starts_with("default:") || url.starts_with("builtin://")
+}
+
+fn require_mutable_subscription(db: &Connection, id: &str) -> Result<(), String> {
+    if id.starts_with("default:") {
+        return Err("内置规则不能修改".into());
+    }
+    let record = db
+        .query_row(
+            "SELECT name,url FROM subscriptions WHERE id=?1",
+            params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| "订阅不存在".to_string())?;
+    if is_builtin_subscription_record(id, &record.0, &record.1) {
+        return Err("内置规则不能修改".into());
+    }
+    Ok(())
+}
+
+fn require_deletable_subscription(db: &Connection, id: &str) -> Result<(), String> {
+    if id.starts_with("default:") {
+        return Err("内置规则不能删除".into());
+    }
+    let record = db
+        .query_row(
+            "SELECT name,url FROM subscriptions WHERE id=?1",
+            params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| "订阅不存在".to_string())?;
+    if is_builtin_subscription_record(id, &record.0, &record.1) {
+        return Err("内置规则不能删除".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_subscription(
     input: NewSubscription,
@@ -807,11 +1080,9 @@ pub fn update_subscription(
     state: State<'_, AppState>,
 ) -> Result<SubscriptionRecord, String> {
     state.require_session(&session_token)?;
-    if id.starts_with("default:") {
-        return Err("内置规则不能修改".into());
-    }
-    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    require_mutable_subscription(&db, &id)?;
+    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
     let kind = update_subscription_inner(&db, &id, &input)?;
     drop(db);
     list_subscriptions_inner(Some(kind), &state)?
@@ -825,9 +1096,7 @@ fn update_subscription_inner(
     id: &str,
     input: &UpdateSubscription,
 ) -> Result<String, String> {
-    if id.starts_with("default:") {
-        return Err("内置规则不能修改".into());
-    }
+    require_mutable_subscription(db, id)?;
     validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
     let kind: String = db
         .query_row(
@@ -866,10 +1135,24 @@ pub fn set_subscription_enabled(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
-    if id.starts_with("default:") && !enabled {
-        return Err("内置规则必须保持启用".into());
-    }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    if !enabled {
+        if id.starts_with("default:") {
+            return Err("内置规则必须保持启用".into());
+        }
+        let record = db
+            .query_row(
+                "SELECT name,url FROM subscriptions WHERE id=?1",
+                params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(error)?
+            .ok_or_else(|| "订阅不存在".to_string())?;
+        if is_builtin_subscription_record(&id, &record.0, &record.1) {
+            return Err("内置规则必须保持启用".into());
+        }
+    }
     if db
         .execute(
             "UPDATE subscriptions SET enabled=?1 WHERE id=?2",
@@ -891,19 +1174,15 @@ pub fn delete_subscription(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
-    if id.starts_with("default:") {
-        return Err("内置规则不能删除".into());
-    }
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    require_deletable_subscription(&db, &id)?;
     delete_subscription_inner(&db, &id)?;
     drop(db);
     Ok(())
 }
 
 fn delete_subscription_inner(db: &Connection, id: &str) -> Result<(), String> {
-    if id.starts_with("default:") {
-        return Err("内置规则不能删除".into());
-    }
+    require_deletable_subscription(db, id)?;
     let transaction = db.unchecked_transaction().map_err(error)?;
     if transaction
         .execute("DELETE FROM subscriptions WHERE id=?1", params![id])
@@ -963,6 +1242,7 @@ pub fn create_parent_rule(
         "allow" => Action::Allow,
         "block" => Action::Block,
         "proxy" => Action::Proxy,
+        "system_route" => Action::SystemRoute,
         _ => return Err("规则动作无效".into()),
     };
     let kind = match input.kind.as_str() {
@@ -1147,17 +1427,19 @@ mod tests {
     }
 
     #[test]
-    fn parent_rules_allow_proxy_action() {
+    fn parent_rules_allow_proxy_and_system_route_actions() {
         let state = AppState::open(":memory:").unwrap();
-        state
-            .db
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('p','proxy','Exact','example.com','custom')",
-                [],
-            )
-            .unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('p','proxy','Exact','example.com','custom')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('s','system_route','Exact','internal.example','routing')",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1218,18 +1500,18 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 9, "内置规则必须始终存在");
+        assert_eq!(count, 9, "default 内置规则必须始终存在");
         let builtin_count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:cleanweb:%' AND enabled=1 AND update_interval_hours IS NULL",
+                "SELECT COUNT(*) FROM subscriptions WHERE url LIKE 'builtin://%' AND enabled=1 AND update_interval_hours IS NULL",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(builtin_count, 2, "打包规则不应参与网络刷新");
+        assert_eq!(builtin_count, 3, "打包规则不应参与网络刷新");
         let imported_count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%'",
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%' OR subscription_id='local:cleanweb:entertainment-cdn'",
                 [],
                 |row| row.get(0),
             )
@@ -1344,6 +1626,33 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err(), "内置规则不能修改");
+    }
+
+    #[test]
+    fn rejects_builtin_url_subscription_mutation() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('legacy-builtin-url','rule','娱乐 CDN','builtin://cleanweb/entertainment-cdn','clash','entertainment',1)",
+            [],
+        )
+        .unwrap();
+
+        let update_result = update_subscription_inner(
+            &db,
+            "legacy-builtin-url",
+            &UpdateSubscription {
+                name: "不应修改".into(),
+                url: "https://example.test/new".into(),
+                format: Some("hosts".into()),
+                category: Some("custom".into()),
+                update_interval_hours: Some(24),
+            },
+        );
+        let delete_result = delete_subscription_inner(&db, "legacy-builtin-url");
+
+        assert_eq!(update_result.unwrap_err(), "内置规则不能修改");
+        assert_eq!(delete_result.unwrap_err(), "内置规则不能删除");
     }
 
     #[test]

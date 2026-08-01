@@ -1218,7 +1218,7 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
         append_entertainment_rules(&mut result);
     }
     append_imported_rules(db, &enabled_categories, false, &mut result)?;
-    append_parent_rules(db, "action='proxy'", &mut result)?;
+    append_parent_rules(db, "action IN ('proxy','system_route')", &mut result)?;
     Ok(result)
 }
 
@@ -1227,7 +1227,7 @@ fn append_parent_rules(
     action_filter: &str,
     result: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let sql = format!("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 AND {action_filter} ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'allow' THEN 1 ELSE 2 END,created_at");
+    let sql = format!("SELECT kind,pattern,action FROM parent_rules WHERE enabled=1 AND {action_filter} ORDER BY CASE action WHEN 'block' THEN 0 WHEN 'allow' THEN 1 WHEN 'proxy' THEN 2 ELSE 3 END,created_at");
     let mut statement = db.prepare(&sql).map_err(error)?;
     let rows = statement
         .query_map([], |row| {
@@ -1244,6 +1244,7 @@ fn append_parent_rules(
         let target = match action.as_str() {
             "allow" => "DIRECT",
             "proxy" => "CleanWeb",
+            "system_route" => "DIRECT",
             _ => "REJECT",
         };
         if let Some(rule) = mihomo_rule(&kind, &pattern, target) {
@@ -1869,6 +1870,11 @@ mod tests {
                 [],
             )
             .unwrap();
+            db.execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('system-route-corp','system_route','Cidr','10.8.0.0/24','routing')",
+                [],
+            )
+            .unwrap();
         }
 
         let default_config = build_config(&state, "secret", true).unwrap();
@@ -1908,6 +1914,11 @@ mod tests {
         assert!(
             reject_roblox < proxy_roblox,
             "路由规则必须晚于内容过滤，避免走代理绕过拦截"
+        );
+        let system_route = enabled_config.find("IP-CIDR,10.8.0.0/24,DIRECT").unwrap();
+        assert!(
+            reject_roblox < system_route,
+            "系统路由规则也必须晚于内容过滤，避免绕过拦截"
         );
     }
 

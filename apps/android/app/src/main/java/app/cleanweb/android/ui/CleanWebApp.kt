@@ -497,6 +497,7 @@ private fun RulesEditor(onAddRule: (String, RuleCategory, RuleAction, RuleMatchK
                         RuleAction.Block -> RuleCategory.CustomBlock
                         RuleAction.Allow -> RuleCategory.CustomAllow
                         RuleAction.Proxy -> RuleCategory.Routing
+                        RuleAction.SystemRoute -> RuleCategory.Routing
                     },
                     action,
                     matchKind

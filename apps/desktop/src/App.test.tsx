@@ -283,14 +283,21 @@ describe("management actions", () => {
       allow: 150,
       warning: 0,
       total: 152,
+      todayBlock: 1,
+      todayAllow: 10,
+      todayWarning: 0,
+      todayTotal: 11,
     });
 
     render(<App />);
     await unlockManagement();
 
-    expect(await screen.findByText("150")).toBeTruthy();
-    expect(screen.getByText("152")).toBeTruthy();
-    expect(screen.getByText("2")).toBeTruthy();
+    expect(await screen.findByText("10")).toBeTruthy();
+    expect(screen.getByText("11")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.getByText("累计 150 次")).toBeTruthy();
+    expect(screen.getByText("累计 152 条")).toBeTruthy();
+    expect(screen.getByText("累计 2 次")).toBeTruthy();
   });
 
   it("opens both subscription forms when unlocked", async () => {
@@ -416,6 +423,68 @@ describe("management actions", () => {
     select.mockRestore();
   });
 
+  it("tests proxy node delays with the Mihomo group delay endpoint", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    window.localStorage.setItem("cleanweb.preview.coreStatus", JSON.stringify({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" }));
+    vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+    vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }, { name: "node-b", nodeType: "vmess" }],
+      groups: [],
+    });
+    const groupDelay = vi.spyOn(backend, "testAllProxyDelays").mockResolvedValue({
+      delays: { "node-a": 126 },
+    });
+    const singleDelay = vi.spyOn(backend, "testProxyGroup").mockResolvedValue(999);
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByText("我的代理"));
+    await screen.findByRole("button", { name: /node-a/ });
+    await waitFor(() => expect((screen.getByRole("button", { name: "节点延迟检测" }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "节点延迟检测" }));
+
+    await waitFor(() => expect(groupDelay).toHaveBeenCalledWith("browser-preview", "CleanWeb"));
+    expect(singleDelay).not.toHaveBeenCalled();
+    expect(await screen.findByText("126ms")).toBeTruthy();
+    expect(screen.getByText("不可达")).toBeTruthy();
+    expect(screen.getByText("部分节点检测失败：1/2")).toBeTruthy();
+  });
+
+  it("keeps proxy node selection available while delay testing is running", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    window.localStorage.setItem("cleanweb.preview.coreStatus", JSON.stringify({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" }));
+    vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+    vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }, { name: "node-b", nodeType: "vmess" }],
+      groups: [],
+    });
+    let resolveDelay: (value: backend.ProxyDelayResult) => void = () => {};
+    vi.spyOn(backend, "testAllProxyDelays")
+      .mockImplementation(() => new Promise<backend.ProxyDelayResult>((resolve) => { resolveDelay = resolve; }));
+    const select = vi.spyOn(backend, "selectProxy").mockResolvedValue({ requiresReload: false });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByText("我的代理"));
+    await screen.findByRole("button", { name: /node-a/ });
+    await waitFor(() => expect((screen.getByRole("button", { name: "节点延迟检测" }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "节点延迟检测" }));
+
+    expect(await screen.findByRole("button", { name: /检测中/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /node-b/ }));
+
+    expect(select).toHaveBeenCalledWith("browser-preview", "CleanWeb", "node-b");
+    resolveDelay({ delays: { "node-a": 120, "node-b": 180 } });
+  });
+
   it("keeps other proxy nodes interactive while one node is switching", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
@@ -459,6 +528,7 @@ describe("management actions", () => {
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true},
+      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · 娱乐 CDN",url:"builtin://cleanweb/entertainment-cdn",format:"clash",category:"entertainment",enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
     render(<App />);
@@ -467,12 +537,16 @@ describe("management actions", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
-    expect(screen.getByText("内置启用")).toBeTruthy();
+    expect(screen.getAllByText("内置启用")).toHaveLength(2);
+    expect(screen.getByText("内置规则 · 娱乐 CDN")).toBeTruthy();
     expect(screen.queryByText("https://example.test/default")).toBeNull();
     expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除内置规则 · 色情内容" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "编辑内置规则 · 娱乐 CDN" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除内置规则 · 娱乐 CDN" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
     expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
+    expect(screen.queryByText("内置规则 · 娱乐 CDN")).toBeNull();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
@@ -554,6 +628,35 @@ describe("management actions", () => {
       action: "proxy",
       kind: "suffix",
       pattern: "chatgpt.com",
+      category: "routing",
+    });
+    create.mockRestore();
+  });
+
+  it("adds system route rules from the routing dialog", async () => {
+    const create = vi.spyOn(backend, "createParentRule").mockResolvedValueOnce({
+      id: "route-system",
+      action: "system_route",
+      kind: "cidr",
+      pattern: "10.8.0.0/24",
+      category: "routing",
+      enabled: true,
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /路由设置/ }));
+    await userEvent.click(screen.getByRole("button", { name: "添加路由" }));
+    await userEvent.selectOptions(screen.getByLabelText("出口"), "system_route");
+    await userEvent.selectOptions(screen.getByLabelText("匹配方式"), "cidr");
+    await userEvent.type(screen.getByLabelText("规则内容"), "10.8.0.0/24");
+    await userEvent.click(screen.getByRole("button", { name: "验证并保存" }));
+
+    expect(create).toHaveBeenCalledWith("browser-preview", {
+      action: "system_route",
+      kind: "cidr",
+      pattern: "10.8.0.0/24",
       category: "routing",
     });
     create.mockRestore();

@@ -118,6 +118,13 @@ class MihomoAndroidConfigTest {
                         category = RuleCategory.Routing,
                         action = RuleAction.Proxy,
                         matchKind = RuleMatchKind.Keyword
+                    ),
+                    RuleEntry(
+                        id = "system-route",
+                        pattern = "10.8.0.0/24",
+                        category = RuleCategory.Routing,
+                        action = RuleAction.SystemRoute,
+                        matchKind = RuleMatchKind.Cidr
                     )
                 )
             )
@@ -125,6 +132,7 @@ class MihomoAndroidConfigTest {
 
         assertTrue(config.contains("  - DOMAIN,api.example.com,DIRECT"))
         assertTrue(config.contains("  - DOMAIN-KEYWORD,github,CLEANWEB-PROXY"))
+        assertTrue(config.contains("  - IP-CIDR,10.8.0.0/24,DIRECT"))
     }
 
     @Test

@@ -9,6 +9,9 @@
     "build": "tsc -p apps/desktop/tsconfig.json && vite build --config apps/desktop/vite.config.ts",
     "build:mobile": "tsc -p apps/mobile/tsconfig.json && vite build --config apps/mobile/vite.config.ts",
     "test": "vitest run",
+    "release:bump": "scripts/release/bump-version.sh",
+    "release:preflight": "scripts/release/preflight.sh",
+    "release:tag": "scripts/release/tag-release.sh",
     "tauri": "cd apps/desktop && tauri",
     "tauri:mobile": "cd apps/mobile && tauri"
   },

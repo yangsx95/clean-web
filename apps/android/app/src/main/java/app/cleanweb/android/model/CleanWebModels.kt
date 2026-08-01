@@ -40,7 +40,8 @@ enum class RuleCategory(val label: String) {
 enum class RuleAction(val label: String) {
     Block("拦截"),
     Allow("直连"),
-    Proxy("走代理")
+    Proxy("走代理"),
+    SystemRoute("系统路由")
 }
 
 enum class RuleMatchKind(val label: String) {
