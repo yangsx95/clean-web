@@ -26,7 +26,7 @@
 - `apps/android/app/build.gradle.kts`
 - `README.md`
 - `README.zh-CN.md`
-- `apps/desktop/src/App.tsx`
+- `shared/frontend/App.tsx`
 - `website/index.html`
 - `website/release.json`
 

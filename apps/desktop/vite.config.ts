@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 
 const desktopRoot = fileURLToPath(new URL(".", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 export default defineConfig({
   root: desktopRoot,
@@ -15,6 +16,9 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    fs: {
+      allow: [repoRoot],
+    },
     watch: { ignored: ["**/src-tauri/target/**"] },
   },
 });

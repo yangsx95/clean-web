@@ -18,7 +18,7 @@
 | DNS 接管与安全搜索 | 部分完成 | Mihomo 配置启用 `dns.respect-rules` 和 TUN `dns-hijack` 负责 DNS 接管；SafeSearch 改由 Chrome/Edge 托管浏览器策略处理，DNS hosts 映射方案已移除。仍需真实设备验证浏览器策略写入、浏览器重启后的搜索安全模式，以及非受支持浏览器的产品提示。 |
 | 内容过滤优先于代理路由 | 已完成 | 过滤规则排在内置 `DIRECT` 路由前，覆盖 `baidu.com` 这类国内直连域名被家长规则拦截的回归场景。 |
 | 跨平台规则核心 | 部分完成 | 规则标准化、匹配、优先级和基础测试已抽到 `crates/cleanweb-rules`；规则订阅文本解析已抽到 `crates/cleanweb-subscriptions`；代理订阅 URI/YAML 清洗已抽到 `crates/cleanweb-proxy-import`；桌面端通过兼容层复用。策略合并和 Mihomo 配置生成尚未抽取。 |
-| Tauri mobile 共享界面 | 部分完成 | `apps/mobile/` 已新增 Tauri mobile/Vite 骨架，并直接复用 `apps/desktop/src/App.tsx` 和 `styles.css`。尚未生成 Android/iOS 原生 shell，也未接入 Android `VpnService` 或 iOS Network Extension 插件。 |
+| Tauri mobile 共享界面 | 部分完成 | `apps/mobile/` 已新增 Tauri mobile/Vite 骨架，并挂载 `shared/frontend` 的共享 React 管理界面。尚未生成 Android/iOS 原生 shell，也未接入 Android `VpnService` 或 iOS Network Extension 插件。 |
 | Clash/Mihomo 代理订阅清洗 | 已完成 | 只保留节点和允许的代理组；订阅里的 DNS、TUN、规则、脚本、本地端口和控制器不会进入受控配置。纯解析和清洗逻辑已在 `cleanweb-proxy-import` 中覆盖测试，桌面端只负责下载、加密和存储。 |
 | 规则订阅导入 | 已完成 | Clash、Adblock、hosts、域名和 IP/CIDR 均有解析路径和测试；安全搜索不再作为规则订阅格式暴露给用户。 |
 | 内置规则包 | 部分完成 | 共享规则发布素材已移动到根 `resources/`；有内置规则源、默认启用、不可删除和启动恢复逻辑；缺少许可证、归属、版本、校验和、签名包以及商业再分发审计字段。 |

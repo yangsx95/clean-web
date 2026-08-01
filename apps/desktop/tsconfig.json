@@ -16,6 +16,7 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src"],
+  "include": ["src", "../../shared/frontend"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "../../shared/frontend/**/*.test.ts", "../../shared/frontend/**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

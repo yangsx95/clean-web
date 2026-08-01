@@ -2,7 +2,7 @@
 
 This directory documents native system capabilities that cannot be shared as ordinary React or Rust business logic. It is documentation only, not a source root.
 
-Shared CleanWeb behavior belongs in `crates/` and shared UI belongs in `apps/desktop/src` / `apps/mobile`.
+Shared CleanWeb behavior belongs in `crates/` and shared UI belongs in `shared/frontend`.
 
 Platform-specific code should stay behind narrow plugin or service boundaries:
 

@@ -1,4 +1,4 @@
-import { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import React, { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";

@@ -14,7 +14,7 @@ use std::{fs::OpenOptions, process::Stdio};
 use flate2::read::GzDecoder;
 use reqwest::Url;
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
@@ -938,7 +938,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
     // 排除本地域名和系统网络检测域名，使其不走 fake-ip。
-    let mut fake_filter: Vec<String> = vec![
+    let fake_filter: Vec<String> = vec![
         "+.home",
         "+.local",
         "+.lan",

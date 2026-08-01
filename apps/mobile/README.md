@@ -2,7 +2,7 @@
 
 This is the Tauri mobile application shell for Android and iOS management UI.
 
-The mobile app reuses the desktop React management interface from `apps/desktop/src`.
+The mobile app reuses the shared React management interface from `shared/frontend`.
 Platform VPN execution must remain native and be exposed through narrow Tauri plugins:
 
 - Android: `VpnService`, foreground service lifecycle, `tun2socks`, and Mihomo process control.

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Allow the main CleanWeb window to use the minimal Tauri plugin commands required by the desktop UI.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-save"
+  ]
+}

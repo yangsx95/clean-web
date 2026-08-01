@@ -14,6 +14,7 @@ clean-web/
     android/       # Android VPN 原型，后续收敛为 Tauri Android 插件
     ios/           # iOS Network Extension 规划占位
   crates/          # 跨平台共享 Rust 核心
+  shared/          # 跨平台共享前端界面和适配层
   resources/       # 跨平台共享规则发布素材和测试资源
   docs/            # 产品、架构、实现状态和结构文档
   website/         # 官网静态页
@@ -31,12 +32,7 @@ apps/desktop/
   vite.config.ts
   tsconfig.json
   src/
-    App.tsx        # 共享管理界面和主要交互
-    backend.ts     # Tauri 命令调用封装
-    policy.ts      # 前端策略展示和转换辅助
-    main.tsx       # 桌面 React 入口
-    styles.css     # 共享 UI 样式
-    *.test.ts(x)   # Vitest 测试
+    main.tsx       # 桌面 React 入口，挂载 shared/frontend/App.tsx
   src-tauri/
     src/           # 桌面 Rust/Tauri 后端
     resources/     # 桌面 Mihomo 可执行资源
@@ -53,7 +49,7 @@ apps/mobile/
   vite.config.ts
   tsconfig.json
   src/
-    main.tsx                    # 复用 apps/desktop/src/App.tsx 和 styles.css
+    main.tsx                    # 移动 React 入口，挂载 shared/frontend/App.tsx
   src-tauri/
     Cargo.toml                  # Tauri mobile shell
     tauri.conf.json
@@ -63,6 +59,19 @@ apps/mobile/
 ```
 
 `apps/mobile` 是 Android 和 iOS 的产品 UI 主线。新的管理功能优先进入共享 React/Rust 层，避免桌面、Android、iOS 三套 UI 分叉。移动端不能直接拥有系统 VPN 接管逻辑，应通过平台插件调用 Android `VpnService` 或 iOS Packet Tunnel Provider。
+
+## 共享前端
+
+```text
+shared/frontend/
+  App.tsx                      # 桌面和移动共用管理界面
+  backend.ts                   # 前端 Tauri 命令调用封装和浏览器预览后备实现
+  policy.ts                    # 前端策略展示和转换辅助
+  styles.css                   # 共用 UI 样式
+  *.test.ts(x)                 # 共享前端单元和交互测试
+```
+
+桌面端和移动端共享同一套 React 管理界面，但保留各自的 Tauri shell、平台权限和系统网络接管边界。共享前端不直接拥有 Android `VpnService`、iOS Network Extension 或桌面特权服务生命周期；这些能力应通过各平台 Tauri 命令或插件暴露为窄接口。
 
 ## Android VPN 原型
 

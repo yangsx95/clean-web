@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 
 const mobileRoot = fileURLToPath(new URL(".", import.meta.url));
-const appsRoot = fileURLToPath(new URL("..", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 export default defineConfig({
   root: mobileRoot,
@@ -17,7 +17,7 @@ export default defineConfig({
     port: 1421,
     strictPort: true,
     fs: {
-      allow: [appsRoot],
+      allow: [repoRoot],
     },
     watch: { ignored: ["**/src-tauri/target/**"] },
   },
