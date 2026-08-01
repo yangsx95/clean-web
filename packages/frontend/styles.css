@@ -2537,11 +2537,20 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 128px;
   gap: 10px;
-  align-items: center;
+  align-items: stretch;
 }
 
 .proxy-connectivity-input {
   margin: 0;
+}
+
+.proxy-connectivity-form > button {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .proxy-connectivity-result {
@@ -3027,6 +3036,16 @@ h1 {
   color: #c2410c;
   font-size: 12px;
   line-height: 1.5;
+}
+.quit-status.is-progress {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.quit-status.is-progress b {
+  color: #1d4ed8;
+}
+.quit-status.is-progress span {
+  color: #1e40af;
 }
 
 .full { justify-content: center; margin-top: 8px; width: 100%; }
@@ -3566,6 +3585,9 @@ header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--
   .diagnostic-rule-card,
   .proxy-connectivity-form {
     grid-template-columns: 1fr;
+  }
+  .proxy-connectivity-form > button {
+    width: 100%;
   }
   .cw-access-row { grid-template-columns: 42px minmax(0, 1fr) 34px 54px; gap: 8px; padding: 8px 0; }
   .cw-access-row .access-meta { display: none; }

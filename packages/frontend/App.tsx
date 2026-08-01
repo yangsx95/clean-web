@@ -10,6 +10,8 @@ type AppPage = "overview" | "rules" | "logs" | "proxy" | "settings";
 type AccessLogDecisionFilter = "all" | "block" | "warning";
 const ACCESS_LOG_REFRESH_INTERVAL_MS = 3000;
 const ACCESS_LOG_SEARCH_DEBOUNCE_MS = 400;
+const ACCESS_LOG_OVERVIEW_LIMIT = 50;
+const ACCESS_LOG_PAGE_LIMIT = 500;
 
 function isBuiltinSubscription(item: backend.Subscription) {
   return item.id.startsWith("default:") || item.id.startsWith("local:cleanweb:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
@@ -218,7 +220,7 @@ export function App() {
     if (storedToken) {
       try {
         const result = await backend.validateSession(storedToken);
-        const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,500),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
+        const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
         setSessionToken(result.sessionToken);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules);setLocked(false);
       } catch {
         backend.clearStoredSessionToken();
@@ -228,7 +230,7 @@ export function App() {
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(count=>count>0?reloadRuntime(sessionToken,{silent:true}):undefined).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
-  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,500),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
+  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
   const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats); setLocked(true); };
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
     if(!options.silent)showPolicyStatus({state:"applying",message:options.applyingMessage??"正在应用网络策略…"});
@@ -350,7 +352,7 @@ export function App() {
       if(refreshing)return;
       refreshing=true;
       void backend.syncAccessLogs().catch(()=>0)
-        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,decision,search,500),backend.getAccessLogStats(sessionToken)]))
+        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,decision,search,page==="overview"?ACCESS_LOG_OVERVIEW_LIMIT:ACCESS_LOG_PAGE_LIMIT),backend.getAccessLogStats(sessionToken)]))
         .then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}})
         .catch(()=>undefined)
         .finally(()=>{refreshing=false;});
@@ -458,34 +460,39 @@ function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComp
 function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: { running:boolean; onClose:()=>void; onHideToBackground:()=>Promise<void>; onQuitApp:(password:string)=>Promise<void> }) {
   const [error,setError]=useState("");
   const [submitting,setSubmitting]=useState(false);
+  const [quitStatus,setQuitStatus]=useState("");
   const submitQuit=async(event:FormEvent<HTMLFormElement>)=>{
     event.preventDefault();
     if(submitting)return;
     setSubmitting(true);
     setError("");
+    setQuitStatus(running?"正在关闭保护内核并恢复系统网络，请稍候…":"正在退出 CleanWeb…");
     try{
       const password=String(new FormData(event.currentTarget).get("password")??"");
+      await new Promise<void>(resolve=>window.requestAnimationFrame(()=>resolve()));
       await onQuitApp(password);
     }catch(reason){
       setError(String(reason));
+      setQuitStatus("");
     }finally{
       setSubmitting(false);
     }
   };
-  return <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&onClose()}>
-    <section className="modal quit-modal" role="dialog" aria-modal="true" aria-labelledby="quit-title">
-      <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
+  return <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&!submitting&&onClose()}>
+    <section className="modal quit-modal" role="dialog" aria-modal="true" aria-labelledby="quit-title" aria-busy={submitting}>
+      <button className="icon-button" aria-label="关闭" onClick={onClose} disabled={submitting}><X size={18}/></button>
       <div className={running?"modal-symbol":"modal-symbol warning"}><ShieldCheck/></div>
       <h2 id="quit-title">{running?"退出前将关闭保护":"确认关闭 CleanWeb"}</h2>
       <p>{running?"退出 CleanWeb 会先关闭保护内核，并恢复系统 DNS 与路由设置。":"当前没有运行中的保护服务。你可以关闭窗口到后台，或退出 CleanWeb 管理界面。"}</p>
       {running&&<div className="quit-status" role="status"><b>保护运行中</b><span>输入管理密码后将先停止保护，再退出应用。</span></div>}
+      {quitStatus&&<div className="quit-status is-progress" role="status" aria-live="polite"><b>正在退出</b><span>{quitStatus}</span></div>}
       <form onSubmit={submitQuit}>
         <label htmlFor="quit-password">管理密码</label>
-        <input id="quit-password" name="password" type="password" placeholder="输入管理密码后退出" required autoFocus autoComplete="current-password" onKeyDown={preventPasswordImeTextInput} onCompositionEnd={sanitizePasswordInput} onInput={sanitizePasswordInput} />
+        <input id="quit-password" name="password" type="password" placeholder="输入管理密码后退出" required autoFocus autoComplete="current-password" disabled={submitting} onKeyDown={preventPasswordImeTextInput} onCompositionEnd={sanitizePasswordInput} onInput={sanitizePasswordInput} />
         {error&&<span className="form-error">{error}</span>}
         <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>取消</button>
-          <button type="button" className="secondary" onClick={()=>void onHideToBackground()}>继续后台运行</button>
+          <button type="button" className="secondary" onClick={onClose} disabled={submitting}>取消</button>
+          <button type="button" className="secondary" onClick={()=>void onHideToBackground()} disabled={submitting}>继续后台运行</button>
           <button type="submit" className="primary danger" disabled={submitting}>{submitting?"正在退出…":"退出"}</button>
         </div>
       </form>

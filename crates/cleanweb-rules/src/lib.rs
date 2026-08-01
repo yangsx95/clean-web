@@ -184,17 +184,9 @@ impl RuleSet {
 
 impl DomainRuleIndex {
     pub fn compile(inputs: Vec<DomainRuleInput>) -> Result<Self, RuleError> {
-        let mut builder = DomainIndexBuilder::default();
+        let mut builder = DomainRuleIndexBuilder::default();
         for input in inputs {
-            let normalized = normalize_domain(&input.pattern)?;
-            match input.tier {
-                DomainRuleTier::SecurityBlock => {
-                    builder.security_block.insert(input.kind, &normalized)
-                }
-                DomainRuleTier::ManualBlock => builder.manual_block.insert(input.kind, &normalized),
-                DomainRuleTier::ManualAllow => builder.manual_allow.insert(input.kind, &normalized),
-                DomainRuleTier::Block => builder.block.insert(input.kind, &normalized),
-            }
+            builder.insert(input)?;
         }
         builder.build()
     }
@@ -223,7 +215,7 @@ impl DomainRuleIndex {
 }
 
 #[derive(Debug, Default)]
-struct DomainIndexBuilder {
+pub struct DomainRuleIndexBuilder {
     security_block: DomainMatcherBuilder,
     manual_block: DomainMatcherBuilder,
     manual_allow: DomainMatcherBuilder,
@@ -236,8 +228,19 @@ struct DomainMatcherBuilder {
     suffix: BTreeSet<String>,
 }
 
-impl DomainIndexBuilder {
-    fn build(self) -> Result<DomainRuleIndex, RuleError> {
+impl DomainRuleIndexBuilder {
+    pub fn insert(&mut self, input: DomainRuleInput) -> Result<(), RuleError> {
+        let normalized = normalize_domain(&input.pattern)?;
+        match input.tier {
+            DomainRuleTier::SecurityBlock => self.security_block.insert(input.kind, &normalized),
+            DomainRuleTier::ManualBlock => self.manual_block.insert(input.kind, &normalized),
+            DomainRuleTier::ManualAllow => self.manual_allow.insert(input.kind, &normalized),
+            DomainRuleTier::Block => self.block.insert(input.kind, &normalized),
+        }
+        Ok(())
+    }
+
+    pub fn build(self) -> Result<DomainRuleIndex, RuleError> {
         Ok(DomainRuleIndex {
             security_block: self.security_block.build()?,
             manual_block: self.manual_block.build()?,

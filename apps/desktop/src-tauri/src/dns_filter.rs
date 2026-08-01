@@ -13,7 +13,7 @@ use std::{
 use std::{ffi::CString, os::fd::AsRawFd};
 
 use cleanweb_rules::{
-    DomainDecision, DomainRuleIndex, DomainRuleInput, DomainRuleTier, MatcherKind,
+    DomainDecision, DomainRuleIndexBuilder, DomainRuleInput, DomainRuleTier, MatcherKind,
 };
 use hickory_proto::op::{Message, Metadata, ResponseCode};
 use hickory_proto::rr::{
@@ -250,11 +250,11 @@ fn bind_upstream_socket_to_default_interface(_socket: &UdpSocket) -> Result<(), 
 
 fn build_dns_filter_config(db: &Connection) -> Result<DnsFilterConfig, String> {
     let settings = settings_map(db)?;
-    let mut inputs = Vec::new();
-    append_parent_domain_rules(db, &mut inputs)?;
-    append_imported_domain_blocks(db, &settings, &mut inputs)?;
+    let mut builder = DomainRuleIndexBuilder::default();
+    append_parent_domain_rules(db, &mut builder)?;
+    append_imported_domain_blocks(db, &settings, &mut builder)?;
     Ok(DnsFilterConfig {
-        domain_index: DomainRuleIndex::compile(inputs).map_err(|value| value.to_string())?,
+        domain_index: builder.build().map_err(|value| value.to_string())?,
         upstreams: configured_dns_upstreams(&settings),
         safe_search_enabled: settings
             .get("safe_search_enabled")
@@ -276,7 +276,7 @@ fn configured_dns_upstreams(settings: &HashMap<String, String>) -> Vec<String> {
 
 fn append_parent_domain_rules(
     db: &Connection,
-    inputs: &mut Vec<DomainRuleInput>,
+    builder: &mut DomainRuleIndexBuilder,
 ) -> Result<(), String> {
     let mut statement = db
         .prepare(
@@ -293,22 +293,23 @@ fn append_parent_domain_rules(
                 row.get::<_, String>(2)?,
             ))
         })
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
-    for (kind, pattern, action) in rows {
+    for row in rows {
+        let (kind, pattern, action) = row.map_err(error)?;
         let Some(kind) = domain_kind(&kind) else {
             continue;
         };
-        inputs.push(DomainRuleInput {
-            tier: if action == "allow" {
-                DomainRuleTier::ManualAllow
-            } else {
-                DomainRuleTier::ManualBlock
-            },
-            kind,
-            pattern,
-        });
+        builder
+            .insert(DomainRuleInput {
+                tier: if action == "allow" {
+                    DomainRuleTier::ManualAllow
+                } else {
+                    DomainRuleTier::ManualBlock
+                },
+                kind,
+                pattern,
+            })
+            .map_err(|value| value.to_string())?;
     }
     Ok(())
 }
@@ -316,7 +317,7 @@ fn append_parent_domain_rules(
 fn append_imported_domain_blocks(
     db: &Connection,
     settings: &std::collections::HashMap<String, String>,
-    inputs: &mut Vec<DomainRuleInput>,
+    builder: &mut DomainRuleIndexBuilder,
 ) -> Result<(), String> {
     let mut statement = db
         .prepare(
@@ -334,25 +335,26 @@ fn append_imported_domain_blocks(
                 row.get::<_, String>(2)?,
             ))
         })
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
-    for (kind, pattern, category) in rows {
+    for row in rows {
+        let (kind, pattern, category) = row.map_err(error)?;
         if !category_enabled(settings, &category) {
             continue;
         }
         let Some(kind) = imported_domain_kind(&kind) else {
             continue;
         };
-        inputs.push(DomainRuleInput {
-            tier: if is_security_category(&category) {
-                DomainRuleTier::SecurityBlock
-            } else {
-                DomainRuleTier::Block
-            },
-            kind,
-            pattern,
-        });
+        builder
+            .insert(DomainRuleInput {
+                tier: if is_security_category(&category) {
+                    DomainRuleTier::SecurityBlock
+                } else {
+                    DomainRuleTier::Block
+                },
+                kind,
+                pattern,
+            })
+            .map_err(|value| value.to_string())?;
     }
     Ok(())
 }

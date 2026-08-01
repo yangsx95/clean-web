@@ -374,7 +374,7 @@ describe("management actions", () => {
 
     expect(await screen.findByText("overview-live.example:443")).toBeTruthy();
     await waitFor(() => {
-      expect(backend.listAccessLogs).toHaveBeenLastCalledWith("browser-preview", undefined, undefined, 500);
+      expect(backend.listAccessLogs).toHaveBeenLastCalledWith("browser-preview", undefined, undefined, 50);
     });
   });
 
@@ -418,13 +418,14 @@ describe("management actions", () => {
 
     await userEvent.type(await screen.findByLabelText("管理密码"), "wrongpass");
     await userEvent.click(screen.getByRole("button", { name: "退出" }));
+    expect(await screen.findByText("正在退出")).toBeTruthy();
     expect(await screen.findByText("Error: 管理密码错误")).toBeTruthy();
     expect(quit).toHaveBeenCalledWith("wrongpass");
 
     await userEvent.clear(screen.getByLabelText("管理密码"));
     await userEvent.type(screen.getByLabelText("管理密码"), "parent123");
     await userEvent.click(screen.getByRole("button", { name: "退出" }));
-    expect(quit).toHaveBeenLastCalledWith("parent123");
+    await waitFor(() => expect(quit).toHaveBeenLastCalledWith("parent123"));
     subscribe.mockRestore();
   });
 

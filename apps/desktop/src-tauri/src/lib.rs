@@ -54,7 +54,14 @@ fn handle_menu_action(app: &tauri::AppHandle, action: MenuAction) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn set_macos_activation_policy(app: &tauri::AppHandle, policy: tauri::ActivationPolicy) {
+    let _ = app.set_activation_policy(policy);
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    set_macos_activation_policy(app, tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -75,6 +82,8 @@ fn hide_to_background(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
+    #[cfg(target_os = "macos")]
+    set_macos_activation_policy(app, tauri::ActivationPolicy::Accessory);
 }
 
 #[tauri::command]
@@ -258,14 +267,24 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build CleanWeb");
 
-    app.run(|app, event| {
-        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+    app.run(|app, event| match event {
+        tauri::RunEvent::ExitRequested { api, .. } => {
             let lifecycle = app.state::<AppLifecycle>();
             if !lifecycle.confirmed_exit.swap(false, Ordering::SeqCst) {
                 api.prevent_exit();
                 request_quit_confirmation(app);
             }
         }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            if !has_visible_windows {
+                show_main_window(app);
+            }
+        }
+        _ => {}
     });
 }
 
@@ -279,6 +298,14 @@ mod tests {
         assert_eq!(
             menu_action_for_id(CLOSE_WINDOW_MENU_ID),
             Some(MenuAction::HideMainWindow)
+        );
+    }
+
+    #[test]
+    fn quit_menu_requests_password_confirmation() {
+        assert_eq!(
+            menu_action_for_id(QUIT_MENU_ID),
+            Some(MenuAction::RequestQuitConfirmation)
         );
     }
 }
