@@ -128,6 +128,33 @@ class MihomoAndroidConfigTest {
     }
 
     @Test
+    fun routingRulesProxyChatGptDownloadDomainsWhenProxyIsEnabled() {
+        val config = MihomoAndroidConfig.build(
+            CleanWebState(
+                settings = ProtectionSettings(proxyEnabled = true),
+                proxySubscriptions = listOf(
+                    ProxySubscription(
+                        id = "12345678-android",
+                        name = "Test",
+                        url = "https://example.com/sub.yaml"
+                    )
+                ),
+                rules = listOf(
+                    RuleEntry(
+                        id = "chatgpt-download",
+                        pattern = "persistent.oaistatic.com",
+                        category = RuleCategory.Routing,
+                        action = RuleAction.Proxy
+                    )
+                )
+            )
+        )
+
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,persistent.oaistatic.com,CLEANWEB-PROXY"))
+        assertFalse(config.contains("  - DOMAIN-SUFFIX,persistent.oaistatic.com,REJECT"))
+    }
+
+    @Test
     fun proxyDisabledFallsBackToDirect() {
         val config = MihomoAndroidConfig.build(
             CleanWebState(

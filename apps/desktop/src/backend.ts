@@ -204,8 +204,8 @@ const previewRecommendedSources:RecommendedSource[]=[
   {name:"AdGuard 中文过滤",url:"https://filters.adtidy.org/extension/chromium/filters/224.txt",format:"adblock",category:"ads",description:"AdGuard 维护的中文广告过滤规则"},
   {name:"uBlock 隐私保护",url:"https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt",format:"adblock",category:"ads",description:"uBlock Origin 隐私保护规则，拦截跟踪器和指纹收集"},
   // domain-list
-  {name:"Loyalsoldier 直连域名",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt",format:"domain-list",category:"custom",description:"国内常用域名直连列表，避免不必要的代理"},
-  {name:"GFW 域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt",format:"domain-list",category:"custom",description:"常见被封锁域名列表，用于精确代理"},
+  {name:"Loyalsoldier 直连域名",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt",format:"domain-list",category:"direct",description:"国内常用域名直连列表，避免不必要的代理"},
+  {name:"GFW 域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt",format:"domain-list",category:"routing",description:"常见被封锁域名列表，用于精确代理"},
   {name:"广告域名列表",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt",format:"domain-list",category:"ads",description:"广告与跟踪域名列表，纯域名格式"},
   // ip-list
   {name:"中国 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",format:"clash",category:"direct",description:"中国大陆 IP 地址段，用于直连或分流策略"},
@@ -213,7 +213,7 @@ const previewRecommendedSources:RecommendedSource[]=[
   {name:"私有 IP 地址段",url:"https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/private.txt",format:"ip-list",category:"custom",description:"私有与保留 IP 地址段，确保内网流量直连"},
   // clash
   {name:"Loyalsoldier Clash 规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt",format:"clash",category:"ads",description:"Loyalsoldier 维护的 Clash 广告拦截规则集"},
-  {name:"Clash 域名直连规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt",format:"clash",category:"custom",description:"Clash 格式的国内直连域名规则"},
+  {name:"Clash 域名直连规则",url:"https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt",format:"clash",category:"direct",description:"Clash 格式的国内直连域名规则"},
 ];
 export async function getRecommendedSources():Promise<RecommendedSource[]>{return isTauri()?invoke<RecommendedSource[]>("get_recommended_sources"):previewRecommendedSources;}
 export async function refreshSubscription(sessionToken:string,id:string):Promise<RefreshReport>{

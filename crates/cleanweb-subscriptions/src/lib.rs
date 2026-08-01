@@ -71,10 +71,10 @@ pub fn import_text(
             Ok(Some((kind, pattern, action))) => report.rules.push(ImportedRule {
                 rule: RuleInput {
                     id: format!("{subscription_id}:{line_number}"),
-                    action: if category == "direct" {
-                        Action::Allow
-                    } else {
-                        action
+                    action: match category {
+                        "direct" => Action::Allow,
+                        "routing" | "proxy" => Action::Proxy,
+                        _ => action,
                     },
                     priority: 70,
                     kind,
@@ -294,5 +294,21 @@ mod tests {
         assert_eq!(report.rules.len(), 1);
         assert_eq!(report.rules[0].rule.kind, MatcherKind::Cidr);
         assert_eq!(report.rules[0].rule.action, Action::Allow);
+    }
+
+    #[test]
+    fn routing_category_imports_domain_rules_as_proxy_rules() {
+        let report = import_text(
+            SubscriptionFormat::DomainList,
+            "openai.com\npersistent.oaistatic.com",
+            "routing",
+            "https://example.test/gfw.txt",
+            "routing",
+        );
+
+        assert_eq!(report.rules.len(), 2);
+        assert_eq!(report.rules[0].rule.kind, MatcherKind::Suffix);
+        assert_eq!(report.rules[0].rule.action, Action::Proxy);
+        assert_eq!(report.rules[1].rule.action, Action::Proxy);
     }
 }

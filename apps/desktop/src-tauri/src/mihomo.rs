@@ -1374,15 +1374,12 @@ fn append_imported_rules(
         {
             continue;
         }
-        if let Some(rule) = mihomo_rule(
-            &kind,
-            &pattern,
-            if action == "Allow" {
-                "DIRECT"
-            } else {
-                "REJECT"
-            },
-        ) {
+        let target = match action.as_str() {
+            "Allow" => "DIRECT",
+            "Proxy" => "CleanWeb",
+            _ => "REJECT",
+        };
+        if let Some(rule) = mihomo_rule(&kind, &pattern, target) {
             result.push(Value::String(rule));
         }
     }
@@ -1912,6 +1909,21 @@ mod tests {
             reject_roblox < proxy_roblox,
             "路由规则必须晚于内容过滤，避免走代理绕过拦截"
         );
+    }
+
+    #[test]
+    fn routing_subscriptions_proxy_download_domains_instead_of_rejecting_them() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled,category) VALUES('route','rule','GFW 域名列表','https://example.test/gfw.txt',1,'routing')",[]).unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('route','1','Suffix','persistent.oaistatic.com','Proxy','routing',1)",[]).unwrap();
+        }
+
+        let config = build_config(&state, "secret", true).unwrap();
+
+        assert!(config.contains("DOMAIN-SUFFIX,persistent.oaistatic.com,CleanWeb"));
+        assert!(!config.contains("DOMAIN-SUFFIX,persistent.oaistatic.com,REJECT"));
     }
 
     #[test]

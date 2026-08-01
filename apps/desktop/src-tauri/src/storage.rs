@@ -188,14 +188,14 @@ pub fn get_recommended_rule_sources() -> Vec<RecommendedSource> {
             name: "Loyalsoldier 直连域名".into(),
             url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt".into(),
             format: "domain-list".into(),
-            category: "custom".into(),
+            category: "direct".into(),
             description: "国内常用域名直连列表，避免不必要的代理".into(),
         },
         RecommendedSource {
             name: "GFW 域名列表".into(),
             url: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt".into(),
             format: "domain-list".into(),
-            category: "custom".into(),
+            category: "routing".into(),
             description: "常见被封锁域名列表，用于精确代理".into(),
         },
         RecommendedSource {
@@ -239,7 +239,7 @@ pub fn get_recommended_rule_sources() -> Vec<RecommendedSource> {
             name: "Clash 域名直连规则".into(),
             url: "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt".into(),
             format: "clash".into(),
-            category: "custom".into(),
+            category: "direct".into(),
             description: "Clash 格式的国内直连域名规则".into(),
         },
     ]
@@ -1171,6 +1171,7 @@ mod tests {
             "malware",
             "custom",
             "direct",
+            "routing",
         ];
         let valid_formats = ["hosts", "adblock", "domain-list", "ip-list", "clash"];
         for src in &sources {
