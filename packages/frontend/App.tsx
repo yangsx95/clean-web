@@ -1,4 +1,5 @@
 import React, { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import jsQR from "jsqr";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Search, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
@@ -67,6 +68,7 @@ function toErrorNotice(reason: unknown, fallback = DEFAULT_ERROR_MESSAGE): Error
   let message = fallback;
   if (detail.includes("已取消管理员授权")) message = detail;
   else if (detail.includes("请先解锁管理台")) message = "请先解锁管理台";
+  else if (detail.includes("特权服务安装后未就绪") || detail.includes("无法连接 CleanWeb 特权服务")) message = "需要安装或更新特权服务，请完成管理员授权后重试";
   else if (detail.includes("代理节点")) message = detail;
   else if (detail.includes("订阅")) message = detail.split("\n")[0] || fallback;
   else if (detail.includes("Mihomo 配置校验失败")) message = "保护配置校验失败，请检查规则或代理订阅格式";
@@ -412,11 +414,12 @@ function PolicyApplyBanner({status,onClose}:{status:PolicyApplyStatus;onClose?:(
 }
 
 function ErrorNoticeView({notice,compact=false,onClose}:{notice:ErrorNotice;compact?:boolean;onClose?:()=>void}) {
-  return <div className={`runtime-error${compact?" compact":""}`} role="alert">
+  const content = <div className={`runtime-error${compact?" compact":""}`} role="alert">
     <span>{notice.message}</span>
     {onClose&&<button type="button" className="notice-close" aria-label="关闭错误信息" onClick={onClose}><X size={14}/></button>}
     {notice.detail&&<details><summary>技术详情</summary><pre>{notice.detail}</pre></details>}
   </div>;
+  return typeof document === "undefined" ? content : createPortal(content, document.body);
 }
 
 function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog, onDismissRuntimeError, onHideToBackground, onQuitApp }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:ErrorNotice|null;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:AppDialog;setDialog:(dialog:AppDialog)=>void;onDismissRuntimeError:()=>void;onHideToBackground:()=>Promise<void>;onQuitApp:(password:string)=>Promise<void> }) {
@@ -713,14 +716,23 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     const values = sources.map(source=>source.lastUpdatedAt).filter(Boolean).sort();
     return values[values.length-1];
   };
+  const ruleCount = (source: backend.Subscription) => source.importedRuleCount ?? 0;
+  const activeRuleCount = (source: backend.Subscription) => source.activeRuleCount ?? (source.enabled ? ruleCount(source) : 0);
+  const groupRuleCount = (sources: backend.Subscription[]) => sources.reduce((sum,source)=>sum+ruleCount(source),0);
+  const groupActiveRuleCount = (sources: backend.Subscription[]) => sources.reduce((sum,source)=>sum+activeRuleCount(source),0);
   const groupActiveProgress = (sources: backend.Subscription[]) => sources.map(source=>refreshProgress[source.id]).find(progress=>progress&&progress.phase!=="complete");
   const builtinStatus = (group: {sources:backend.Subscription[]}) => {
     const progress = groupActiveProgress(group.sources);
     if (progress?.phase === "failed") return { label:"更新失败", className:"failed", detail:progress.message };
     const failed = group.sources.filter(source=>source.lastError);
-    if (failed.length > 0) return { label:"更新失败", className:"failed", detail:failed.length === 1 ? failed[0].lastError! : `${failed.length} 个来源更新失败` };
     if (progress && progress.phase !== "complete") return { label:progress.phase === "applying" ? "应用中" : "更新中", className:"updating", detail:progress.message };
+    const activeCount = groupActiveRuleCount(group.sources);
+    const importedCount = groupRuleCount(group.sources);
+    if (activeCount > 0 && failed.length > 0) return { label:"部分生效", className:"partial", detail:`${activeCount}/${importedCount} 条规则生效，${failed.length} 个来源更新失败` };
+    if (activeCount > 0) return { label:"已生效", className:"ready", detail:`${activeCount}/${importedCount} 条规则生效` };
+    if (failed.length > 0) return { label:"更新失败", className:"failed", detail:failed.length === 1 ? failed[0].lastError! : `${failed.length} 个来源更新失败` };
     if (group.sources.every(source=>!source.enabled)) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
+    if (importedCount > 0) return { label:"未生效", className:"disabled", detail:`已导入 ${importedCount} 条，当前开关未启用` };
     const updatedAt = groupLastUpdatedAt(group.sources);
     if (updatedAt) return { label:"已同步", className:"ready", detail:"" };
     return { label:"待同步", className:"pending", detail:"点击刷新后下载并应用" };
@@ -730,10 +742,14 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     return progress && progress.phase !== "failed" ? progress : undefined;
   };
   const sourceStatus = (source: backend.Subscription) => {
+    const importedCount = ruleCount(source);
+    const activeCount = activeRuleCount(source);
+    if (activeCount > 0 && source.lastError) return { label:"部分生效", className:"partial", detail:`${activeCount}/${importedCount} 条规则生效；${source.lastError}` };
+    if (activeCount > 0) return { label:"已生效", className:"ready", detail:`${activeCount}/${importedCount} 条规则生效` };
     if (source.lastError) return { label:"失败", className:"failed", detail:source.lastError };
     if (!source.enabled) return { label:"停用", className:"disabled", detail:"当前不会参与保护配置" };
+    if (importedCount > 0) return { label:"未生效", className:"disabled", detail:`已导入 ${importedCount} 条，当前开关未启用` };
     if (source.lastUpdatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(source.lastUpdatedAt)} 更新` };
-    if ((source.importedRuleCount??0) > 0) return { label:"已同步", className:"ready", detail:"已导入规则" };
     return { label:"待同步", className:"pending", detail:"等待首次下载" };
   };
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
@@ -768,6 +784,7 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
             </div>
             <div className="builtin-rule-state">
               <strong className={status.className}>{status.label}</strong>
+              {status.detail&&!progress&&<small>{status.detail}</small>}
               {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
                 <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
                 <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
@@ -783,12 +800,11 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
                 return <div className="builtin-source-row" key={source.id}>
                   <div className="builtin-source-item-main">
                     <b title={builtinDisplayName(source.name)}>{builtinDisplayName(source.name)}</b>
-                    <span title={source.url}>{source.url}</span>
                   </div>
                   <span>{subscriptionFormat(source)}</span>
                   <div className="builtin-source-status">
                     <strong className={itemStatus.className}>{itemStatus.label}</strong>
-                    {source.lastError&&<small className="error-text">{itemStatus.detail}</small>}
+                    {itemStatus.detail&&<small className={itemStatus.className==="failed"?"error-text":undefined}>{itemStatus.detail}</small>}
                   </div>
                   <span>{formatUpdatedAt(source.lastUpdatedAt)}</span>
                   <div className="row-actions"><button className="row-action" aria-label={`更新${builtinDisplayName(source.name)}`} disabled={sourceBusy} onClick={()=>void onRefresh(source.id)}><RefreshCw size={15}/></button></div>

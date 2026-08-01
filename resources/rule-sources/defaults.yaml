@@ -1,48 +1,48 @@
 default_rule_sources:
   - id: default:stevenblack:porn
-    name: 内置规则 · 色情内容
+    name: 内置规则 · StevenBlack porn-only
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
     format: hosts
     category: pornography
     update_interval_hours: 24
   - id: default:blocklistproject:porn
-    name: 内置规则 · 成人站点扩展
+    name: 内置规则 · BlocklistProject porn-nl
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
     format: domain-list
     category: pornography
     update_interval_hours: 24
   - id: default:stevenblack:gambling
-    name: 内置规则 · 赌博网站
+    name: 内置规则 · StevenBlack gambling-only
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
     format: hosts
     category: gambling
     update_interval_hours: 24
   - id: default:blocklistproject:drugs
-    name: 内置规则 · 毒品网站
+    name: 内置规则 · BlocklistProject drugs-nl
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt
     format: domain-list
     category: drugs
     update_interval_hours: 24
   - id: default:blocklistproject:fraud
-    name: 内置规则 · 诈骗网站
+    name: 内置规则 · BlocklistProject fraud-nl
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt
     format: domain-list
     category: fraud
     update_interval_hours: 24
   - id: default:blocklistproject:phishing
-    name: 内置规则 · 钓鱼网站
+    name: 内置规则 · BlocklistProject phishing-nl
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt
     format: domain-list
     category: phishing
     update_interval_hours: 24
   - id: default:urlhaus:malware
-    name: 内置规则 · 恶意软件
+    name: 内置规则 · URLhaus hostfile
     url: https://urlhaus.abuse.ch/downloads/hostfile/
     format: hosts
     category: malware
     update_interval_hours: 24
   - id: default:cleanweb:adult-supplement
-    name: 内置规则 · 成人站点补充
+    name: 内置规则 · CleanWeb adult-supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-adult-supplement.clash
     legacy_urls:
       - builtin://cleanweb/adult-supplement
@@ -50,7 +50,7 @@ default_rule_sources:
     category: pornography
     update_interval_hours: 24
   - id: default:cleanweb:security-supplement
-    name: 内置规则 · DNS 防绕过
+    name: 内置规则 · CleanWeb security-supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-security-supplement.clash
     legacy_urls:
       - builtin://cleanweb/security-supplement
@@ -58,7 +58,7 @@ default_rule_sources:
     category: phishing
     update_interval_hours: 24
   - id: local:cleanweb:entertainment-cdn
-    name: 内置规则 · 娱乐内容补充
+    name: 内置规则 · CleanWeb entertainment-cdn
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-cdn-supplement.clash
     legacy_urls:
       - builtin://cleanweb/entertainment-cdn
@@ -66,7 +66,7 @@ default_rule_sources:
     category: entertainment
     update_interval_hours: 24
   - id: default:loyalsoldier:cncidr
-    name: 内置路由 · 中国 IP 直连
+    name: 内置路由 · Loyalsoldier cncidr
     url: https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt
     format: clash
     category: direct
@@ -74,7 +74,7 @@ default_rule_sources:
 
 rule_packs:
   - id: default:cleanweb:strict-supplement
-    name: 内置规则 · 严格模式补充
+    name: 内置规则 · CleanWeb strict-supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash
     legacy_urls:
       - builtin://cleanweb/strict-supplement

@@ -1170,14 +1170,17 @@ h1 {
   right: 24px;
   z-index: 900;
   width: min(520px, calc(100vw - 48px));
+  max-height: min(360px, calc(100vh - 48px));
   margin-bottom: 0;
   padding: 12px 42px 12px 16px;
+  overflow: auto;
   border: 1px solid #fecaca;
   border-radius: var(--radius-md);
   background: #fef2f2;
   color: #991b1b;
   font-size: 13px;
   box-shadow: 0 18px 42px rgba(127, 29, 29, 0.16);
+  overflow-wrap: anywhere;
 }
 
 .runtime-error.compact {
@@ -2031,6 +2034,14 @@ h1 {
   text-align: right;
 }
 
+.builtin-rule-state small {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 15px;
+}
+
 .builtin-rule-state strong,
 .builtin-source-status strong {
   display: inline-flex;
@@ -2056,6 +2067,12 @@ h1 {
 .builtin-source-status strong.updating {
   color: var(--color-info);
   background: #eff6ff;
+}
+
+.builtin-rule-state strong.partial,
+.builtin-source-status strong.partial {
+  color: #8a4f00;
+  background: #fff4df;
 }
 
 .builtin-rule-state strong.failed,
@@ -2216,7 +2233,9 @@ h1 {
 .import-dropdown {
   position: relative;
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: stretch;
+  width: max-content;
   border-radius: 8px;
   box-shadow: var(--shadow-sm);
 }
@@ -2257,8 +2276,8 @@ h1 {
   right: 0;
   top: calc(100% + 6px);
   z-index: 50;
-  min-width: 100%;
-  width: max-content;
+  width: 168px;
+  max-width: calc(100vw - 32px);
   padding: 6px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -2274,6 +2293,7 @@ h1 {
   color: var(--color-text-secondary);
   font-size: 12px;
   text-align: left;
+  white-space: nowrap;
 }
 .import-menu button:hover { color: var(--color-text); background: #f3f4f6; }
 .proxy-delay-error { margin: 0 0 var(--spacing-md); color: var(--color-danger); background: #fef2f2; border-radius: var(--radius-sm); padding: 9px 12px; font-size: 12px; }

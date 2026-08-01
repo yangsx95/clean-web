@@ -73,6 +73,7 @@ pub struct SubscriptionRecord {
     pub last_updated_at: Option<String>,
     pub last_error: Option<String>,
     pub imported_rule_count: i64,
+    pub active_rule_count: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -713,7 +714,11 @@ fn list_subscriptions_inner(
 ) -> Result<Vec<SubscriptionRecord>, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let sql = "SELECT s.id, s.kind, s.name, s.url, s.format, s.category, s.update_interval_hours, s.enabled, s.last_updated_at, s.last_error,
-               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) AS imported_rule_count
+               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) AS imported_rule_count,
+               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id
+                 AND s.enabled=1
+                 AND NOT (r.category='strict' AND COALESCE((SELECT value FROM settings WHERE key='strict_mode_enabled'),'false')!='true')
+                 AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0) AS active_rule_count
                FROM subscriptions s WHERE (?1 IS NULL OR s.kind=?1) ORDER BY s.created_at DESC";
     let mut statement = db.prepare(sql).map_err(error)?;
     let records = statement
@@ -730,6 +735,7 @@ fn list_subscriptions_inner(
                 last_updated_at: row.get(8)?,
                 last_error: row.get(9)?,
                 imported_rule_count: row.get(10)?,
+                active_rule_count: row.get(11)?,
             })
         })
         .map_err(error)?

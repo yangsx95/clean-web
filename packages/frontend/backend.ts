@@ -11,7 +11,7 @@ export type Settings = {
   logRetention: string;
   categories: Record<string, boolean>;
 };
-export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string; importedRuleCount?:number };
+export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string; importedRuleCount?:number; activeRuleCount?:number };
 export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|"lastError"|"importedRuleCount">;
 export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
