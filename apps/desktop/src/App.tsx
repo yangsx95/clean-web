@@ -47,7 +47,9 @@ type ErrorNotice = {
   detail?: string;
 };
 
-function toErrorNotice(reason: unknown, fallback = "操作失败，请稍后重试"): ErrorNotice {
+const DEFAULT_ERROR_MESSAGE = "操作失败，请稍后重试";
+
+function toErrorNotice(reason: unknown, fallback = DEFAULT_ERROR_MESSAGE): ErrorNotice {
   const detail = String(reason ?? "").trim();
   const lower = detail.toLowerCase();
   let message = fallback;
@@ -59,7 +61,7 @@ function toErrorNotice(reason: unknown, fallback = "操作失败，请稍后重�
   else if (detail.includes("Mihomo 热更新失败") || detail.includes("无法连接 Mihomo 热更新接口")) message = "保护正在运行，但网络策略暂时无法更新，请关闭保护后重新开启";
   else if (detail.includes("Mihomo") || lower.includes("tun") || detail.includes("Start initial configuration")) message = "保护启动失败，请检查系统授权或网络接管状态后重试";
   else if (detail.includes("浏览器策略")) message = "浏览器增强保护配置失败，请检查系统授权后重试";
-  else if (detail) message = detail.split("\n")[0] || fallback;
+  else if (detail && fallback === DEFAULT_ERROR_MESSAGE) message = detail.split("\n")[0] || fallback;
   return { message, detail: detail && detail !== message ? detail : undefined };
 }
 
@@ -247,7 +249,7 @@ export function App() {
   };
   const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.subscription(id), async()=>{setRefreshingId(id);showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}});};
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);});};
-  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.saveAccessLogsCsv(sessionToken);});};
+  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);await runScopedOperation(busyScope.logs, async()=>{showPolicyStatus({state:"applying",message:"正在导出访问日志…"});try{const path=await backend.saveAccessLogsCsv(sessionToken);if(path)showPolicyStatus({state:"applied",message:"访问日志已导出"});else showPolicyStatus({state:"applied",message:"已取消导出"});}catch(reason){const notice=toErrorNotice(reason,"访问日志导出失败，请稍后重试");const exportNotice={message:"访问日志导出失败，请稍后重试",detail:notice.detail??notice.message};showPolicyStatus({state:"failed",message:exportNotice.message,detail:exportNotice.detail});setRuntimeError(exportNotice);}});};
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError(null);showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){const notice=toErrorNotice(reason,"规则已添加，但保护配置重载失败");setRuntimeError({message:"规则已添加，但保护配置重载失败",detail:notice.detail??notice.message});}});};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
@@ -255,6 +257,7 @@ export function App() {
   const applyBrowserPolicies=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.setting("browser_policies"),async()=>{showPolicyStatus({state:"applying",message:"正在配置浏览器增强保护…"});try{const status=await backend.applyBrowserPolicies(sessionToken);setBrowserPolicyStatus(status);showPolicyStatus({state:"applied",message:"浏览器策略已写入，重启浏览器后完全生效"});}catch(reason){const notice=toErrorNotice(reason,"浏览器增强保护配置失败，请检查系统授权后重试");showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});setRuntimeError(notice);}});};
   useEffect(()=>{
     if(!sessionToken)return;
+    if(page!=="overview"&&page!=="logs")return;
     let cancelled=false;
     let refreshing=false;
     let unlisten:(()=>void)|undefined;

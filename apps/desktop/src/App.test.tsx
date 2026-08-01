@@ -188,6 +188,23 @@ describe("management actions", () => {
     interval.mockRestore();
   });
 
+  it("does not refresh access logs when navigating between non-log pages", async () => {
+    const syncLogs = vi.spyOn(backend, "syncAccessLogs").mockResolvedValue(0);
+    const listLogs = vi.spyOn(backend, "listAccessLogs").mockResolvedValue([]);
+
+    render(<App />);
+    await unlockManagement();
+    await waitFor(() => expect(syncLogs).toHaveBeenCalled());
+    syncLogs.mockClear();
+    listLogs.mockClear();
+
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(syncLogs).not.toHaveBeenCalled();
+    expect(listLogs).not.toHaveBeenCalled();
+  });
+
   it("debounces access log searches before querying the backend", async () => {
     const listLogs = vi.spyOn(backend, "listAccessLogs").mockResolvedValue([]);
 
@@ -203,6 +220,18 @@ describe("management actions", () => {
     await waitFor(() => {
       expect(listLogs).toHaveBeenCalledWith("browser-preview", undefined, "baidu.com", 500);
     });
+  });
+
+  it("shows an error when exporting access logs fails", async () => {
+    vi.spyOn(backend, "saveAccessLogsCsv").mockRejectedValueOnce(new Error("dialog save not allowed"));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "访问日志" }));
+    await userEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
+
+    expect((await screen.findAllByText("访问日志导出失败，请稍后重试")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/dialog save not allowed/).length).toBeGreaterThan(0);
   });
 
   it("keeps polling access logs after a refresh failure", async () => {
