@@ -50,6 +50,9 @@ type SubscriptionProgress = {
   phase: "queued" | "downloading" | "importing" | "applying" | "complete" | "failed";
   percent: number;
   message: string;
+  downloadedBytes?: number;
+  totalBytes?: number | null;
+  indeterminate?: boolean;
 };
 type ErrorNotice = {
   message: string;
@@ -265,9 +268,8 @@ export function App() {
       setProgress({phase:"queued",percent:8,message:"准备更新"});
       showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});
       try{
-        setProgress({phase:"downloading",percent:32,message:"正在下载规则"});
+        setProgress({phase:"downloading",percent:12,message:"正在下载规则",indeterminate:true});
         await backend.refreshSubscription(sessionToken,id);
-        setProgress({phase:"importing",percent:68,message:"正在验证并写入规则"});
         setSubscriptions(await backend.listSubscriptions(sessionToken));
         setProgress({phase:"applying",percent:88,message:"正在应用到保护内核"});
         await reloadRuntime(sessionToken);
@@ -289,6 +291,25 @@ export function App() {
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){const notice=toErrorNotice(reason,"代理节点切换失败，请稍后重试");showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});setRuntimeError(notice);throw reason;}};
   const applyBrowserPolicies=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.setting("browser_policies"),async()=>{showPolicyStatus({state:"applying",message:"正在配置浏览器增强保护…"});try{const status=await backend.applyBrowserPolicies(sessionToken);setBrowserPolicyStatus(status);showPolicyStatus({state:"applied",message:"浏览器策略已写入，重启浏览器后完全生效"});}catch(reason){const notice=toErrorNotice(reason,"浏览器增强保护配置失败，请检查系统授权后重试");showPolicyStatus({state:"failed",message:notice.message,detail:notice.detail});setRuntimeError(notice);}});};
+  useEffect(()=>{
+    let cancelled=false;
+    let unlisten:(()=>void)|undefined;
+    void backend.onSubscriptionRefreshProgress(progress=>{
+      if(cancelled)return;
+      setSubscriptionProgress(previous=>({
+        ...previous,
+        [progress.id]:{
+          phase:progress.phase,
+          percent:progress.percent ?? previous[progress.id]?.percent ?? 12,
+          message:progress.message,
+          downloadedBytes:progress.downloadedBytes,
+          totalBytes:progress.totalBytes,
+          indeterminate:progress.percent == null,
+        },
+      }));
+    }).then(stop=>{if(cancelled)stop();else unlisten=stop;});
+    return()=>{cancelled=true;if(unlisten)unlisten();};
+  },[]);
   useEffect(()=>{
     if(!sessionToken)return;
     if(page!=="overview"&&page!=="logs")return;
@@ -705,13 +726,18 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     if (updatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(updatedAt)} 更新` };
     return { label:"待同步", className:"pending", detail:"点击刷新后下载并应用" };
   };
-  const builtinProgress = (group: {sources:backend.Subscription[]}): SubscriptionProgress => {
+  const activeProgress = (group: {sources:backend.Subscription[]}) => {
     const progress = groupActiveProgress(group.sources);
-    if (progress) return progress;
-    if (group.sources.some(source=>source.lastError)) return { phase:"failed", percent:100, message:"更新失败，保留上次有效规则" };
-    if (group.sources.some(source=>(source.importedRuleCount??0)>0 || source.lastUpdatedAt)) return { phase:"complete", percent:100, message:"已下载并应用" };
-    return { phase:"queued", percent:0, message:"尚未下载" };
+    return progress && progress.phase !== "failed" ? progress : undefined;
   };
+  const sourceStatus = (source: backend.Subscription) => {
+    if (source.lastError) return { label:"失败", className:"failed", detail:source.lastError };
+    if (!source.enabled) return { label:"停用", className:"disabled", detail:"当前不会参与保护配置" };
+    if ((source.importedRuleCount??0) > 0) return { label:"已同步", className:"ready", detail:`${source.importedRuleCount} 条规则 · ${formatUpdatedAt(source.lastUpdatedAt)}` };
+    if (source.lastUpdatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(source.lastUpdatedAt)} 更新` };
+    return { label:"待同步", className:"pending", detail:"等待首次下载" };
+  };
+  const builtinSourceCategory = (source: backend.Subscription) => source.category ? builtinCategoryName(source.category).replace("内置规则 · ","").replace("内置路由 · ","") : "内置来源";
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
   const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : action === "system_route" ? "系统路由" : "直连";
   const renderParentRule = (item: backend.ParentRule) => {
@@ -735,7 +761,7 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
       {builtinGroups.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
       {builtinGroups.map((group) => {
         const status = builtinStatus(group);
-        const progress = builtinProgress(group);
+        const progress = activeProgress(group);
         const rowBusy = group.sources.some(source=>isBusy(busyScope.subscription(source.id))||refreshingId===source.id);
         return <div className="table-row builtin-rule-row" key={group.id}>
           <div>
@@ -747,14 +773,34 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
           <div className="builtin-rule-state">
             <strong className={status.className}>{status.label}</strong>
             <small>{status.detail}</small>
+            {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
+              <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
+              <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
+            </div>}
           </div>
           <div className="row-actions"><button className="row-action" aria-label={`更新${group.name}`} disabled={rowBusy} onClick={()=>void group.sources.reduce((chain,source)=>chain.then(()=>onRefresh(source.id)),Promise.resolve())}><RefreshCw size={15}/></button></div>
-          <div className={`builtin-rule-progress ${progress.phase}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
-            <div><span style={{width:`${progress.percent}%`}}/></div>
-            <small>{progress.message}</small>
-          </div>
           {expandedBuiltinSources[group.id]&&<div className="builtin-source-list">
-            {group.sources.map(source=><div className="builtin-source-item" key={source.id}><b>{source.name}</b><span>{source.url}</span></div>)}
+            <div className="builtin-source-list-head">
+              <div><strong>规则来源</strong><span>{group.sources.length} 个来源 · {groupFormats(group.sources)}</span></div>
+              <span>{groupUpdateInterval(group.sources)}</span>
+            </div>
+            <div className="builtin-source-grid">
+              {group.sources.map(source=>{
+                const itemStatus = sourceStatus(source);
+                return <article className="builtin-source-item" key={source.id}>
+                  <div className="builtin-source-item-main">
+                    <b title={source.name}>{source.name}</b>
+                    <span title={source.url}>{source.url}</span>
+                  </div>
+                  <div className="builtin-source-item-meta">
+                    <span>{subscriptionFormat(source)}</span>
+                    <span>{builtinSourceCategory(source)}</span>
+                    <strong className={itemStatus.className}>{itemStatus.label}</strong>
+                  </div>
+                  <small className={source.lastError ? "error-text" : ""}>{itemStatus.detail}</small>
+                </article>;
+              })}
+            </div>
           </div>}
         </div>;
       })}

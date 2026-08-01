@@ -685,7 +685,7 @@ describe("management actions", () => {
     expect(screen.getByText("已同步")).toBeTruthy();
     expect(screen.getByText("953521 条规则", { exact: false })).toBeTruthy();
     expect(screen.getByText("待同步")).toBeTruthy();
-    expect(screen.getAllByRole("progressbar", { name: /下载应用进度/ })).toHaveLength(2);
+    expect(screen.queryByRole("progressbar", { name: /下载应用进度/ })).toBeNull();
     expect(screen.getByText("内置规则 · 娱乐内容")).toBeTruthy();
     expect(screen.queryByText("https://example.test/default")).toBeNull();
     expect(screen.queryByText("内置规则 · 成人站点扩展")).toBeNull();

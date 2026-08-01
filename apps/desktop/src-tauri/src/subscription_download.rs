@@ -3,7 +3,7 @@ use std::time::Duration;
 use reqwest::header::CONTENT_LENGTH;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
 };
 
 const MAX_SUBSCRIPTION_BYTES: usize = 20 * 1024 * 1024;
+const SUBSCRIPTION_PROGRESS_EVENT: &str = "subscription-refresh-progress";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +23,17 @@ pub struct RefreshReport {
     pub ignored_count: usize,
     pub proxy_count: usize,
     pub group_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionRefreshProgress {
+    pub id: String,
+    pub phase: String,
+    pub downloaded_bytes: usize,
+    pub total_bytes: Option<usize>,
+    pub percent: Option<u8>,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,13 +47,18 @@ pub struct ManualProxyImport {
 pub async fn refresh_subscription(
     id: String,
     session_token: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RefreshReport, String> {
     state.require_session(&session_token)?;
-    refresh_subscription_inner(id, &state).await
+    refresh_subscription_inner(id, &state, Some(&app)).await
 }
 
-async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<RefreshReport, String> {
+async fn refresh_subscription_inner(
+    id: String,
+    state: &AppState,
+    app: Option<&AppHandle>,
+) -> Result<RefreshReport, String> {
     let (kind, url, configured_format, category) = {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
         db.query_row(
@@ -80,11 +97,38 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
     {
         return record_error(state, &id, "订阅文件超过20MB限制".into());
     }
-    let bytes = response.bytes().await.map_err(error)?;
+    emit_refresh_progress(
+        app,
+        &id,
+        "downloading",
+        0,
+        response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok()),
+        "正在下载规则",
+    );
+    let bytes = match read_subscription_bytes(response, app, &id).await {
+        Ok(bytes) => bytes,
+        Err(reason) if reason == "订阅文件超过20MB限制" => {
+            return record_error(state, &id, reason);
+        }
+        Err(reason) => return Err(reason),
+    };
     if bytes.len() > MAX_SUBSCRIPTION_BYTES {
         return record_error(state, &id, "订阅文件超过20MB限制".into());
     }
-    let text = String::from_utf8(bytes.to_vec()).map_err(|_| "订阅不是有效UTF-8文本")?;
+    let byte_len = bytes.len();
+    let text = String::from_utf8(bytes).map_err(|_| "订阅不是有效UTF-8文本")?;
+    emit_refresh_progress(
+        app,
+        &id,
+        "importing",
+        byte_len,
+        Some(byte_len),
+        "正在验证并写入规则",
+    );
 
     let report = if kind == "rule" {
         refresh_rules(
@@ -104,6 +148,54 @@ async fn refresh_subscription_inner(id: String, state: &AppState) -> Result<Refr
     db.execute("UPDATE subscriptions SET format=?1,last_updated_at=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?2",params![report.detected_format,id]).map_err(error)?;
     drop(db);
     Ok(report)
+}
+
+async fn read_subscription_bytes(
+    mut response: reqwest::Response,
+    app: Option<&AppHandle>,
+    id: &str,
+) -> Result<Vec<u8>, String> {
+    let total = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    let mut bytes = Vec::with_capacity(total.unwrap_or_default().min(MAX_SUBSCRIPTION_BYTES));
+    while let Some(chunk) = response.chunk().await.map_err(error)? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > MAX_SUBSCRIPTION_BYTES {
+            return Err("订阅文件超过20MB限制".into());
+        }
+        emit_refresh_progress(app, id, "downloading", bytes.len(), total, "正在下载规则");
+    }
+    Ok(bytes)
+}
+
+fn emit_refresh_progress(
+    app: Option<&AppHandle>,
+    id: &str,
+    phase: &str,
+    downloaded_bytes: usize,
+    total_bytes: Option<usize>,
+    message: &str,
+) {
+    let Some(app) = app else {
+        return;
+    };
+    let percent = total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| ((downloaded_bytes.saturating_mul(100) / total).min(100)) as u8);
+    let _ = app.emit(
+        SUBSCRIPTION_PROGRESS_EVENT,
+        SubscriptionRefreshProgress {
+            id: id.to_owned(),
+            phase: phase.to_owned(),
+            downloaded_bytes,
+            total_bytes,
+            percent,
+            message: message.to_owned(),
+        },
+    );
 }
 
 #[tauri::command]
@@ -191,7 +283,7 @@ pub async fn refresh_due_subscriptions(state: State<'_, AppState>) -> Result<usi
     };
     let mut updated = 0;
     for id in due {
-        if refresh_subscription_inner(id, &state).await.is_ok() {
+        if refresh_subscription_inner(id, &state, None).await.is_ok() {
             updated += 1;
         }
     }

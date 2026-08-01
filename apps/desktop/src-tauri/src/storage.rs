@@ -244,6 +244,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
         db.execute_batch("VACUUM")?;
     }
     add_access_log_repeat_count(db)?;
+    create_access_log_indexes(db)?;
     let defaults = [
         ("protection_enabled", "false"),
         ("proxy_enabled", "false"),
@@ -273,6 +274,15 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
     }
     seed_default_rule_subscriptions(db)?;
     Ok(())
+}
+
+fn create_access_log_indexes(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_access_logs_observed_desc
+           ON access_logs(observed_at_ms DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_access_logs_decision_observed_desc
+           ON access_logs(decision_code, observed_at_ms DESC, id DESC);",
+    )
 }
 
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {

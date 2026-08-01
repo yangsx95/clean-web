@@ -1,4 +1,4 @@
-name: Desktop Build
+name: Build
 
 on:
   workflow_dispatch:
@@ -21,26 +21,99 @@ on:
     tags:
       - "v*"
     paths:
-      - ".github/workflows/desktop-build.yml"
+      - ".github/workflows/build.yml"
       - "package.json"
       - "package-lock.json"
       - "apps/desktop/**"
+      - "apps/mobile/**"
+      - "crates/**"
       - "packages/frontend/**"
+      - "docs/platforms/mobile.md"
+      - "docs/platforms/android.md"
+      - "docs/platforms/ios.md"
+      - "docs/project-structure.md"
   pull_request:
     paths:
-      - ".github/workflows/desktop-build.yml"
+      - ".github/workflows/build.yml"
       - "package.json"
       - "package-lock.json"
       - "apps/desktop/**"
+      - "apps/mobile/**"
+      - "crates/**"
       - "packages/frontend/**"
+      - "docs/platforms/mobile.md"
+      - "docs/platforms/android.md"
+      - "docs/platforms/ios.md"
+      - "docs/project-structure.md"
 
 permissions:
   contents: read
 
 jobs:
+  detect-changes:
+    name: Detect changed targets
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect desktop and mobile changes
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          desktop=false
+          mobile=false
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            desktop=true
+            mobile=true
+          else
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+            else
+              base="${{ github.event.before }}"
+              head="${{ github.sha }}"
+              if [[ "$base" =~ ^0+$ ]]; then
+                base="$(git rev-list --max-parents=0 "$head")"
+              fi
+            fi
+
+            while IFS= read -r file; do
+              case "$file" in
+                .github/workflows/build.yml|package.json|package-lock.json|packages/frontend/*)
+                  desktop=true
+                  mobile=true
+                  ;;
+                apps/desktop/*)
+                  desktop=true
+                  ;;
+                crates/*)
+                  desktop=true
+                  ;;
+                apps/mobile/*|docs/platforms/mobile.md|docs/platforms/android.md|docs/platforms/ios.md|docs/project-structure.md)
+                  mobile=true
+                  ;;
+              esac
+            done < <(git diff --name-only "$base" "$head")
+          fi
+
+          echo "desktop=$desktop" >> "$GITHUB_OUTPUT"
+          echo "mobile=$mobile" >> "$GITHUB_OUTPUT"
+
   build-windows:
     name: Build unsigned Windows installer
     runs-on: windows-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.desktop == 'true'
 
     steps:
       - name: Checkout
@@ -92,6 +165,8 @@ jobs:
   build-macos-universal:
     name: Build unsigned macOS Universal DMG
     runs-on: macos-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.desktop == 'true'
 
     steps:
       - name: Checkout
@@ -140,6 +215,38 @@ jobs:
           path: |
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+
+  build-mobile-web:
+    name: Build Tauri mobile frontend
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.mobile == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test shared frontend
+        run: npm test
+
+      - name: Build mobile frontend
+        run: npm run build:mobile
+
+      - name: Upload mobile frontend dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: cleanweb-mobile-frontend-dist
+          path: apps/mobile/dist
           if-no-files-found: error
 
   release:

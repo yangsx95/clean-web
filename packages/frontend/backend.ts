@@ -16,6 +16,14 @@ export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|
 export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
+export type SubscriptionRefreshProgress = {
+  id:string;
+  phase:"queued"|"downloading"|"importing"|"applying"|"complete"|"failed";
+  downloadedBytes:number;
+  totalBytes?:number|null;
+  percent?:number|null;
+  message:string;
+};
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
 export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string;repeatCount?:number};
 export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
@@ -283,6 +291,11 @@ export async function onAccessLogsUpdated(callback:()=>void):Promise<()=>void>{
   if(!isTauri())return()=>{};
   const { listen } = await import("@tauri-apps/api/event");
   return listen("access-logs-updated", callback);
+}
+export async function onSubscriptionRefreshProgress(callback:(progress:SubscriptionRefreshProgress)=>void):Promise<()=>void>{
+  if(!isTauri())return()=>{};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<SubscriptionRefreshProgress>("subscription-refresh-progress", event=>callback(event.payload));
 }
 export async function onQuitRequested(callback:()=>void):Promise<()=>void>{
   if(!isTauri())return()=>{};

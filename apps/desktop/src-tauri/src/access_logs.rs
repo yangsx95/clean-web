@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -24,7 +24,8 @@ const ACCESS_LOGS_UPDATED_EVENT: &str = "access-logs-updated";
 const LOG_STREAM_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_FILE_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const LOG_SYNC_OFFSET_PREFIX: &str = "access_log_file_offset:";
-const HIGH_FREQUENCY_LOG_BUCKET_MS: i64 = 10_000;
+const HIGH_FREQUENCY_LOG_BUCKET_MS: i64 = 5 * 60 * 1000;
+const MAX_ACCESS_LOG_ROWS: i64 = 100_000;
 const MAX_RAW_MIHOMO_LOG_BYTES: u64 = 16 * 1024 * 1024;
 const UTF8_BOM: &str = "\u{feff}";
 #[cfg(target_os = "macos")]
@@ -759,38 +760,22 @@ pub fn list_access_logs(
 ) -> Result<Vec<AccessLog>, String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let search = search.unwrap_or_default();
+    let limit = limit.unwrap_or(500).min(5000);
+    let decision_code = match decision.as_deref() {
+        None => None,
+        Some("allow") => Some(0),
+        Some("block") => Some(1),
+        Some("warning") => Some(2),
+        Some(_) => return Ok(Vec::new()),
+    };
+    let search = search.unwrap_or_default().trim().to_owned();
+    if search.is_empty() {
+        return list_recent_access_logs(&db, decision_code, limit);
+    }
     let pattern = format!("%{search}%");
-    let mut statement=db.prepare(
-        "SELECT CAST(l.id AS TEXT),
-                strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
-                domain_s.value,
-                target_ip_s.value,
-                l.target_port,
-                CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
-                rule_s.value,
-                category_s.value,
-                process_s.value,
-                os_s.value,
-                user_s.value,
-                source_s.value,
-                route_s.value,
-                proxy_s.value,
-                error_s.value,
-                l.repeat_count
-           FROM access_logs l
-           LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
-           LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
-           LEFT JOIN access_log_strings rule_s ON rule_s.id=l.rule_string_id
-           LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id
-           LEFT JOIN access_log_strings process_s ON process_s.id=l.process_name_string_id
-           LEFT JOIN access_log_strings os_s ON os_s.id=l.operating_system_string_id
-           LEFT JOIN access_log_strings user_s ON user_s.id=l.system_user_string_id
-           LEFT JOIN access_log_strings source_s ON source_s.id=l.source_ip_string_id
-           LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
-           LEFT JOIN access_log_strings proxy_s ON proxy_s.id=l.proxy_group_string_id
-           LEFT JOIN access_log_strings error_s ON error_s.id=l.error_string_id
-          WHERE (?1 IS NULL OR CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END=?1)
+    let mut statement = db
+        .prepare(&format!(
+            "{} WHERE (?1 IS NULL OR l.decision_code=?1)
             AND (?2='' OR COALESCE(domain_s.value,'') LIKE ?3
                        OR COALESCE(target_ip_s.value,'') LIKE ?3
                        OR COALESCE(rule_s.value,'') LIKE ?3
@@ -798,36 +783,102 @@ pub fn list_access_logs(
                        OR COALESCE(process_s.value,'') LIKE ?3
                        OR COALESCE(route_s.value,'') LIKE ?3
                        OR COALESCE(proxy_s.value,'') LIKE ?3)
-          ORDER BY l.observed_at_ms DESC, l.id DESC LIMIT ?4"
-    ).map_err(error)?;
+          ORDER BY l.observed_at_ms DESC, l.id DESC LIMIT ?4",
+            access_log_select_from()
+        ))
+        .map_err(error)?;
     let rows = statement
         .query_map(
-            params![decision, search, pattern, limit.unwrap_or(500).min(5000)],
-            |row| {
-                Ok(AccessLog {
-                    id: row.get(0)?,
-                    observed_at: row.get(1)?,
-                    domain: row.get(2)?,
-                    target_ip: row.get(3)?,
-                    target_port: row.get(4)?,
-                    decision: row.get(5)?,
-                    rule: row.get(6)?,
-                    category: row.get(7)?,
-                    process_name: row.get(8)?,
-                    operating_system: row.get(9)?,
-                    system_user: row.get(10)?,
-                    source_ip: row.get(11)?,
-                    route: row.get(12)?,
-                    proxy_group: row.get(13)?,
-                    error: row.get(14)?,
-                    repeat_count: row.get(15)?,
-                })
-            },
+            params![decision_code, search, pattern, limit],
+            map_access_log_row,
         )
         .map_err(error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
     Ok(rows)
+}
+
+fn list_recent_access_logs(
+    db: &rusqlite::Connection,
+    decision_code: Option<i64>,
+    limit: u32,
+) -> Result<Vec<AccessLog>, String> {
+    let sql = match decision_code {
+        Some(_) => format!(
+            "{} WHERE l.decision_code=?1 ORDER BY l.observed_at_ms DESC, l.id DESC LIMIT ?2",
+            access_log_select_from()
+        ),
+        None => format!(
+            "{} ORDER BY l.observed_at_ms DESC, l.id DESC LIMIT ?1",
+            access_log_select_from()
+        ),
+    };
+    let mut statement = db.prepare(&sql).map_err(error)?;
+    let rows = if let Some(code) = decision_code {
+        statement
+            .query_map(params![code, limit], map_access_log_row)
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    } else {
+        statement
+            .query_map(params![limit], map_access_log_row)
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    }
+    .map_err(error)?;
+    Ok(rows)
+}
+
+fn access_log_select_from() -> &'static str {
+    "SELECT CAST(l.id AS TEXT),
+            strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
+            domain_s.value,
+            target_ip_s.value,
+            l.target_port,
+            CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END,
+            rule_s.value,
+            category_s.value,
+            process_s.value,
+            os_s.value,
+            user_s.value,
+            source_s.value,
+            route_s.value,
+            proxy_s.value,
+            error_s.value,
+            l.repeat_count
+       FROM access_logs l
+       LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
+       LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
+       LEFT JOIN access_log_strings rule_s ON rule_s.id=l.rule_string_id
+       LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id
+       LEFT JOIN access_log_strings process_s ON process_s.id=l.process_name_string_id
+       LEFT JOIN access_log_strings os_s ON os_s.id=l.operating_system_string_id
+       LEFT JOIN access_log_strings user_s ON user_s.id=l.system_user_string_id
+       LEFT JOIN access_log_strings source_s ON source_s.id=l.source_ip_string_id
+       LEFT JOIN access_log_strings route_s ON route_s.id=l.route_string_id
+       LEFT JOIN access_log_strings proxy_s ON proxy_s.id=l.proxy_group_string_id
+       LEFT JOIN access_log_strings error_s ON error_s.id=l.error_string_id"
+}
+
+fn map_access_log_row(row: &Row<'_>) -> rusqlite::Result<AccessLog> {
+    Ok(AccessLog {
+        id: row.get(0)?,
+        observed_at: row.get(1)?,
+        domain: row.get(2)?,
+        target_ip: row.get(3)?,
+        target_port: row.get(4)?,
+        decision: row.get(5)?,
+        rule: row.get(6)?,
+        category: row.get(7)?,
+        process_name: row.get(8)?,
+        operating_system: row.get(9)?,
+        system_user: row.get(10)?,
+        source_ip: row.get(11)?,
+        route: row.get(12)?,
+        proxy_group: row.get(13)?,
+        error: row.get(14)?,
+        repeat_count: row.get(15)?,
+    })
 }
 
 #[tauri::command]
@@ -991,6 +1042,17 @@ fn cleanup_retention(db: &rusqlite::Connection) -> Result<(), String> {
         )
         .map_err(error)?;
     }
+    db.execute(
+        "DELETE FROM access_logs
+          WHERE id IN (
+            SELECT id
+              FROM access_logs
+             ORDER BY observed_at_ms DESC,id DESC
+             LIMIT -1 OFFSET ?1
+          )",
+        params![MAX_ACCESS_LOG_ROWS],
+    )
+    .map_err(error)?;
     Ok(())
 }
 

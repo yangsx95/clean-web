@@ -8,10 +8,13 @@
 
 use serde::Serialize;
 #[cfg(target_os = "macos")]
+use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Write},
-    os::unix::fs::PermissionsExt,
+    os::fd::AsRawFd,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     time::Duration,
@@ -33,7 +36,13 @@ const DNS_BACKUP_FILE: &str = "/Library/Application Support/CleanWeb/dns-backup.
 #[cfg(target_os = "macos")]
 const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
 #[cfg(target_os = "macos")]
-const HELPER_PROTOCOL_VERSION: &str = "2026-08-01-bounded-mihomo-log";
+const HELPER_PROTOCOL_VERSION: &str = "2026-08-01-peer-verified-helper";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const EXPECTED_MIHOMO_SHA256: &str =
+    "40cdae2fab4b18df15f40eaa9dc3af70ab3d8be7f77164ae1e5f1af3a2a4fb44";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const EXPECTED_MIHOMO_SHA256: &str =
+    "a469cc2f6800e71b50eca3f74bc72a8f6f7e990a5d4aaecb81a68cf331516d9d";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -310,6 +319,7 @@ pub fn run_privileged_helper() -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
+    let peer_uid = helper_peer_uid(&stream)?;
     let mut line = String::new();
     {
         let mut reader = BufReader::new(
@@ -331,15 +341,21 @@ fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
             pid: None,
             log: None,
         },
-        HelperRequest::Stop => match helper_stop_mihomo() {
-            Ok(()) => HelperResponse::ok(),
-            Err(reason) => HelperResponse::err(reason),
-        },
-        HelperRequest::TruncateMihomoLog => match helper_truncate_mihomo_log() {
-            Ok(()) => HelperResponse::ok(),
-            Err(reason) => HelperResponse::err(reason),
-        },
-        HelperRequest::Start { binary, config } => match helper_start_mihomo(&binary, &config) {
+        HelperRequest::Stop => {
+            match validate_helper_peer_uid(peer_uid).and_then(|_| helper_stop_mihomo()) {
+                Ok(()) => HelperResponse::ok(),
+                Err(reason) => HelperResponse::err(reason),
+            }
+        }
+        HelperRequest::TruncateMihomoLog => {
+            match validate_helper_peer_uid(peer_uid).and_then(|_| helper_truncate_mihomo_log()) {
+                Ok(()) => HelperResponse::ok(),
+                Err(reason) => HelperResponse::err(reason),
+            }
+        }
+        HelperRequest::Start { binary, config } => match validate_helper_peer_uid(peer_uid)
+            .and_then(|_| helper_start_mihomo(&binary, &config, peer_uid))
+        {
             Ok((pid, log)) => HelperResponse {
                 ok: true,
                 message: None,
@@ -356,6 +372,35 @@ fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+fn helper_peer_uid(stream: &UnixStream) -> Result<u32, String> {
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: getpeereid reads credentials for this connected Unix socket and
+    // writes them into valid uid/gid output pointers.
+    let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    if result == 0 {
+        Ok(uid)
+    } else {
+        Err(format!(
+            "无法验证 CleanWeb 特权服务调用者：{}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn validate_helper_peer_uid(peer_uid: u32) -> Result<(), String> {
+    let console_uid = fs::metadata("/dev/console")
+        .map_err(|value| format!("无法验证当前控制台用户：{value}"))?
+        .uid();
+    if peer_uid == console_uid {
+        Ok(())
+    } else {
+        Err("CleanWeb 特权服务拒绝非当前登录用户的请求".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn helper_truncate_mihomo_log() -> Result<(), String> {
     let log = Path::new(SYSTEM_RUNTIME_DIR).join("mihomo.log");
     fs::OpenOptions::new()
@@ -366,9 +411,13 @@ fn helper_truncate_mihomo_log() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn helper_start_mihomo(binary: &str, config: &str) -> Result<(u32, PathBuf), String> {
-    let source_binary = validate_user_mihomo_path(Path::new(binary))?;
-    let source_config = validate_user_config_path(Path::new(config))?;
+fn helper_start_mihomo(
+    binary: &str,
+    config: &str,
+    peer_uid: u32,
+) -> Result<(u32, PathBuf), String> {
+    let source_binary = validate_user_mihomo_path(Path::new(binary), peer_uid)?;
+    let source_config = validate_user_config_path(Path::new(config), peer_uid)?;
     let system_dir = PathBuf::from(SYSTEM_RUNTIME_DIR);
     let installed_binary = system_dir.join("mihomo");
     let installed_config = system_dir.join("config.yaml");
@@ -645,7 +694,7 @@ fn call_helper(request: &HelperRequest) -> Result<HelperResponse, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn validate_user_mihomo_path(path: &Path) -> Result<PathBuf, String> {
+fn validate_user_mihomo_path(path: &Path, peer_uid: u32) -> Result<PathBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|value| format!("无法验证 Mihomo 路径：{value}"))?;
@@ -653,11 +702,13 @@ fn validate_user_mihomo_path(path: &Path) -> Result<PathBuf, String> {
         return Err("特权服务拒绝非 Mihomo 内核路径".into());
     }
     validate_cleanweb_user_runtime_path(&canonical)?;
+    validate_peer_owned_helper_file(&canonical, peer_uid)?;
+    validate_mihomo_binary_hash(&canonical)?;
     Ok(canonical)
 }
 
 #[cfg(target_os = "macos")]
-fn validate_user_config_path(path: &Path) -> Result<PathBuf, String> {
+fn validate_user_config_path(path: &Path, peer_uid: u32) -> Result<PathBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|value| format!("无法验证 Mihomo 配置路径：{value}"))?;
@@ -665,7 +716,32 @@ fn validate_user_config_path(path: &Path) -> Result<PathBuf, String> {
         return Err("特权服务拒绝非 CleanWeb 配置路径".into());
     }
     validate_cleanweb_user_runtime_path(&canonical)?;
+    validate_peer_owned_helper_file(&canonical, peer_uid)?;
     Ok(canonical)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_peer_owned_helper_file(path: &Path, peer_uid: u32) -> Result<(), String> {
+    let metadata =
+        fs::metadata(path).map_err(|value| format!("无法读取 CleanWeb 文件权限：{value}"))?;
+    if metadata.uid() != peer_uid {
+        return Err("特权服务拒绝非调用用户拥有的 CleanWeb 文件".into());
+    }
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err("特权服务拒绝 group/world 可写的 CleanWeb 文件".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_mihomo_binary_hash(path: &Path) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|value| format!("无法读取 Mihomo 内核：{value}"))?;
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    if digest == EXPECTED_MIHOMO_SHA256 {
+        Ok(())
+    } else {
+        Err("特权服务拒绝未随 CleanWeb 分发的 Mihomo 内核".into())
+    }
 }
 
 #[cfg(target_os = "macos")]
