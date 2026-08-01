@@ -175,6 +175,19 @@ describe("management actions", () => {
     interval.mockRestore();
   });
 
+  it("searches access logs through the backend instead of only filtering loaded rows", async () => {
+    const listLogs = vi.spyOn(backend, "listAccessLogs").mockResolvedValue([]);
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "访问日志" }));
+    await userEvent.type(screen.getByLabelText("搜索访问日志"), "baidu.com");
+
+    await waitFor(() => {
+      expect(listLogs).toHaveBeenCalledWith("browser-preview", undefined, "baidu.com", 500);
+    });
+  });
+
   it("keeps polling access logs after a refresh failure", async () => {
     let pollLogs: (() => void) | undefined;
     const interval = vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler, timeout?: number) => {

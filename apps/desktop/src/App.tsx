@@ -6,6 +6,7 @@ import * as backend from "./backend";
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
 type AppDialog = "unlock" | "rules" | "editRuleSubscription" | "proxy" | "custom" | "quit" | null;
 type AppPage = "overview" | "rules" | "logs" | "subscriptions" | "proxy" | "settings";
+type AccessLogDecisionFilter = "all" | "block" | "warning";
 const ACCESS_LOG_REFRESH_INTERVAL_MS = 3000;
 
 async function decodeQrImage(file: File): Promise<string> {
@@ -117,6 +118,8 @@ export function App() {
   const policyStatusTimerRef=useRef<number|null>(null);
   const [accessLogs,setAccessLogs]=useState<backend.AccessLog[]>([]);
   const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>(emptyAccessLogStats);
+  const [accessLogDecisionFilter,setAccessLogDecisionFilter]=useState<AccessLogDecisionFilter>("all");
+  const [accessLogSearch,setAccessLogSearch]=useState("");
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
   const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "订阅导入", proxy: "代理节点", settings: "设置" };
@@ -204,11 +207,13 @@ export function App() {
     let cancelled=false;
     let refreshing=false;
     let unlisten:(()=>void)|undefined;
+    const decision = accessLogDecisionFilter === "all" ? undefined : accessLogDecisionFilter;
+    const search = accessLogSearch.trim() || undefined;
     const refresh=()=>{
       if(refreshing)return;
       refreshing=true;
       void backend.syncAccessLogs().catch(()=>0)
-        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,undefined,undefined,500),backend.getAccessLogStats(sessionToken)]))
+        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,decision,search,500),backend.getAccessLogStats(sessionToken)]))
         .then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}})
         .catch(()=>undefined)
         .finally(()=>{refreshing=false;});
@@ -217,7 +222,7 @@ export function App() {
     const interval=window.setInterval(refresh,ACCESS_LOG_REFRESH_INTERVAL_MS);
     void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});
     return()=>{cancelled=true;window.clearInterval(interval);if(unlisten)unlisten();};
-  },[sessionToken]);
+  },[sessionToken,accessLogDecisionFilter,accessLogSearch]);
   useEffect(()=>{
     if(sessionToken)return;
     let cancelled=false;
@@ -258,7 +263,7 @@ export function App() {
       {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus}/>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
-      {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} isBusy={isBusy} settings={settings} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
+      {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{if(item.kind==="rule"){setEditingSubscription(item);setDialog("editRuleSubscription");}}} onAddRule={() => requestAction("rules")} onAddProxy={(mode) => requestAction("proxy", mode)} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
       {page === "settings" && <SettingsPage settings={settings} coreStatus={coreStatus} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onLock={handleLock} onApplyBrowserPolicies={applyBrowserPolicies} />}
@@ -413,15 +418,7 @@ function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
   })}</div>;
 }
 
-function LogsPage({ locked, logs, logStats, isBusy, settings, onClear, onExport, onToggle, onRetention }: { locked:boolean; logs:backend.AccessLog[]; logStats:backend.AccessLogStats; isBusy:(scope:string)=>boolean; settings:backend.Settings; onClear:()=>Promise<void>; onExport:()=>Promise<void>; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void> }) {
-  const [decisionFilter,setDecisionFilter]=useState<"all"|"block"|"warning">("all");
-  const [search,setSearch]=useState("");
-  const query=search.trim().toLowerCase();
-  const visibleLogs = logs.filter(log=>{
-    if(decisionFilter!=="all"&&log.decision!==decisionFilter)return false;
-    if(!query)return true;
-    return [log.domain,log.targetIp,log.rule,log.category,log.processName,log.route,log.proxyGroup].some(value=>value?.toLowerCase().includes(query));
-  });
+function LogsPage({ locked, logs, logStats, decisionFilter, search, isBusy, settings, onDecisionFilterChange, onSearchChange, onClear, onExport, onToggle, onRetention }: { locked:boolean; logs:backend.AccessLog[]; logStats:backend.AccessLogStats; decisionFilter:AccessLogDecisionFilter; search:string; isBusy:(scope:string)=>boolean; settings:backend.Settings; onDecisionFilterChange:(value:AccessLogDecisionFilter)=>void; onSearchChange:(value:string)=>void; onClear:()=>Promise<void>; onExport:()=>Promise<void>; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void> }) {
   return <>
     <section className="cw-page-intro"><p>查看仅保存在本机的最终网络决策。日志支持筛选、导出 CSV、清空和按策略保留。</p><div><button className="secondary" disabled={isBusy(busyScope.logs)} onClick={()=>void onExport()}>导出 CSV</button><button className="primary danger" disabled={isBusy(busyScope.logs)} onClick={()=>void onClear()}>清空日志</button></div></section>
     <section className="cw-logs-layout">
@@ -430,10 +427,10 @@ function LogsPage({ locked, logs, logStats, isBusy, settings, onClear, onExport,
         <article className="cw-panel privacy-panel"><h3>隐私控制</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">保留期：7 天</option><option value="30d">保留期：30 天</option><option value="90d">保留期：90 天</option><option value="forever">保留期：永久</option></select><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>
       </div>
       <article className="cw-log-table">
-        <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills" role="group" aria-label="日志筛选"><button className={decisionFilter==="all"?"active":""} onClick={()=>setDecisionFilter("all")}>全部</button><button className={decisionFilter==="block"?"active":""} onClick={()=>setDecisionFilter("block")}>已拦截</button><button className={decisionFilter==="warning"?"active":""} onClick={()=>setDecisionFilter("warning")}>未知 IP</button></div></div>
-        <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>setSearch(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" />
+        <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills" role="group" aria-label="日志筛选"><button className={decisionFilter==="all"?"active":""} onClick={()=>onDecisionFilterChange("all")}>全部</button><button className={decisionFilter==="block"?"active":""} onClick={()=>onDecisionFilterChange("block")}>已拦截</button><button className={decisionFilter==="warning"?"active":""} onClick={()=>onDecisionFilterChange("warning")}>未知 IP</button></div></div>
+        <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>onSearchChange(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" />
         <div className="cw-log-list">
-          {locked ? <div className="empty">解锁管理台后查看访问详情</div> : logs.length === 0 ? <SampleLogs /> : visibleLogs.length === 0 ? <div className="empty">没有匹配的访问记录</div> : visibleLogs.map(log=><AccessLogRow log={log} key={log.id}/>)}
+          {locked ? <div className="empty">解锁管理台后查看访问详情</div> : logs.length === 0 ? (search.trim() || decisionFilter !== "all" ? <div className="empty">没有匹配的访问记录</div> : <SampleLogs />) : logs.map(log=><AccessLogRow log={log} key={log.id}/>)}
         </div>
       </article>
     </section>

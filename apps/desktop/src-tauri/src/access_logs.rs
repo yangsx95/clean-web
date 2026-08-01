@@ -555,7 +555,13 @@ pub fn list_access_logs(
            LEFT JOIN access_log_strings proxy_s ON proxy_s.id=l.proxy_group_string_id
            LEFT JOIN access_log_strings error_s ON error_s.id=l.error_string_id
           WHERE (?1 IS NULL OR CASE l.decision_code WHEN 1 THEN 'block' WHEN 2 THEN 'warning' ELSE 'allow' END=?1)
-            AND (?2='' OR COALESCE(domain_s.value,'') LIKE ?3 OR COALESCE(target_ip_s.value,'') LIKE ?3 OR COALESCE(process_s.value,'') LIKE ?3)
+            AND (?2='' OR COALESCE(domain_s.value,'') LIKE ?3
+                       OR COALESCE(target_ip_s.value,'') LIKE ?3
+                       OR COALESCE(rule_s.value,'') LIKE ?3
+                       OR COALESCE(category_s.value,'') LIKE ?3
+                       OR COALESCE(process_s.value,'') LIKE ?3
+                       OR COALESCE(route_s.value,'') LIKE ?3
+                       OR COALESCE(proxy_s.value,'') LIKE ?3)
           ORDER BY l.observed_at_ms DESC, l.id DESC LIMIT ?4"
     ).map_err(error)?;
     let rows = statement
