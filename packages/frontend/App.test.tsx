@@ -682,15 +682,16 @@ describe("management actions", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
+    expect(screen.getByText("上次更新")).toBeTruthy();
     expect(screen.getByText("已同步")).toBeTruthy();
-    expect(screen.getByText("953521 条规则", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("953521 条规则", { exact: false })).toBeNull();
     expect(screen.getByText("待同步")).toBeTruthy();
     expect(screen.queryByRole("progressbar", { name: /下载应用进度/ })).toBeNull();
-    expect(screen.getByText("内置规则 · 娱乐内容")).toBeTruthy();
+    expect(screen.getByText("娱乐内容")).toBeTruthy();
     expect(screen.queryByText("https://example.test/default")).toBeNull();
-    expect(screen.queryByText("内置规则 · 成人站点扩展")).toBeNull();
+    expect(screen.queryByText("成人站点扩展")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /来源 2/ }));
-    expect(screen.getByText("内置规则 · 成人站点扩展")).toBeTruthy();
+    expect(screen.getByText("成人站点扩展")).toBeTruthy();
     expect(screen.getByText("https://example.test/blocklist-porn")).toBeTruthy();
     expect(screen.getByText("https://example.test/default")).toBeTruthy();
     expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();

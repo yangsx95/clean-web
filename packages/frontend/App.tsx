@@ -681,16 +681,17 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     return new Intl.DateTimeFormat("zh-CN", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }).format(date);
   };
   const builtinCategoryName = (category: string) => ({
-    pornography:"内置规则 · 色情内容",
-    gambling:"内置规则 · 赌博网站",
-    drugs:"内置规则 · 毒品网站",
-    fraud:"内置规则 · 诈骗网站",
-    phishing:"内置规则 · 钓鱼与 DNS 防绕过",
-    malware:"内置规则 · 恶意软件",
-    entertainment:"内置规则 · 娱乐内容",
-    direct:"内置路由 · 中国 IP 直连",
-    strict:"内置规则 · 严格模式",
-  }[category] ?? "内置规则 · 自定义");
+    pornography:"色情内容",
+    gambling:"赌博网站",
+    drugs:"毒品网站",
+    fraud:"诈骗网站",
+    phishing:"钓鱼与 DNS 防绕过",
+    malware:"恶意软件",
+    entertainment:"娱乐内容",
+    direct:"中国 IP 直连",
+    strict:"严格模式",
+  }[category] ?? "自定义");
+  const builtinDisplayName = (value: string) => value.replace(/^内置规则\s*·\s*/,"").replace(/^内置路由\s*·\s*/,"");
   const builtinCategoryOrder = ["pornography","gambling","drugs","fraud","phishing","malware","entertainment","direct","strict"];
   const builtinGroups = Array.from(builtinSubscriptions.reduce((groups,item)=>{
     const category = item.category ?? item.id;
@@ -720,10 +721,8 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     if (failed.length > 0) return { label:"更新失败", className:"failed", detail:failed.length === 1 ? failed[0].lastError! : `${failed.length} 个来源更新失败` };
     if (progress && progress.phase !== "complete") return { label:progress.phase === "applying" ? "应用中" : "更新中", className:"updating", detail:progress.message };
     if (group.sources.every(source=>!source.enabled)) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
-    const importedRuleCount = group.sources.reduce((sum,source)=>sum+(source.importedRuleCount??0),0);
     const updatedAt = groupLastUpdatedAt(group.sources);
-    if (importedRuleCount > 0) return { label:"已同步", className:"ready", detail:`${importedRuleCount} 条规则 · ${formatUpdatedAt(updatedAt)}` };
-    if (updatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(updatedAt)} 更新` };
+    if (updatedAt) return { label:"已同步", className:"ready", detail:"" };
     return { label:"待同步", className:"pending", detail:"点击刷新后下载并应用" };
   };
   const activeProgress = (group: {sources:backend.Subscription[]}) => {
@@ -733,11 +732,11 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
   const sourceStatus = (source: backend.Subscription) => {
     if (source.lastError) return { label:"失败", className:"failed", detail:source.lastError };
     if (!source.enabled) return { label:"停用", className:"disabled", detail:"当前不会参与保护配置" };
-    if ((source.importedRuleCount??0) > 0) return { label:"已同步", className:"ready", detail:`${source.importedRuleCount} 条规则 · ${formatUpdatedAt(source.lastUpdatedAt)}` };
     if (source.lastUpdatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(source.lastUpdatedAt)} 更新` };
+    if ((source.importedRuleCount??0) > 0) return { label:"已同步", className:"ready", detail:"已导入规则" };
     return { label:"待同步", className:"pending", detail:"等待首次下载" };
   };
-  const builtinSourceCategory = (source: backend.Subscription) => source.category ? builtinCategoryName(source.category).replace("内置规则 · ","").replace("内置路由 · ","") : "内置来源";
+  const builtinSourceCategory = (source: backend.Subscription) => source.category ? builtinCategoryName(source.category) : "内置来源";
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
   const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : action === "system_route" ? "系统路由" : "直连";
   const renderParentRule = (item: backend.ParentRule) => {
@@ -756,8 +755,8 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     {tab==="route"&&<><section className="toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连、走代理或按系统路由；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>出口</span><span>状态</span><span>操作</span></div>{routeRules.length===0&&<div className="table-empty">尚未添加路由规则</div>}{routeRules.map(renderParentRule)}</section></>}
     {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div></section>
-    <section className="table-card">
-      <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
+    <section className="table-card builtin-rules-table">
+      <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>上次更新</span><span>操作</span></div>
       {builtinGroups.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
       {builtinGroups.map((group) => {
         const status = builtinStatus(group);
@@ -766,18 +765,18 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
         return <div className="table-row builtin-rule-row" key={group.id}>
           <div>
             <b>{group.name}</b>
-            <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `由 CleanWeb 维护，合并 ${group.sources.length} 个开源规则来源 · ${groupUpdateInterval(group.sources)}`}</small>
+            <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `CleanWeb 维护 · ${groupUpdateInterval(group.sources)}`}</small>
             <button type="button" className="builtin-source-toggle" aria-label={`${expandedBuiltinSources[group.id]?"收起":"展开"}来源 ${group.sources.length}`} aria-expanded={Boolean(expandedBuiltinSources[group.id])} title={`${group.sources.length} 个规则来源`} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}><Database size={13}/><span>{group.sources.length}</span>{expandedBuiltinSources[group.id]?<ChevronDown size={14}/>:<ChevronRight size={14}/>}</button>
           </div>
           <span>{groupFormats(group.sources)}</span>
           <div className="builtin-rule-state">
             <strong className={status.className}>{status.label}</strong>
-            <small>{status.detail}</small>
             {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
               <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
               <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
             </div>}
           </div>
+          <span>{formatUpdatedAt(groupLastUpdatedAt(group.sources))}</span>
           <div className="row-actions"><button className="row-action" aria-label={`更新${group.name}`} disabled={rowBusy} onClick={()=>void group.sources.reduce((chain,source)=>chain.then(()=>onRefresh(source.id)),Promise.resolve())}><RefreshCw size={15}/></button></div>
           {expandedBuiltinSources[group.id]&&<div className="builtin-source-list">
             <div className="builtin-source-list-head">
@@ -789,7 +788,7 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
                 const itemStatus = sourceStatus(source);
                 return <article className="builtin-source-item" key={source.id}>
                   <div className="builtin-source-item-main">
-                    <b title={source.name}>{source.name}</b>
+                    <b title={builtinDisplayName(source.name)}>{builtinDisplayName(source.name)}</b>
                     <span title={source.url}>{source.url}</span>
                   </div>
                   <div className="builtin-source-item-meta">

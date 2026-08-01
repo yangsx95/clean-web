@@ -1965,6 +1965,16 @@ h1 {
   align-items: start;
 }
 
+.builtin-rules-table .table-head,
+.builtin-rules-table .table-row {
+  grid-template-columns: minmax(0, 1fr) 128px 96px 112px 72px;
+}
+
+.builtin-rules-table .table-head > span:nth-child(5),
+.builtin-rules-table .table-row > :nth-child(5) {
+  justify-self: center;
+}
+
 .builtin-rule-state {
   min-width: 0;
   text-align: center;
