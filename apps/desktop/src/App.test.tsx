@@ -291,7 +291,7 @@ describe("management actions", () => {
     expect(await screen.findByText("port.example:9443")).toBeTruthy();
     expect(screen.getAllByText("203.0.113.8:9443").length).toBeGreaterThan(0);
     expect(screen.getByText("198.51.100.42:8443")).toBeTruthy();
-    expect(screen.getAllByText("端口 8443").length).toBeGreaterThan(0);
+    expect(screen.queryByText("端口 8443")).toBeNull();
   });
 
   it("refreshes overview recent logs without stale log-page search filters", async () => {

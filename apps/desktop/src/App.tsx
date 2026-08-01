@@ -140,12 +140,8 @@ function formatAccessLogTarget(log: backend.AccessLog) {
 }
 
 function formatAccessLogEndpoint(log: backend.AccessLog) {
-  const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
-  if (isDnsResolution) return "DNS 服务端口 :53";
   if (log.domain && log.targetIp) return log.targetPort ? `${log.targetIp}:${log.targetPort}` : log.targetIp;
-  if (log.targetPort) return `端口 ${log.targetPort}`;
-  if (log.targetIp) return "直接 IP";
-  return "未知地址";
+  return "";
 }
 
 function formatAccessLogRepeat(log: backend.AccessLog) {
@@ -517,7 +513,7 @@ function AccessLogRow({ log }: { log:backend.AccessLog }) {
   const repeat = formatAccessLogRepeat(log);
   return <div className="cw-access-row">
     <time>{formatAccessLogTime(log.observedAt)}</time>
-    <div className="access-target"><b>{target}{repeat&&<span className="log-repeat">{repeat}</span>}</b><span>{endpoint}</span></div>
+    <div className="access-target"><b>{target}{repeat&&<span className="log-repeat">{repeat}</span>}</b>{endpoint&&<span>{endpoint}</span>}</div>
     <span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span>
     <div className="access-meta"><small>{rule}</small><small>{source}</small></div>
   </div>;
