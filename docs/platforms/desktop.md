@@ -19,3 +19,13 @@ apps/desktop/src-tauri/src/platform/
 ```
 
 Desktop owns privileged service installation, TUN/DNS lifecycle, Mihomo process management, system route recovery, and desktop packaging.
+
+Privileged desktop code owns only system integration:
+
+- TUN creation and lifecycle;
+- DNS backup and restore;
+- route installation and rollback;
+- Mihomo process lifecycle where elevated privileges are required;
+- service installation and uninstall recovery.
+
+Shared policy, subscriptions, logs, and management UI remain outside the privileged boundary.

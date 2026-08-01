@@ -25,12 +25,14 @@ on:
       - "package.json"
       - "package-lock.json"
       - "apps/desktop/**"
+      - "packages/frontend/**"
   pull_request:
     paths:
       - ".github/workflows/desktop-build.yml"
       - "package.json"
       - "package-lock.json"
       - "apps/desktop/**"
+      - "packages/frontend/**"
 
 permissions:
   contents: read

@@ -23,14 +23,11 @@
 - `crates/cleanweb-rules/Cargo.toml`
 - `crates/cleanweb-subscriptions/Cargo.toml`
 - `crates/cleanweb-proxy-import/Cargo.toml`
-- `apps/android/app/build.gradle.kts`
 - `README.md`
 - `README.zh-CN.md`
-- `shared/frontend/App.tsx`
+- `packages/frontend/App.tsx`
 - `website/index.html`
 - `website/release.json`
-
-Android 原生原型使用独立 `versionCode`。脚本默认将当前 `versionCode` 加 1；如需指定，传入 `--android-version-code`。
 
 ## 版本升级
 
@@ -45,17 +42,6 @@ scripts/release/bump-version.sh 0.2.0 --dry-run
 ```bash
 scripts/release/bump-version.sh 0.2.0
 ```
-
-指定 Android `versionCode`：
-
-```bash
-scripts/release/bump-version.sh 0.2.0 --android-version-code 2
-```
-
-Android `versionName` 默认规则：
-
-- 如果当前值带有 `-android-prototype` 后缀，新值会保留该后缀，例如 `0.2.0-android-prototype`。
-- 如果当前值没有后缀，新值就是主版本号，例如 `0.2.0`。
 
 ## 发布前验证
 
@@ -74,12 +60,6 @@ cd apps/desktop/src-tauri && cargo test
 cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 ```
 
-如果本次修改涉及 Android 原生应用，还需额外执行：
-
-```bash
-cd apps/android && ./gradlew test
-```
-
 如果本次修改涉及 UI 布局，还需启动应用并在相关视口做视觉验证。
 
 ## 人工发布检查
@@ -90,11 +70,10 @@ cd apps/android && ./gradlew test
 - `git diff` 中没有无关改动。
 - `package-lock.json` 与 `package.json` 版本一致。
 - Tauri `Cargo.toml` 和 `tauri.conf.json` 版本一致。
-- Android `versionCode` 单调递增。
 - Mihomo 随包资源版本、许可证记录和归属说明准确。
 - macOS 发布包完成 Developer ID 签名和 Apple 公证。
 - Windows 发布包验证服务安装、升级和卸载恢复。
-- Android 发布包验证 `VpnService` 启动、停止和升级路径。
+- Android/iOS 移动发布包从 `apps/mobile` 构建，并验证对应 VPN 插件启动、停止和升级路径。
 - 真实网络验证覆盖保护开启、拦截、代理、安全搜索、日志、崩溃恢复和卸载恢复。
 - Release notes 说明用户可见变化、已知风险和升级注意事项。
 

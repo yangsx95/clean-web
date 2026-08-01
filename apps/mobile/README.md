@@ -2,13 +2,13 @@
 
 This is the Tauri mobile application shell for Android and iOS management UI.
 
-The mobile app reuses the shared React management interface from `shared/frontend`.
+The mobile app reuses the shared React management interface from `packages/frontend`.
 Platform VPN execution must remain native and be exposed through narrow Tauri plugins:
 
 - Android: `VpnService`, foreground service lifecycle, `tun2socks`, and Mihomo process control.
 - iOS: Network Extension Packet Tunnel Provider.
 
-The existing `apps/android` Kotlin app remains a transition prototype and a source for the Android VPN plugin boundary. New product UI work should land in the shared React surface instead of expanding the Compose prototype.
+Android and iOS product work should land here or in shared frontend/Rust modules. Platform packet-capture code should be implemented as narrow Tauri native plugins, not as separate app directories.
 
 ## Commands
 
@@ -19,7 +19,7 @@ npm run dev:mobile
 npm run build:mobile
 ```
 
-Tauri mobile setup should be initialized from this directory when the native Android/iOS shell is generated:
+Tauri mobile setup is managed from this directory:
 
 ```bash
 npm run tauri:mobile -- android init

@@ -18,8 +18,8 @@ CleanWeb 是面向家庭和个人自律用户的本地网络净化工具。它�
 
 1. macOS 13+，首发平台；一个 Universal 安装包支持 Intel 和 Apple Silicon。
 2. Windows 10 22H2 和 Windows 11，功能与 macOS 等价后发布。
-3. Android 10+，使用 Android 原生 VPN 架构单独实现。
-4. iOS 16+，以取得 Network Extension 能力和通过 App Store 审核为前提，不阻塞其他平台发布。
+3. Android 10+，使用 Tauri mobile 壳和 Android `VpnService` 原生插件实现。
+4. iOS 16+，使用 Tauri mobile 壳；网络接管以取得 Network Extension 能力和通过 App Store 审核为前提，不阻塞其他平台发布。
 
 首版 macOS 采用官网分发、Developer ID 签名和 Apple 公证，不以 Mac App Store 为首发前提。
 

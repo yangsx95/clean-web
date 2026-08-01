@@ -51,11 +51,11 @@ Tauri 2、React 和 TypeScript 提供 macOS 与 Windows 管理界面。界面只
 
 ### Android
 
-Android 10+ 使用 Kotlin、Jetpack Compose 和 `VpnService`。Mihomo 运行在本地 VPN 数据路径中，不开放本地代理端口。首版可以引导用户启用“始终开启 VPN”和“无 VPN 时阻止连接”，但不实现设备所有者、MDM 或对拥有设备管理员权限用户的强对抗。
+Android 10+ 使用 `apps/mobile` 的 Tauri mobile 壳和共享 React 管理界面。系统网络接管必须通过 Tauri Android 插件封装 `VpnService`、前台服务、Android 权限流、Mihomo 生命周期和 `tun2socks` 数据通道。Mihomo 运行在本地 VPN 数据路径中，不开放本地代理端口。首版可以引导用户启用“始终开启 VPN”和“无 VPN 时阻止连接”，但不实现设备所有者、MDM 或对拥有设备管理员权限用户的强对抗。
 
 ### iOS
 
-iOS 16+ 使用 Network Extension/Packet Tunnel Provider。开发前必须确认 Apple entitlement、App Store VPN/家长控制政策以及 Mihomo 在扩展内的资源和许可证边界。无法获得权限时，iOS 延后而不改变桌面和 Android 架构。
+iOS 16+ 使用 `apps/mobile` 的 Tauri mobile 壳和共享 React 管理界面，系统网络接管通过 Tauri iOS 插件暴露 Network Extension/Packet Tunnel Provider。开发前必须确认 Apple entitlement、App Store VPN/家长控制政策以及 Mihomo 在扩展内的资源和许可证边界。无法获得权限时，iOS 延后而不改变桌面和 Android 架构。
 
 ## 规则引擎与存储
 

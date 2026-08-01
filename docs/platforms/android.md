@@ -3,15 +3,22 @@
 Android platform execution currently lives in:
 
 ```text
-apps/android/
-```
-
-The long-term Android product UI should live in:
-
-```text
 apps/mobile/
 ```
 
-Android owns only the native VPN lifecycle through `VpnService`, foreground service notifications, Android permission flows, Android Keystore, and always-on VPN guidance.
+Android product UI is the Tauri mobile shell mounted from `packages/frontend`.
 
-The current Kotlin + Compose app is a transition prototype. Do not expand it into a second full management app. Once the Android Mihomo data path is validated on real devices, move the native VPN lifecycle into a Tauri Android plugin and call it from `apps/mobile`.
+Android owns only the native VPN lifecycle through a Tauri Android plugin: `VpnService`, foreground service notifications, Android permission flows, Android Keystore, `tun2socks`, Mihomo lifecycle, and always-on VPN guidance.
+
+Do not add a second Android app directory or a separate management UI. Android-specific packet capture must stay behind narrow Tauri plugin commands called from `apps/mobile`.
+
+The Android plugin should expose only narrow operations to the shared Tauri mobile UI:
+
+- request VPN permission;
+- start protection with a validated CleanWeb policy/config bundle;
+- stop protection and restore network state;
+- restart protection after policy changes;
+- report running, starting, failed, and permission-denied states;
+- expose sanitized diagnostics and local startup logs.
+
+Do not place rule parsing, proxy subscription cleaning, category policy, or management UI in Android-specific code. Those belong in shared Rust crates and `packages/frontend`.

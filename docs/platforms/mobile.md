@@ -6,7 +6,7 @@ Mobile product UI lives in:
 apps/mobile/
 ```
 
-`apps/mobile` uses Tauri mobile and mounts the shared React management interface from `shared/frontend`. It should become the shared Android/iOS management surface for:
+`apps/mobile` uses Tauri mobile and mounts the shared React management interface from `packages/frontend`. It should become the shared Android/iOS management surface for:
 
 - management lock and unlock;
 - total protection state;

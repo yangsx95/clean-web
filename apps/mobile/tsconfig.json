@@ -1,8 +1,8 @@
 {
   "extends": "../desktop/tsconfig.json",
   "compilerOptions": {
-    "rootDirs": ["src", "../../shared/frontend"]
+    "rootDirs": ["src", "../../packages/frontend"]
   },
-  "include": ["src", "../../shared/frontend"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "../../shared/frontend/**/*.test.ts", "../../shared/frontend/**/*.test.tsx"]
+  "include": ["src", "../../packages/frontend"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "../../packages/frontend/**/*.test.ts", "../../packages/frontend/**/*.test.tsx"]
 }
