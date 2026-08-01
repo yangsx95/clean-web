@@ -1,0 +1,213 @@
+version: 1
+mappings:
+  # Google SafeSearch VIP:
+  # https://support.google.com/websearch/answer/186669
+  - domain: google.com
+    target: forcesafesearch.google.com
+  - domain: www.google.com
+    target: forcesafesearch.google.com
+  - domain: google.ad
+    target: forcesafesearch.google.com
+  - domain: www.google.ad
+    target: forcesafesearch.google.com
+  - domain: google.ae
+    target: forcesafesearch.google.com
+  - domain: www.google.ae
+    target: forcesafesearch.google.com
+  - domain: google.com.ar
+    target: forcesafesearch.google.com
+  - domain: www.google.com.ar
+    target: forcesafesearch.google.com
+  - domain: google.at
+    target: forcesafesearch.google.com
+  - domain: www.google.at
+    target: forcesafesearch.google.com
+  - domain: google.com.au
+    target: forcesafesearch.google.com
+  - domain: www.google.com.au
+    target: forcesafesearch.google.com
+  - domain: google.be
+    target: forcesafesearch.google.com
+  - domain: www.google.be
+    target: forcesafesearch.google.com
+  - domain: google.com.br
+    target: forcesafesearch.google.com
+  - domain: www.google.com.br
+    target: forcesafesearch.google.com
+  - domain: google.ca
+    target: forcesafesearch.google.com
+  - domain: www.google.ca
+    target: forcesafesearch.google.com
+  - domain: google.ch
+    target: forcesafesearch.google.com
+  - domain: www.google.ch
+    target: forcesafesearch.google.com
+  - domain: google.cl
+    target: forcesafesearch.google.com
+  - domain: www.google.cl
+    target: forcesafesearch.google.com
+  - domain: google.cn
+    target: forcesafesearch.google.com
+  - domain: www.google.cn
+    target: forcesafesearch.google.com
+  - domain: google.com.co
+    target: forcesafesearch.google.com
+  - domain: www.google.com.co
+    target: forcesafesearch.google.com
+  - domain: google.co.cr
+    target: forcesafesearch.google.com
+  - domain: www.google.co.cr
+    target: forcesafesearch.google.com
+  - domain: google.cz
+    target: forcesafesearch.google.com
+  - domain: www.google.cz
+    target: forcesafesearch.google.com
+  - domain: google.de
+    target: forcesafesearch.google.com
+  - domain: www.google.de
+    target: forcesafesearch.google.com
+  - domain: google.dk
+    target: forcesafesearch.google.com
+  - domain: www.google.dk
+    target: forcesafesearch.google.com
+  - domain: google.es
+    target: forcesafesearch.google.com
+  - domain: www.google.es
+    target: forcesafesearch.google.com
+  - domain: google.fi
+    target: forcesafesearch.google.com
+  - domain: www.google.fi
+    target: forcesafesearch.google.com
+  - domain: google.fr
+    target: forcesafesearch.google.com
+  - domain: www.google.fr
+    target: forcesafesearch.google.com
+  - domain: google.co.uk
+    target: forcesafesearch.google.com
+  - domain: www.google.co.uk
+    target: forcesafesearch.google.com
+  - domain: google.com.hk
+    target: forcesafesearch.google.com
+  - domain: www.google.com.hk
+    target: forcesafesearch.google.com
+  - domain: google.co.id
+    target: forcesafesearch.google.com
+  - domain: www.google.co.id
+    target: forcesafesearch.google.com
+  - domain: google.ie
+    target: forcesafesearch.google.com
+  - domain: www.google.ie
+    target: forcesafesearch.google.com
+  - domain: google.co.in
+    target: forcesafesearch.google.com
+  - domain: www.google.co.in
+    target: forcesafesearch.google.com
+  - domain: google.it
+    target: forcesafesearch.google.com
+  - domain: www.google.it
+    target: forcesafesearch.google.com
+  - domain: google.co.jp
+    target: forcesafesearch.google.com
+  - domain: www.google.co.jp
+    target: forcesafesearch.google.com
+  - domain: google.co.kr
+    target: forcesafesearch.google.com
+  - domain: www.google.co.kr
+    target: forcesafesearch.google.com
+  - domain: google.com.mx
+    target: forcesafesearch.google.com
+  - domain: www.google.com.mx
+    target: forcesafesearch.google.com
+  - domain: google.com.my
+    target: forcesafesearch.google.com
+  - domain: www.google.com.my
+    target: forcesafesearch.google.com
+  - domain: google.nl
+    target: forcesafesearch.google.com
+  - domain: www.google.nl
+    target: forcesafesearch.google.com
+  - domain: google.no
+    target: forcesafesearch.google.com
+  - domain: www.google.no
+    target: forcesafesearch.google.com
+  - domain: google.co.nz
+    target: forcesafesearch.google.com
+  - domain: www.google.co.nz
+    target: forcesafesearch.google.com
+  - domain: google.com.ph
+    target: forcesafesearch.google.com
+  - domain: www.google.com.ph
+    target: forcesafesearch.google.com
+  - domain: google.pl
+    target: forcesafesearch.google.com
+  - domain: www.google.pl
+    target: forcesafesearch.google.com
+  - domain: google.pt
+    target: forcesafesearch.google.com
+  - domain: www.google.pt
+    target: forcesafesearch.google.com
+  - domain: google.ru
+    target: forcesafesearch.google.com
+  - domain: www.google.ru
+    target: forcesafesearch.google.com
+  - domain: google.se
+    target: forcesafesearch.google.com
+  - domain: www.google.se
+    target: forcesafesearch.google.com
+  - domain: google.com.sg
+    target: forcesafesearch.google.com
+  - domain: www.google.com.sg
+    target: forcesafesearch.google.com
+  - domain: google.co.th
+    target: forcesafesearch.google.com
+  - domain: www.google.co.th
+    target: forcesafesearch.google.com
+  - domain: google.com.tw
+    target: forcesafesearch.google.com
+  - domain: www.google.com.tw
+    target: forcesafesearch.google.com
+  - domain: google.com.tr
+    target: forcesafesearch.google.com
+  - domain: www.google.com.tr
+    target: forcesafesearch.google.com
+  - domain: google.com.vn
+    target: forcesafesearch.google.com
+  - domain: www.google.com.vn
+    target: forcesafesearch.google.com
+
+  # Microsoft Bing SafeSearch:
+  # https://support.microsoft.com/bing/blocking-explicit-content-with-safesearch
+  - domain: www.bing.com
+    target: strict.bing.com
+  - domain: bing.com
+    target: strict.bing.com
+  - domain: cn.bing.com
+    target: strict.bing.com
+  - domain: global.bing.com
+    target: strict.bing.com
+
+  # DuckDuckGo Safe Search:
+  # https://duckduckgo.com/duckduckgo-help-pages/features/safe-search
+  - domain: duckduckgo.com
+    target: safe.duckduckgo.com
+  - domain: www.duckduckgo.com
+    target: safe.duckduckgo.com
+
+  # Brave Search Safe Search:
+  # https://search.brave.com/help/safesearch
+  - domain: search.brave.com
+    target: forcesafe.search.brave.com
+
+  # Ecosia Safe Search:
+  # https://support.ecosia.org/article/562-how-to-enforce-safe-search-at-your-organization
+  - domain: www.ecosia.org
+    target: strict-safe-search.ecosia.org
+  - domain: ecosia.org
+    target: strict-safe-search.ecosia.org
+
+  # Startpage Safe Search:
+  # https://support.startpage.com/hc/en-us/articles/4521434667284-How-can-I-set-Startpage-as-my-default-search-engine
+  - domain: www.startpage.com
+    target: family.startpage.com
+  - domain: startpage.com
+    target: family.startpage.com

@@ -57,6 +57,12 @@ default_rule_sources:
     format: clash
     category: phishing
     update_interval_hours: 24
+  - id: default:cleanweb:safe-search
+    name: 内置规则 · CleanWeb SafeSearch
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml
+    format: safe-search
+    category: custom
+    update_interval_hours: 24
   - id: local:cleanweb:entertainment-cdn
     name: 内置规则 · CleanWeb entertainment-cdn
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-cdn-supplement.clash

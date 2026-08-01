@@ -25,6 +25,17 @@ pub struct RefreshReport {
     pub group_count: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct SafeSearchDocument {
+    mappings: Vec<SafeSearchMapping>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SafeSearchMapping {
+    domain: String,
+    target: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionRefreshProgress {
@@ -247,11 +258,15 @@ fn subscription_record(state: &AppState, id: &str) -> Result<SubscriptionRecord,
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.query_row(
         "SELECT s.id, s.kind, s.name, s.url, s.format, s.category, s.update_interval_hours, s.enabled, s.last_updated_at, s.last_error,
-         COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) AS imported_rule_count,
+         COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0)
+           + COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id),0) AS imported_rule_count,
          COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id
            AND s.enabled=1
            AND NOT (r.category='strict' AND COALESCE((SELECT value FROM settings WHERE key='strict_mode_enabled'),'false')!='true')
-           AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0) AS active_rule_count
+           AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0)
+           + COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id
+             AND s.enabled=1
+             AND COALESCE((SELECT value FROM settings WHERE key='safe_search_enabled'),'true')='true'),0) AS active_rule_count
          FROM subscriptions s WHERE s.id=?1",
         params![id],
         |row| {
@@ -307,11 +322,19 @@ fn refresh_rules(
         Some(value) => parse_format(value)?,
         None => detect_rule_format(text),
     };
+    if matches!(format, SubscriptionFormat::SafeSearch) {
+        return refresh_safe_search_rules(state, id, text);
+    }
     let imported = import_text(format, text, id, url, category);
     let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
     let tx = db.transaction().map_err(error)?;
     tx.execute(
         "DELETE FROM imported_rules WHERE subscription_id=?1",
+        params![id],
+    )
+    .map_err(error)?;
+    tx.execute(
+        "DELETE FROM safe_search_mappings WHERE subscription_id=?1",
         params![id],
     )
     .map_err(error)?;
@@ -326,6 +349,60 @@ fn refresh_rules(
         proxy_count: 0,
         group_count: 0,
     })
+}
+
+fn refresh_safe_search_rules(
+    state: &AppState,
+    id: &str,
+    text: &str,
+) -> Result<RefreshReport, String> {
+    let document: SafeSearchDocument =
+        serde_yaml::from_str(text).map_err(|value| format!("安全搜索映射解析失败：{value}"))?;
+    let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let tx = db.transaction().map_err(error)?;
+    tx.execute(
+        "DELETE FROM imported_rules WHERE subscription_id=?1",
+        params![id],
+    )
+    .map_err(error)?;
+    tx.execute(
+        "DELETE FROM safe_search_mappings WHERE subscription_id=?1",
+        params![id],
+    )
+    .map_err(error)?;
+    let mut imported_count = 0;
+    let mut ignored_count = 0;
+    for (index, mapping) in document.mappings.iter().enumerate() {
+        let domain = normalize_mapping_name(&mapping.domain);
+        let target = normalize_mapping_name(&mapping.target);
+        if domain.is_empty()
+            || target.is_empty()
+            || domain.contains(char::is_whitespace)
+            || target.contains(char::is_whitespace)
+        {
+            ignored_count += 1;
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line)
+             VALUES(?1,?2,?3,?4)",
+            params![id, domain, target, index as i64 + 1],
+        )
+        .map_err(error)?;
+        imported_count += 1;
+    }
+    tx.commit().map_err(error)?;
+    Ok(RefreshReport {
+        detected_format: "safe-search".into(),
+        imported_count,
+        ignored_count,
+        proxy_count: 0,
+        group_count: 0,
+    })
+}
+
+fn normalize_mapping_name(value: &str) -> String {
+    value.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
@@ -356,6 +433,9 @@ fn detect_rule_format(text: &str) -> SubscriptionFormat {
     {
         return SubscriptionFormat::Clash;
     }
+    if text.contains("mappings:") && lines.iter().any(|line| line.starts_with("target:")) {
+        return SubscriptionFormat::SafeSearch;
+    }
     if lines
         .iter()
         .any(|line| line.starts_with("||") || line.contains("##"))
@@ -385,7 +465,7 @@ fn parse_format(value: &str) -> Result<SubscriptionFormat, String> {
         "domain-list" => Ok(SubscriptionFormat::DomainList),
         "ip-list" => Ok(SubscriptionFormat::IpList),
         "adblock" => Ok(SubscriptionFormat::Adblock),
-        "safe-search" => Err("安全搜索由浏览器策略处理，不再支持安全搜索映射订阅".into()),
+        "safe-search" => Ok(SubscriptionFormat::SafeSearch),
         _ => Err("不支持的订阅格式".into()),
     }
 }
@@ -396,6 +476,7 @@ fn format_name(value: SubscriptionFormat) -> &'static str {
         SubscriptionFormat::DomainList => "domain-list",
         SubscriptionFormat::IpList => "ip-list",
         SubscriptionFormat::Adblock => "adblock",
+        SubscriptionFormat::SafeSearch => "safe-search",
     }
 }
 fn record_error<T>(state: &AppState, id: &str, message: String) -> Result<T, String> {
@@ -435,10 +516,10 @@ mod tests {
         );
     }
     #[test]
-    fn rejects_safe_search_subscription_format() {
+    fn imports_safe_search_subscription_mappings() {
         let state = AppState::open(":memory:").unwrap();
         state.db.lock().unwrap().execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('safe','rule','safe','https://example.test/safe.yaml',1)",[]).unwrap();
-        let err = refresh_rules(
+        let report = refresh_rules(
             &state,
             "safe",
             "https://example.test/safe.yaml",
@@ -446,19 +527,37 @@ mod tests {
             "custom",
             "version: 1\nmappings:\n  - domain: search.example.com\n    target: forcesafesearch.google.com\n",
         )
-        .unwrap_err();
-        assert!(err.contains("浏览器策略"));
-        let count: i64 = state
+        .unwrap();
+        assert_eq!(report.detected_format, "safe-search");
+        assert_eq!(report.imported_count, 1);
+        let mapping: (String, String) = state
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT COUNT(*) FROM safe_search_mappings WHERE subscription_id='safe'",
+                "SELECT domain,target FROM safe_search_mappings WHERE subscription_id='safe'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            mapping,
+            (
+                "search.example.com".into(),
+                "forcesafesearch.google.com".into()
+            )
+        );
+        let normal_rules: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id='safe'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(normal_rules, 0);
     }
     #[test]
     fn store_proxy_payload_encrypts_payload() {

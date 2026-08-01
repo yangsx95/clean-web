@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::{SocketAddr, UdpSocket},
     path::PathBuf,
     sync::{
@@ -20,14 +21,14 @@ use sha2::{Digest, Sha256};
 use crate::storage::AppState;
 
 pub(crate) const CLEANWEB_DNS_LISTEN: &str = "127.0.0.1:19053";
-const DNS_UPSTREAMS: &[&str] = &["223.5.5.5:53", "119.29.29.29:53"];
 const UDP_PACKET_SIZE: usize = 4096;
 const SAFE_SEARCH_CNAME_TTL: u32 = 300;
-const GOOGLE_SAFE_SEARCH_TARGET: &str = "forcesafesearch.google.com.";
 
 struct DnsFilterConfig {
     domain_index: DomainRuleIndex,
+    upstreams: Vec<String>,
     safe_search_enabled: bool,
+    safe_search_mappings: HashMap<String, String>,
 }
 
 pub(crate) struct DnsFilterHandle {
@@ -127,11 +128,11 @@ fn handle_dns_packet(
         return blocked_response(&message);
     }
     if config.safe_search_enabled {
-        if let Some(response) = safe_search_response(&message, &domain) {
+        if let Some(response) = safe_search_response(&message, config, &domain) {
             return Some(response);
         }
     }
-    forward_dns_packet(packet).ok()
+    forward_dns_packet(packet, &config.upstreams).ok()
 }
 
 fn blocked_response(request: &Message) -> Option<Vec<u8>> {
@@ -147,12 +148,14 @@ fn blocked_response(request: &Message) -> Option<Vec<u8>> {
     response.to_vec().ok()
 }
 
-fn safe_search_response(request: &Message, domain: &str) -> Option<Vec<u8>> {
-    if !is_google_search_domain(domain) {
-        return None;
-    }
+fn safe_search_response(
+    request: &Message,
+    config: &DnsFilterConfig,
+    domain: &str,
+) -> Option<Vec<u8>> {
+    let target = config.safe_search_mappings.get(domain)?;
     let query = request.queries.first()?;
-    let target = Name::from_ascii(GOOGLE_SAFE_SEARCH_TARGET).ok()?;
+    let target = Name::from_ascii(target).ok()?;
     let mut response = Message::new(
         request.metadata.id,
         hickory_proto::op::MessageType::Response,
@@ -169,10 +172,10 @@ fn safe_search_response(request: &Message, domain: &str) -> Option<Vec<u8>> {
     response.to_vec().ok()
 }
 
-fn forward_dns_packet(packet: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, std::io::Error> {
     let mut response = [0_u8; UDP_PACKET_SIZE];
     let mut last_error = None;
-    for upstream in DNS_UPSTREAMS {
+    for upstream in upstreams {
         let upstream_socket = UdpSocket::bind("127.0.0.1:0")?;
         upstream_socket.set_read_timeout(Some(Duration::from_secs(2)))?;
         upstream_socket.send_to(packet, upstream)?;
@@ -191,10 +194,23 @@ fn build_dns_filter_config(db: &Connection) -> Result<DnsFilterConfig, String> {
     append_imported_domain_blocks(db, &settings, &mut inputs)?;
     Ok(DnsFilterConfig {
         domain_index: DomainRuleIndex::compile(inputs).map_err(|value| value.to_string())?,
+        upstreams: configured_dns_upstreams(&settings),
         safe_search_enabled: settings
             .get("safe_search_enabled")
             .is_none_or(|value| value == "true"),
+        safe_search_mappings: load_safe_search_mappings(db)?,
     })
+}
+
+fn configured_dns_upstreams(settings: &HashMap<String, String>) -> Vec<String> {
+    settings
+        .get("dns_upstreams")
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn append_parent_domain_rules(
@@ -293,7 +309,38 @@ fn category_enabled(settings: &std::collections::HashMap<String, String>, catego
         .is_some_and(|value| value == "false")
 }
 
-fn settings_map(db: &Connection) -> Result<std::collections::HashMap<String, String>, String> {
+fn load_safe_search_mappings(db: &Connection) -> Result<HashMap<String, String>, String> {
+    let mut statement = db
+        .prepare(
+            "SELECT m.domain,m.target FROM safe_search_mappings m
+             JOIN subscriptions s ON s.id=m.subscription_id
+             WHERE s.enabled=1
+             ORDER BY s.created_at,m.source_line",
+        )
+        .map_err(error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                normalize_domain(row.get::<_, String>(0)?),
+                normalize_target(row.get::<_, String>(1)?),
+            ))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    Ok(rows.into_iter().collect())
+}
+
+fn normalize_domain(value: String) -> String {
+    value.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn normalize_target(value: String) -> String {
+    let value = value.trim().trim_end_matches('.');
+    format!("{value}.")
+}
+
+fn settings_map(db: &Connection) -> Result<HashMap<String, String>, String> {
     let mut statement = db
         .prepare("SELECT key,value FROM settings")
         .map_err(error)?;
@@ -302,7 +349,7 @@ fn settings_map(db: &Connection) -> Result<std::collections::HashMap<String, Str
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(error)?
-        .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
+        .collect::<rusqlite::Result<HashMap<_, _>>>()
         .map_err(error)?;
     Ok(rows)
 }
@@ -397,37 +444,14 @@ fn domain_decision_category(tier: DomainRuleTier) -> &'static str {
     }
 }
 
-fn is_google_search_domain(domain: &str) -> bool {
-    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-    matches!(
-        domain.as_str(),
-        "google.com"
-            | "www.google.com"
-            | "google.com.hk"
-            | "www.google.com.hk"
-            | "google.com.tw"
-            | "www.google.com.tw"
-            | "google.co.jp"
-            | "www.google.co.jp"
-            | "google.co.uk"
-            | "www.google.co.uk"
-            | "google.com.au"
-            | "www.google.com.au"
-            | "google.ca"
-            | "www.google.ca"
-            | "google.de"
-            | "www.google.de"
-            | "google.fr"
-            | "www.google.fr"
-    )
-}
-
 fn error(value: impl std::fmt::Display) -> String {
     value.to_string()
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::storage::AppState;
+
     use hickory_proto::{
         op::{Message, Query, ResponseCode},
         rr::{Name, RecordType},
@@ -444,7 +468,9 @@ mod tests {
                 pattern: "blocked.example".into(),
             }])
             .unwrap(),
+            upstreams: Vec::new(),
             safe_search_enabled: true,
+            safe_search_mappings: HashMap::new(),
         };
         let mut request = Message::query();
         request.add_query(Query::query(
@@ -467,7 +493,12 @@ mod tests {
     fn safe_search_domains_return_google_cname() {
         let config = DnsFilterConfig {
             domain_index: DomainRuleIndex::default(),
+            upstreams: Vec::new(),
             safe_search_enabled: true,
+            safe_search_mappings: HashMap::from([(
+                "www.google.com".into(),
+                "forcesafesearch.google.com.".into(),
+            )]),
         };
         let mut request = Message::query();
         request.add_query(Query::query(
@@ -486,7 +517,87 @@ mod tests {
         assert_eq!(message.answers.len(), 1);
         assert_eq!(
             message.answers[0].data.to_string(),
-            GOOGLE_SAFE_SEARCH_TARGET
+            "forcesafesearch.google.com."
         );
+    }
+
+    #[test]
+    fn strict_imported_domain_blocks_follow_strict_mode_setting() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled)
+                 VALUES('strict-source','rule','严格规则','https://example.test/strict.txt','clash','strict',1)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+                 VALUES('strict-source','strict-1','Suffix','strict.example','Block','strict',1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            let config = build_dns_filter_config(&db).unwrap();
+            assert!(config.domain_index.decide("www.strict.example").is_none());
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE settings SET value='true' WHERE key='strict_mode_enabled'",
+                [],
+            )
+            .unwrap();
+            let config = build_dns_filter_config(&db).unwrap();
+            assert!(config
+                .domain_index
+                .decide("www.strict.example")
+                .is_some_and(|decision| decision.blocked));
+        }
+    }
+
+    #[test]
+    fn entertainment_imported_domain_blocks_follow_category_setting() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled)
+                 VALUES('fun','rule','fun','https://x/fun.txt','clash','entertainment',1)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+                 VALUES('fun','1','Suffix','game.example','Block','entertainment',1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            let config = build_dns_filter_config(&db).unwrap();
+            assert!(config.domain_index.decide("www.game.example").is_none());
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE settings SET value='true' WHERE key='category.entertainment'",
+                [],
+            )
+            .unwrap();
+            let config = build_dns_filter_config(&db).unwrap();
+            assert!(config
+                .domain_index
+                .decide("www.game.example")
+                .is_some_and(|decision| decision.blocked));
+        }
     }
 }

@@ -700,6 +700,11 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let proxy_enabled = setting_bool(&db, "proxy_enabled")?;
     let access_logging_enabled = setting_bool(&db, "access_logging_enabled")?;
     let automatic_node_selection = setting_bool(&db, "automatic_node_selection")?;
+    let dns_upstreams = configured_dns_upstreams(&db)?;
+    let dns_upstream_values: Vec<Value> = dns_upstreams
+        .iter()
+        .map(|value| Value::String(value.clone()))
+        .collect();
     let selections: std::collections::HashMap<String, String> = {
         let mut statement = db
             .prepare("SELECT group_name,proxy_name FROM proxy_selections")
@@ -858,10 +863,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(
         &mut dns,
         "default-nameserver",
-        Value::Sequence(vec![
-            Value::String("223.5.5.5".into()),
-            Value::String("119.29.29.29".into()),
-        ]),
+        Value::Sequence(dns_upstream_values.clone()),
     );
     insert(&mut dns, "respect-rules", Value::Bool(true));
     insert(&mut dns, "use-hosts", Value::Bool(true));
@@ -874,10 +876,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(
         &mut dns,
         "proxy-server-nameserver",
-        Value::Sequence(vec![
-            Value::String("223.5.5.5".into()),
-            Value::String("119.29.29.29".into()),
-        ]),
+        Value::Sequence(dns_upstream_values.clone()),
     );
     insert(
         &mut dns,
@@ -889,10 +888,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(
         &mut ns_policy,
         "+.home,+.local,+.lan,+.internal,+.arpa",
-        Value::Sequence(vec![
-            Value::String("223.5.5.5".into()),
-            Value::String("119.29.29.29".into()),
-        ]),
+        Value::Sequence(dns_upstream_values),
     );
     insert(&mut dns, "nameserver-policy", Value::Mapping(ns_policy));
     // 排除本地域名和系统网络检测域名，使其不走 fake-ip。
@@ -1541,6 +1537,23 @@ fn setting_bool(db: &rusqlite::Connection, key: &str) -> Result<bool, String> {
         .map_err(error)?
         == "true")
 }
+
+fn configured_dns_upstreams(db: &rusqlite::Connection) -> Result<Vec<String>, String> {
+    let value = db
+        .query_row(
+            "SELECT value FROM settings WHERE key='dns_upstreams'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(error)?;
+    Ok(value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 fn settings_map(
     db: &rusqlite::Connection,
 ) -> Result<std::collections::HashMap<String, String>, String> {
@@ -1888,7 +1901,10 @@ mod tests {
             .unwrap();
         }
         let strict_config = build_config(&state, "secret", true).unwrap();
-        assert!(strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"));
+        assert!(
+            !strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"),
+            "Exact/Suffix imported block rules are enforced by CleanWeb DNS filter, not mihomo"
+        );
         assert!(
             !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
             "strict mode must not block broad random-looking domain labels by default"
@@ -1952,7 +1968,10 @@ mod tests {
         assert!(enabled_config.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"));
         assert!(enabled_config.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"));
         assert!(enabled_config.contains("DOMAIN-SUFFIX,roblox.com,REJECT"));
-        assert!(enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"));
+        assert!(
+            !enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"),
+            "Exact/Suffix imported block rules are enforced by CleanWeb DNS filter, not mihomo"
+        );
         let allow_douyin = enabled_config.find("DOMAIN,douyin.com,DIRECT").unwrap();
         let reject_douyin = enabled_config
             .find("DOMAIN-SUFFIX,douyin.com,REJECT")

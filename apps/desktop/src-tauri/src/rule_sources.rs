@@ -21,7 +21,14 @@ pub struct RecommendedSource {
 }
 
 pub fn default_rule_sources() -> Vec<DefaultRuleSource> {
-    Vec::new()
+    vec![DefaultRuleSource {
+        id: "default:cleanweb:safe-search".into(),
+        name: "内置规则 · CleanWeb SafeSearch".into(),
+        url: "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml".into(),
+        format: "safe-search".into(),
+        category: "custom".into(),
+        update_interval_hours: Some(24),
+    }]
 }
 
 pub fn recommended_rule_sources() -> Vec<RecommendedSource> {

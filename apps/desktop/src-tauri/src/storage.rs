@@ -20,8 +20,8 @@ use crate::dns_filter::DnsFilterHandle;
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 #[cfg(debug_assertions)]
 use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
-use crate::rule_sources::recommended_rule_sources;
 pub use crate::rule_sources::RecommendedSource;
+use crate::rule_sources::{default_rule_sources, recommended_rule_sources};
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
 
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
@@ -257,6 +257,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
         ("automatic_node_selection", "true"),
         ("access_logging_enabled", "true"),
         ("safe_search_enabled", "true"),
+        ("dns_upstreams", "223.5.5.5:53,119.29.29.29:53"),
         ("strict_mode_enabled", "false"),
         ("log_retention", "30d"),
         ("category.pornography", "true"),
@@ -292,6 +293,20 @@ fn create_access_log_indexes(db: &Connection) -> rusqlite::Result<()> {
 }
 
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
+    for source in default_rule_sources() {
+        db.execute(
+            "INSERT OR IGNORE INTO subscriptions(id,kind,name,url,format,category,update_interval_hours,enabled)
+             VALUES(?1,'rule',?2,?3,?4,?5,?6,1)",
+            params![
+                source.id,
+                source.name,
+                source.url,
+                source.format,
+                source.category,
+                source.update_interval_hours
+            ],
+        )?;
+    }
     db.execute(
         "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%' OR url LIKE 'builtin://%'",
         [],
@@ -719,11 +734,15 @@ fn list_subscriptions_inner(
 ) -> Result<Vec<SubscriptionRecord>, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let sql = "SELECT s.id, s.kind, s.name, s.url, s.format, s.category, s.update_interval_hours, s.enabled, s.last_updated_at, s.last_error,
-               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) AS imported_rule_count,
+               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0)
+                 + COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id),0) AS imported_rule_count,
                COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id
                  AND s.enabled=1
                  AND NOT (r.category='strict' AND COALESCE((SELECT value FROM settings WHERE key='strict_mode_enabled'),'false')!='true')
-                 AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0) AS active_rule_count
+                 AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0)
+                 + COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id
+                   AND s.enabled=1
+                   AND COALESCE((SELECT value FROM settings WHERE key='safe_search_enabled'),'true')='true'),0) AS active_rule_count
                FROM subscriptions s WHERE (?1 IS NULL OR s.kind=?1) ORDER BY s.created_at DESC";
     let mut statement = db.prepare(sql).map_err(error)?;
     let records = statement
@@ -1207,19 +1226,30 @@ mod tests {
     }
 
     #[test]
-    fn does_not_seed_default_rule_sources() {
+    fn seeds_only_safe_search_default_subscription_without_rule_body() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cleanweb.db");
         let state = AppState::open(&path).unwrap();
         let db = state.db.lock().unwrap();
-        let count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 0, "默认规则源不应随 app seed");
+        let records: Vec<(String, String, String)> = {
+            let mut statement = db
+                .prepare("SELECT id,url,format FROM subscriptions WHERE id LIKE 'default:%'")
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            records,
+            vec![(
+                "default:cleanweb:safe-search".into(),
+                "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml".into(),
+                "safe-search".into()
+            )],
+            "只应 seed SafeSearch 内置订阅元数据"
+        );
         let imported_count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%' OR subscription_id='local:cleanweb:entertainment-cdn'",
@@ -1228,6 +1258,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(imported_count, 0, "打包规则正文不应写入可执行规则表");
+        let safe_search_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM safe_search_mappings WHERE subscription_id='default:cleanweb:safe-search'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(safe_search_count, 0, "SafeSearch 正文必须通过订阅刷新导入");
     }
 
     #[test]
@@ -1373,13 +1411,13 @@ mod tests {
         db.execute("DELETE FROM subscriptions WHERE id LIKE 'default:%'", [])
             .unwrap();
         seed_default_rule_subscriptions(&db).unwrap();
-        let count: i64 = db
+        let exists: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id LIKE 'default:%'",
+                "SELECT COUNT(*) FROM subscriptions WHERE id='default:cleanweb:safe-search'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(exists, 1, "SafeSearch 是产品内置能力，初始化时必须恢复");
     }
 }

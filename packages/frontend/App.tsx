@@ -1092,14 +1092,14 @@ function SubscriptionDialog({ kind, subscription, onClose, onSubmit }: { kind: "
   const [error,setError]=useState("");
   const editing=Boolean(subscription);
   const defaultInterval=String(subscription?.updateIntervalHours??24);
-  const defaultFormat=subscription?.format==="safe-search"?"auto":subscription?.format??"auto";
+  const defaultFormat=subscription?.format??"auto";
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="subscription-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
       <h2 id="subscription-title">{editing?"修改":"添加"}{kind}订阅</h2>
-      <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR 和 Adblock 列表。" : "只会提取代理节点和代理组。"}</p>
+      <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR、Adblock 和 SafeSearch DNS 映射。" : "只会提取代理节点和代理组。"}</p>
       <form onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
-        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" defaultValue={defaultFormat}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option></select></>}
+        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" defaultValue={defaultFormat}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">SafeSearch DNS 映射</option></select></>}
         <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" defaultValue={subscription?.name??""} placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
         <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" defaultValue={subscription?.url??""} placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
         {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" defaultValue={subscription?.category??"custom"}><option value="custom">自定义</option><option value="routing">代理路由</option><option value="direct">直连路由</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="entertainment">短视频与游戏</option><option value="ads">广告</option></select></>}
