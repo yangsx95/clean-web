@@ -10,3 +10,6 @@ apps/android/.gradle/
 apps/android/app/build/
 .DS_Store
 *.log
+*.db
+*.db-shm
+*.db-wal
