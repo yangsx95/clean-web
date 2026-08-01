@@ -346,25 +346,6 @@ async fn reload_protection_inner(
     start_inner(app, state)
 }
 
-#[cfg(test)]
-fn config_tun_route_addresses(config: &str) -> Result<Vec<String>, String> {
-    let value: Value = serde_yaml::from_str(config).map_err(error)?;
-    let mut routes: Vec<String> = value
-        .get("tun")
-        .and_then(|tun| tun.get("route-address"))
-        .and_then(Value::as_sequence)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    routes.sort();
-    routes.dedup();
-    Ok(routes)
-}
-
 fn config_hash(config: &str) -> String {
     format!("{:x}", Sha256::digest(config.as_bytes()))
 }
@@ -1892,22 +1873,6 @@ mod tests {
 
         fs::write(&marker, format!("42\n{}\n", config_hash(config))).unwrap();
         assert!(active_config_matches(&marker, Some(42), config));
-    }
-
-    #[test]
-    fn extracts_sorted_tun_routes_from_config() {
-        let routes = config_tun_route_addresses(
-            "tun:\n  route-address:\n    - 203.0.113.10/32\n    - 114.114.114.114/32\n    - 203.0.113.10/32\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            routes,
-            vec![
-                "114.114.114.114/32".to_string(),
-                "203.0.113.10/32".to_string()
-            ]
-        );
     }
 
     #[test]
