@@ -380,7 +380,6 @@ private fun PolicySwitchPanel(
             SectionTitle("策略开关")
             Text(
                 listOf(
-                    settings.safeSearchEnabled,
                     settings.strictModeEnabled,
                     settings.proxyEnabled,
                     settings.entertainmentEnabled,
@@ -390,9 +389,6 @@ private fun PolicySwitchPanel(
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
-        }
-        CompactToggle("安全搜索强制", "DNS 安全搜索映射", settings.safeSearchEnabled) {
-            onSettingsChange(settings.copy(safeSearchEnabled = it))
         }
         CompactToggle("严格模式", "高风险后缀、关键词和 CIDR", settings.strictModeEnabled) {
             onSettingsChange(settings.copy(strictModeEnabled = it))

@@ -11,7 +11,6 @@ pub enum SubscriptionFormat {
     DomainList,
     IpList,
     Adblock,
-    SafeSearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,9 +61,6 @@ pub fn import_text(
             SubscriptionFormat::DomainList => parse_domain_line(line),
             SubscriptionFormat::IpList => parse_ip_line(line),
             SubscriptionFormat::Adblock => parse_adblock_line(line),
-            SubscriptionFormat::SafeSearch => {
-                Err("safe-search manifests are parsed as structured YAML".into())
-            }
         };
 
         match result {

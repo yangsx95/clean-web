@@ -22,8 +22,8 @@ internal object MihomoAndroidConfig {
             appendLine("log-level: info")
             appendLine("ipv6: false")
             appendLine("external-controller: 127.0.0.1:17891")
-            appendSniffer(state)
-            appendDns(state)
+            appendSniffer()
+            appendDns()
             appendLine("proxies: []")
             appendProxyProviders(providers)
             appendProxyGroups(providers)
@@ -70,7 +70,7 @@ internal object MihomoAndroidConfig {
         }.getOrDefault(false)
     }
 
-    private fun StringBuilder.appendSniffer(state: CleanWebState) {
+    private fun StringBuilder.appendSniffer() {
         appendLine("sniffer:")
         appendLine("  enable: true")
         appendLine("  force-dns-mapping: true")
@@ -87,16 +87,9 @@ internal object MihomoAndroidConfig {
             ports.forEach { port -> appendLine("        - $port") }
             appendLine("      override-destination: true")
         }
-        if (state.settings.safeSearchEnabled) {
-            appendLine("  skip-domain:")
-            safeSearchMappings.forEach { mapping ->
-                appendLine("    - ${mapping.domain}")
-                appendLine("    - ${mapping.target}")
-            }
-        }
     }
 
-    private fun StringBuilder.appendDns(state: CleanWebState) {
+    private fun StringBuilder.appendDns() {
         appendLine("dns:")
         appendLine("  enable: true")
         appendLine("  listen: 127.0.0.1:17853")
@@ -115,16 +108,6 @@ internal object MihomoAndroidConfig {
         appendLine("    - 119.29.29.29")
         appendLine("  fake-ip-filter:")
         localFakeIpFilters.forEach { filter -> appendLine("    - $filter") }
-        if (state.settings.safeSearchEnabled) {
-            safeSearchMappings.forEach { mapping ->
-                appendLine("    - ${mapping.domain}")
-                appendLine("    - ${mapping.target}")
-            }
-            appendLine("hosts:")
-            safeSearchMappings.forEach { mapping ->
-                appendLine("  ${mapping.domain}: ${mapping.target}")
-            }
-        }
     }
 
     private fun StringBuilder.appendProxyProviders(providers: List<ProxyProvider>) {
@@ -253,19 +236,6 @@ internal object MihomoAndroidConfig {
     private fun yamlQuote(value: String): String {
         return "'${value.replace("'", "''")}'"
     }
-
-    private data class SafeSearchMapping(
-        val domain: String,
-        val target: String
-    )
-
-    private val safeSearchMappings = listOf(
-        SafeSearchMapping("www.google.com", "216.239.38.120"),
-        SafeSearchMapping("www.bing.com", "strict.bing.com"),
-        SafeSearchMapping("duckduckgo.com", "safe.duckduckgo.com"),
-        SafeSearchMapping("www.youtube.com", "restrict.youtube.com"),
-        SafeSearchMapping("m.youtube.com", "restrict.youtube.com")
-    )
 
     private val localFakeIpFilters = listOf(
         "+.home",

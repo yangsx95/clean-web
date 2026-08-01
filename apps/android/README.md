@@ -17,7 +17,7 @@ Current scaffold:
 - Bundled Mihomo Android arm64-v8 binary.
 - Full-device IPv4 VPN route through `VpnService`.
 - `tun2socks` bridge from Android TUN fd to Mihomo local SOCKS.
-- Mihomo config generation for local rules, proxy providers, DNS, safe-search hosts, and SNI/HTTP sniffing.
+- Mihomo config generation for local rules, proxy providers, DNS, and SNI/HTTP sniffing.
 - CleanWeb app UID is excluded from the Android VPN so Mihomo proxy-provider fetches and proxy outbound sockets do not loop back into the same TUN.
 - Local lifecycle logs for Android VPN, Mihomo, and tun2socks startup.
 
@@ -47,7 +47,7 @@ Known limits:
 
 - Debug APK currently packages only `arm64-v8a`.
 - Android cannot expose Mihomo's desktop TUN `dns-hijack` path directly in this architecture; domain filtering currently relies on DNS traffic through the VPN plus HTTP/TLS sniffing and must be verified per device/app.
-- DNS-specific safe-search behavior is configured in Mihomo, but still needs real-device validation because Android DNS server selection is owned by `VpnService`.
+- Android safe-search parity is not implemented in this prototype; do not add vendor DNS/hosts mappings to Mihomo config as a substitute.
 - DoH/DoT, direct IP access, QUIC behavior, and per-connection decision logs still need real-device validation.
 
 ## Requirements
@@ -71,6 +71,6 @@ If the Gradle wrapper has not been generated yet, open this directory in Android
 1. Validate the Mihomo + tun2socks tunnel on real devices.
 2. Wire Mihomo controller polling into Android access logs and proxy node status.
 3. Replace metadata-only proxy imports with cleaned subscription import or locked proxy providers.
-4. Validate or replace the Android DNS interception strategy for safe-search parity, then add Android Keystore encryption.
+4. Design Android safe-search parity within platform boundaries, then add Android Keystore encryption.
 5. Move the validated Android VPN lifecycle into a Tauri Android plugin.
 6. Use `apps/mobile` for Android product UI instead of expanding this Compose prototype.

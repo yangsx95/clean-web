@@ -15,22 +15,22 @@
 | Tauri 管理界面与锁定状态 | 已完成 | React UI 已区分锁定/解锁，敏感命令要求管理会话。 |
 | 管理密码 | 部分完成 | Argon2 密码哈希和会话过期已实现；缺少输错退避和系统管理员授权重置。 |
 | 单 Mihomo TUN 启停 | 部分完成 | CleanWeb 生成锁定的 Mihomo 配置并启动唯一 TUN；macOS/Windows 的特权安装、升级、异常恢复和卸载仍需真实设备验收。 |
-| DNS 接管与安全搜索 | 部分完成 | Mihomo 配置启用 `dns.use-hosts`、`dns.respect-rules`、TUN `dns-hijack`、顶层 `hosts`、`fake-ip-filter` 和 `sniffer.skip-domain`；配置解析测试已通过，Google/Bing/YouTube/百度等真实矩阵仍需验收。 |
+| DNS 接管与安全搜索 | 部分完成 | Mihomo 配置启用 `dns.respect-rules` 和 TUN `dns-hijack` 负责 DNS 接管；SafeSearch 改由 Chrome/Edge 托管浏览器策略处理，DNS hosts 映射方案已移除。仍需真实设备验证浏览器策略写入、浏览器重启后的搜索安全模式，以及非受支持浏览器的产品提示。 |
 | 内容过滤优先于代理路由 | 已完成 | 过滤规则排在内置 `DIRECT` 路由前，覆盖 `baidu.com` 这类国内直连域名被家长规则拦截的回归场景。 |
 | 跨平台规则核心 | 部分完成 | 规则标准化、匹配、优先级和基础测试已抽到 `crates/cleanweb-rules`；规则订阅文本解析已抽到 `crates/cleanweb-subscriptions`；代理订阅 URI/YAML 清洗已抽到 `crates/cleanweb-proxy-import`；桌面端通过兼容层复用。策略合并和 Mihomo 配置生成尚未抽取。 |
 | Tauri mobile 共享界面 | 部分完成 | `apps/mobile/` 已新增 Tauri mobile/Vite 骨架，并直接复用 `apps/desktop/src/App.tsx` 和 `styles.css`。尚未生成 Android/iOS 原生 shell，也未接入 Android `VpnService` 或 iOS Network Extension 插件。 |
 | Clash/Mihomo 代理订阅清洗 | 已完成 | 只保留节点和允许的代理组；订阅里的 DNS、TUN、规则、脚本、本地端口和控制器不会进入受控配置。纯解析和清洗逻辑已在 `cleanweb-proxy-import` 中覆盖测试，桌面端只负责下载、加密和存储。 |
-| 规则订阅导入 | 已完成 | Clash、Adblock、hosts、域名、IP/CIDR 和安全搜索 YAML 均有解析路径和测试。 |
-| 内置规则包 | 部分完成 | 共享规则和安全搜索资源已移动到根 `resources/`；有内置规则源、默认启用、不可删除和启动恢复逻辑；缺少许可证、归属、版本、校验和、签名包以及商业再分发审计字段。 |
+| 规则订阅导入 | 已完成 | Clash、Adblock、hosts、域名和 IP/CIDR 均有解析路径和测试；安全搜索不再作为规则订阅格式暴露给用户。 |
+| 内置规则包 | 部分完成 | 共享规则发布素材已移动到根 `resources/`；有内置规则源、默认启用、不可删除和启动恢复逻辑；缺少许可证、归属、版本、校验和、签名包以及商业再分发审计字段。 |
 | 访问日志 | 部分完成 | 日志模型、保留期、清空和 CSV 导出存在；拦截事件已从 Mihomo 日志流写入 SQLite 并通过 Tauri event 驱动前端刷新；仍需真实设备验证 DNS、连接和规则命中事件覆盖率。 |
 | 代理凭据加密 | 部分完成 | 已有 payload 加密和迁移测试；Windows DPAPI、macOS Keychain 的发布级路径仍需验收。 |
-| Android VPN 原型 | 部分完成 | `apps/android/` 已有 Kotlin/Compose 过渡壳、本地状态持久化、`VpnService` 权限流、前台服务、内置 Mihomo Android arm64-v8 二进制和 `tun2socks` TUN fd 桥接；启动后生成受控 Mihomo 配置并将设备 IPv4 默认路由转入 Mihomo，且排除 CleanWeb 自身 UID 以避免 Mihomo 出站回环。代理开启时配置不再默认直连，运行中规则/代理变更会重启 VPN 数据通道。该目录不再作为完整 Android 产品 UI 主线，后续应收敛为 Tauri Android VPN 插件。尚未完成非 arm64 打包、共享 Rust 规则编译、Keystore、连接级日志采集、安全搜索 DNS 真机验收和真实设备流量矩阵验收。 |
+| Android VPN 原型 | 部分完成 | `apps/android/` 已有 Kotlin/Compose 过渡壳、本地状态持久化、`VpnService` 权限流、前台服务、内置 Mihomo Android arm64-v8 二进制和 `tun2socks` TUN fd 桥接；启动后生成受控 Mihomo 配置并将设备 IPv4 默认路由转入 Mihomo，且排除 CleanWeb 自身 UID 以避免 Mihomo 出站回环。代理开启时配置不再默认直连，运行中规则/代理变更会重启 VPN 数据通道。该目录不再作为完整 Android 产品 UI 主线，后续应收敛为 Tauri Android VPN 插件。尚未完成非 arm64 打包、共享 Rust 规则编译、Keystore、连接级日志采集、移动端安全搜索方案和真实设备流量矩阵验收。 |
 | 发布许可证交付 | 未完成 | Mihomo GPLv3 边界已在架构中声明，但安装包 notices、对应源码和第三方规则许可证流程尚未完成。 |
 
 ## 建议实施顺序
 
-1. 用真实 Mihomo TUN 验收 DNS 接管、SafeSearch hosts 映射、fake-ip 排除和代理模式下的上游 DNS 解析。
-2. 验证 Google、Bing、YouTube、百度等搜索服务的真实安全搜索矩阵。
+1. 用真实 Mihomo TUN 验收 DNS 接管、fake-ip 排除和代理模式下的上游 DNS 解析。
+2. 验证 Chrome/Edge 浏览器策略对 Google SafeSearch、YouTube 受限模式和浏览器 DoH 关闭的真实生效矩阵。
 3. 用真实流量验证 Mihomo 日志流采集覆盖率，补齐 DNS、连接和规则命中事件的分类归因。
 4. 将 Android `VpnService`、Mihomo 和 `tun2socks` 生命周期收敛为 Tauri Android 插件，并由 `apps/mobile` 调用。
 5. 完成特权组件安装、崩溃恢复、主动关闭、升级和卸载恢复闭环。

@@ -703,8 +703,7 @@ fn list_subscriptions_inner(
 ) -> Result<Vec<SubscriptionRecord>, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let sql = "SELECT s.id, s.kind, s.name, s.url, s.format, s.category, s.update_interval_hours, s.enabled, s.last_updated_at, s.last_error,
-               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) +
-               COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id),0) AS imported_rule_count
+               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) AS imported_rule_count
                FROM subscriptions s WHERE (?1 IS NULL OR s.kind=?1) ORDER BY s.created_at DESC";
     let mut statement = db.prepare(sql).map_err(error)?;
     let records = statement
@@ -1225,16 +1224,11 @@ mod tests {
                 [],
             )
             .unwrap();
-            db.execute(
-                "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('rules','search.example','safe.example',2)",
-                [],
-            )
-            .unwrap();
         }
 
         let records = list_subscriptions_inner(Some("rule".into()), &state).unwrap();
         let record = records.iter().find(|item| item.id == "rules").unwrap();
-        assert_eq!(record.imported_rule_count, 2);
+        assert_eq!(record.imported_rule_count, 1);
     }
 
     #[test]

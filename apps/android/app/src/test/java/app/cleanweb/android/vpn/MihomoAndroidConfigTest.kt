@@ -22,14 +22,11 @@ class MihomoAndroidConfigTest {
     fun defaultStateIncludesRealBuiltInBlockRules() {
         val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
 
-        assertTrue(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
-        assertTrue(config.contains("  - DOMAIN-SUFFIX,18j.tv,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dh.net,REJECT"))
-        assertTrue(config.contains("  - DOMAIN-SUFFIX,51cg1.com,REJECT"))
-        assertTrue(config.contains("  - DOMAIN-SUFFIX,51baoliao01.com,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,zukong.net,REJECT"))
-        assertTrue(config.contains("  - DOMAIN-SUFFIX,chigua.com,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,gamebus001.com,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dns.google,REJECT"))
+        assertFalse(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
         assertFalse(config.contains("adult.example"))
     }
 
@@ -43,11 +40,13 @@ class MihomoAndroidConfigTest {
     }
 
     @Test
-    fun googleSafeSearchUsesVipAddressMapping() {
+    fun safeSearchHostsAreNotGeneratedInMihomoConfig() {
         val config = MihomoAndroidConfig.build(CleanWebState(rules = sharedBuiltInRules()))
 
-        assertTrue(config.contains("  www.google.com: 216.239.38.120"))
-        assertFalse(config.contains("  www.google.com: forcesafesearch.google.com"))
+        assertFalse(config.contains("\nhosts:"))
+        assertFalse(config.contains("  www.google.com:"))
+        assertFalse(config.contains("forcesafesearch.google.com"))
+        assertFalse(config.contains("restrict.youtube.com"))
     }
 
     @Test
@@ -61,7 +60,7 @@ class MihomoAndroidConfigTest {
             builtInRules
         )
 
-        assertTrue(normalized.any { it.pattern == "pornhub.com" })
+        assertTrue(normalized.any { it.pattern == "dh.net" })
         assertTrue(normalized.any { it.pattern == "custom.example" })
         assertFalse(normalized.any { it.pattern == "adult.example" })
     }

@@ -65,7 +65,7 @@ Expected current results: 16 Rust tests and 6 frontend tests pass.
 3. Generated locked Mihomo configuration and control API integration.
 4. Proxy node/group selection and actual latency testing.
 5. Privileged macOS helper/network extension for TUN and route/DNS changes.
-6. fake-IP DNS, DNS hijacking, DoH/DoT bypass handling, and safe-search mapping.
+6. fake-IP DNS, DNS hijacking, DoH/DoT bypass handling, and browser-policy safe-search validation.
 7. Real traffic decisions wired from normalized rules into Mihomo.
 8. Real access log ingestion, retention cleanup, filtering, and export.
 9. Detection and warning for another VPN/TUN interface.

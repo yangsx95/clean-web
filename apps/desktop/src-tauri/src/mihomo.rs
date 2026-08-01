@@ -111,20 +111,6 @@ pub struct ProxySelectionResult {
     pub requires_reload: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct SafeSearchManifest {
-    version: u32,
-    mappings: Vec<SafeSearchMapping>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SafeSearchMapping {
-    domain: String,
-    target: String,
-    #[serde(default)]
-    route_addresses: Vec<String>,
-}
-
 #[tauri::command]
 pub fn get_network_conflicts() -> NetworkConflicts {
     platform::detect_network_conflicts()
@@ -748,13 +734,7 @@ fn read_pid(path: &Path) -> Option<u32> {
 fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<String, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let proxy_enabled = setting_bool(&db, "proxy_enabled")?;
-    let safe_search_enabled = setting_bool(&db, "safe_search_enabled")?;
     let access_logging_enabled = setting_bool(&db, "access_logging_enabled")?;
-    let safe_search_mappings = if safe_search_enabled {
-        safe_search_mappings(&db)?
-    } else {
-        Vec::new()
-    };
     let automatic_node_selection = setting_bool(&db, "automatic_node_selection")?;
     let selections: std::collections::HashMap<String, String> = {
         let mut statement = db
@@ -876,14 +856,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         sniff_protocols.insert(Value::String(protocol.into()), Value::Mapping(settings));
     }
     insert(&mut sniffer, "sniff", Value::Mapping(sniff_protocols));
-    if safe_search_enabled {
-        let mut skip_domains = Vec::new();
-        for mapping in &safe_search_mappings {
-            skip_domains.push(Value::String(mapping.domain.clone()));
-            skip_domains.push(Value::String(mapping.target.clone()));
-        }
-        insert(&mut sniffer, "skip-domain", Value::Sequence(skip_domains));
-    }
     insert(&mut root, "sniffer", Value::Mapping(sniffer));
 
     let mut tun = Mapping::new();
@@ -892,12 +864,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
-    let mut dns_routes = dns_route_addresses(&platform::system_dns_servers());
-    if safe_search_enabled {
-        dns_routes.extend(safe_search_route_addresses(&safe_search_mappings));
-        dns_routes.sort();
-        dns_routes.dedup();
-    }
+    let dns_routes = dns_route_addresses(&platform::system_dns_servers());
     if !dns_routes.is_empty() {
         insert(
             &mut tun,
@@ -988,14 +955,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     .into_iter()
     .map(str::to_owned)
     .collect();
-    if safe_search_enabled {
-        for mapping in &safe_search_mappings {
-            fake_filter.push(mapping.domain.clone());
-            fake_filter.push(mapping.target.clone());
-        }
-        fake_filter.sort();
-        fake_filter.dedup();
-    }
     let fake_filter_values: Vec<Value> = fake_filter
         .iter()
         .map(|s| Value::String(s.clone()))
@@ -1006,9 +965,6 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::Sequence(fake_filter_values),
     );
     insert(&mut root, "dns", Value::Mapping(dns));
-    if safe_search_enabled {
-        insert(&mut root, "hosts", safe_search_hosts(&safe_search_mappings));
-    }
 
     insert(&mut root, "proxies", Value::Sequence(proxies));
     let mut groups = imported_groups;
@@ -1210,15 +1166,6 @@ fn dns_route_addresses(servers: &[String]) -> Vec<String> {
                 .ok()
                 .map(|address| format!("{address}/{}", if address.is_ipv4() { 32 } else { 128 }))
         }))
-        .collect()
-}
-
-fn safe_search_route_addresses(mappings: &[SafeSearchMapping]) -> Vec<String> {
-    mappings
-        .iter()
-        .flat_map(|mapping| mapping.route_addresses.iter())
-        .filter(|address| address.parse::<ipnet::IpNet>().is_ok())
-        .cloned()
         .collect()
 }
 
@@ -1463,78 +1410,6 @@ fn append_direct_domain_fake_ip_filters(root: &mut Mapping, rules: &[Value]) {
             fake_filter.push(Value::String(filter));
         }
     }
-}
-
-fn safe_search_manifest() -> Result<SafeSearchManifest, String> {
-    let manifest: SafeSearchManifest = serde_yaml::from_str(include_str!(
-        "../../../../resources/safe-search/defaults.yaml"
-    ))
-    .map_err(|value| format!("内置安全搜索规则无效：{value}"))?;
-    if manifest.version != 1 || manifest.mappings.is_empty() {
-        return Err("内置安全搜索规则版本无效".into());
-    }
-    Ok(manifest)
-}
-
-fn safe_search_mappings(db: &rusqlite::Connection) -> Result<Vec<SafeSearchMapping>, String> {
-    let mut mappings = safe_search_manifest()?.mappings;
-    let mut statement = db.prepare("SELECT m.domain,m.target FROM safe_search_mappings m JOIN subscriptions s ON s.id=m.subscription_id WHERE s.enabled=1 AND s.kind='rule' ORDER BY s.created_at,m.source_line").map_err(error)?;
-    let subscribed = statement
-        .query_map([], |row| {
-            Ok(SafeSearchMapping {
-                domain: row.get(0)?,
-                target: row.get(1)?,
-                route_addresses: Vec::new(),
-            })
-        })
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(error)?;
-    let mut indexes = std::collections::HashMap::new();
-    for (index, mapping) in mappings.iter().enumerate() {
-        indexes.insert(mapping.domain.clone(), index);
-    }
-    for mapping in subscribed {
-        if let Some(index) = indexes.get(&mapping.domain).copied() {
-            mappings[index] = mapping;
-        } else {
-            indexes.insert(mapping.domain.clone(), mappings.len());
-            mappings.push(mapping);
-        }
-    }
-    Ok(mappings)
-}
-
-fn safe_search_hosts(mappings: &[SafeSearchMapping]) -> Value {
-    let mut hosts = Mapping::new();
-    for mapping in mappings {
-        hosts.insert(
-            Value::String(mapping.domain.clone()),
-            Value::String(mapping.target.clone()),
-        );
-    }
-    // 阻断常见 DoH 服务器，强制浏览器回退到普通 DNS，
-    // 否则加密的 DNS 查询会绕过 hosts 重定向，安全搜索失效
-    let doh_servers = [
-        "dns.google",
-        "dns.google.com",
-        "cloudflare-dns.com",
-        "mozilla.cloudflare-dns.com",
-        "chrome.cloudflare-dns.com",
-        "dns.microsoft",
-        "doh.opendns.com",
-        "dns.quad9.net",
-        "dns.adguard.com",
-        "dns-family.adguard.com",
-        "security.cloudflare-dns.com",
-    ];
-    for server in doh_servers {
-        hosts.insert(
-            Value::String(server.to_string()),
-            Value::String("127.0.0.1".to_string()),
-        );
-    }
-    Value::Mapping(hosts)
 }
 
 pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
@@ -1884,41 +1759,23 @@ mod tests {
             cn_direct < fallback_match,
             "国内公网 IP 直连规则必须先于代理兜底"
         );
-        assert_eq!(
-            yaml.get("hosts")
-                .and_then(|hosts| hosts.get("www.google.com"))
-                .and_then(Value::as_str),
-            Some("216.239.38.120")
-        );
-        assert_eq!(
-            yaml.get("hosts")
-                .and_then(|hosts| hosts.get("www.google.*"))
-                .and_then(Value::as_str),
-            Some("216.239.38.120")
-        );
-        assert_eq!(
-            yaml.get("hosts")
-                .and_then(|hosts| hosts.get("www.youtube-nocookie.com"))
-                .and_then(Value::as_str),
-            Some("restrictmoderate.youtube.com")
-        );
         let route_addresses = yaml
             .get("tun")
             .and_then(|tun| tun.get("route-address"))
             .and_then(Value::as_sequence)
             .expect("tun route addresses");
         assert!(
-            route_addresses.contains(&Value::String("216.239.38.120/32".into())),
-            "Google SafeSearch VIP must stay inside CleanWeb TUN routing"
+            !route_addresses.contains(&Value::String("216.239.38.120/32".into())),
+            "SafeSearch is enforced by browser policy, not Mihomo host routes"
         );
         let fake_ip_filter = yaml
             .get("dns")
             .and_then(|dns| dns.get("fake-ip-filter"))
             .and_then(Value::as_sequence)
             .unwrap();
-        assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
-        assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
-        assert!(fake_ip_filter.contains(&Value::String("216.239.38.120".into())));
+        assert!(!fake_ip_filter.contains(&Value::String("www.google.*".into())));
+        assert!(!fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
+        assert!(!fake_ip_filter.contains(&Value::String("216.239.38.120".into())));
         assert!(
             fake_ip_filter.contains(&Value::String("+.aliyuncs.com".into())),
             "DIRECT 域名后缀必须跳过 fake-ip，否则 MySQL/RDS 等非 HTTP 连接会在直连拨号时二次解析失败"

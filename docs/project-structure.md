@@ -14,8 +14,7 @@ clean-web/
     android/       # Android VPN 原型，后续收敛为 Tauri Android 插件
     ios/           # iOS Network Extension 规划占位
   crates/          # 跨平台共享 Rust 核心
-  resources/       # 跨平台共享规则、安全搜索等资源
-  platforms/       # 平台原生系统能力边界说明和后续插件落点
+  resources/       # 跨平台共享规则发布素材和测试资源
   docs/            # 产品、架构、实现状态和结构文档
   website/         # 官网静态页
   assets/          # 通用品牌资源
@@ -89,14 +88,14 @@ Android 当前用于验证平台 VPN 数据通道：VPN 权限、前台服务、
 ## 平台原生边界
 
 ```text
-platforms/
+docs/platforms/boundaries/
   README.md
-  android-vpn/                  # Android VpnService 插件边界
+  android-vpn/                  # Android VpnService 边界
   ios-network-extension/         # iOS Packet Tunnel Provider 边界
   desktop-privileged/            # 桌面特权服务边界
 ```
 
-平台目录不承载共享业务逻辑。它只描述和承接无法跨平台复用的系统能力：Android `VpnService`、iOS Network Extension、桌面 TUN/DNS/路由特权服务。规则、订阅、策略、日志字段和 Mihomo 配置模型应继续抽入 `crates/`。
+平台边界文档不承载共享业务逻辑，也不作为单独源码根目录。它只描述无法跨平台复用的系统能力：Android `VpnService`、iOS Network Extension、桌面 TUN/DNS/路由特权服务。规则、订阅、策略、日志字段和 Mihomo 配置模型应继续抽入 `crates/`。后续如果需要落地原生插件或特权服务源码，应优先放在对应应用或明确的新包目录中，并同步更新本文档。
 
 ## 文档
 
@@ -112,6 +111,7 @@ docs/
     android.md                 # Android 平台边界
     ios.md                     # iOS 规划边界
     linux.md                   # Linux 作为桌面平台的差异说明
+    boundaries/                # 原生系统能力边界说明
 ```
 
 改变行为前先读 `product-spec.md` 和 `architecture.md`。新增平台能力时同步更新 `implementation-status.md`。
@@ -122,10 +122,9 @@ docs/
 resources/
   rule-sources/                  # 官方和推荐规则源元数据发布素材
   rules/                         # CleanWeb 规则补充包发布素材
-  safe-search/                   # 安全搜索映射清单
 ```
 
-这些资源是跨平台语义资源和发布素材。桌面端不打包、不编译 `resources/rule-sources/` 和 `resources/rules/`；官方规则源和规则正文应通过在线同步写入本地数据库。移动端接入规则能力时也应遵守同一供应链边界。
+这些资源是跨平台语义资源和发布素材。桌面端不打包、不编译 `resources/rule-sources/` 和 `resources/rules/`；官方规则源和规则正文应通过在线同步写入本地数据库。安全搜索由桌面浏览器策略模块处理，不再维护共享 DNS/hosts 映射资源。移动端接入规则能力时也应遵守同一供应链边界。
 
 ## 共享模块
 
