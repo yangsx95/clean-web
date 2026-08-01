@@ -332,34 +332,30 @@ fn insert_parsed_log_event(
     let route_id = intern_access_log_string(db, Some(event.route.as_str()))?;
     let observed_at_ms = observed_at_ms(db, observed_at)?;
     if should_rollup_event(event) {
-        let bucket_ms =
-            observed_at_ms / HIGH_FREQUENCY_LOG_BUCKET_MS * HIGH_FREQUENCY_LOG_BUCKET_MS;
-        return db
-            .execute(
-                "INSERT INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id,repeat_count)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,1)
-                 ON CONFLICT(connection_hash) DO UPDATE SET observed_at_ms=excluded.observed_at_ms,repeat_count=access_logs.repeat_count+1",
-                params![
-                    rollup_hash(bucket_ms, event),
-                    observed_at_ms,
-                    domain_id,
-                    target_ip_id,
-                    event.port,
-                    decision_code(event.decision),
-                    rule_id,
-                    category_id,
-                    process_name_id,
-                    os_id,
-                    user_id,
-                    route_id
-                ],
-            )
-            .map_err(error);
+        if let Some(updated) = update_recent_rollup_event(
+            db,
+            event,
+            observed_at_ms,
+            domain_id,
+            target_ip_id,
+            rule_id,
+            category_id,
+            process_name_id,
+            os_id,
+            user_id,
+            route_id,
+        )? {
+            return Ok(updated);
+        }
     }
     db.execute(
         "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id,repeat_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,1)",
         params![
-            connection_hash(&event.id),
+            if should_rollup_event(event) {
+                rollup_hash(observed_at_ms, event)
+            } else {
+                connection_hash(&event.id)
+            },
             observed_at_ms,
             domain_id,
             target_ip_id,
@@ -377,10 +373,70 @@ fn insert_parsed_log_event(
 }
 
 fn should_rollup_event(event: &ParsedLogEvent) -> bool {
-    event.decision == "allow"
-        && event.route == "DIRECT"
-        && event.port != Some(53)
-        && (event.domain.is_some() || event.target_ip.is_some())
+    event.domain.is_some() || event.target_ip.is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_recent_rollup_event(
+    db: &rusqlite::Connection,
+    event: &ParsedLogEvent,
+    observed_at_ms: i64,
+    domain_id: Option<i64>,
+    target_ip_id: Option<i64>,
+    rule_id: Option<i64>,
+    category_id: Option<i64>,
+    process_name_id: Option<i64>,
+    os_id: Option<i64>,
+    user_id: Option<i64>,
+    route_id: Option<i64>,
+) -> Result<Option<usize>, String> {
+    let recent_id = db
+        .query_row(
+            "SELECT id
+               FROM access_logs
+              WHERE observed_at_ms BETWEEN ?1 AND ?2
+                AND COALESCE(domain_string_id,-1)=COALESCE(?3,-1)
+                AND COALESCE(target_ip_string_id,-1)=COALESCE(?4,-1)
+                AND COALESCE(target_port,-1)=COALESCE(?5,-1)
+                AND decision_code=?6
+                AND COALESCE(rule_string_id,-1)=COALESCE(?7,-1)
+                AND COALESCE(category_string_id,-1)=COALESCE(?8,-1)
+                AND COALESCE(process_name_string_id,-1)=COALESCE(?9,-1)
+                AND COALESCE(operating_system_string_id,-1)=COALESCE(?10,-1)
+                AND COALESCE(system_user_string_id,-1)=COALESCE(?11,-1)
+                AND COALESCE(route_string_id,-1)=COALESCE(?12,-1)
+              ORDER BY observed_at_ms DESC,id DESC
+              LIMIT 1",
+            params![
+                observed_at_ms - HIGH_FREQUENCY_LOG_BUCKET_MS,
+                observed_at_ms,
+                domain_id,
+                target_ip_id,
+                event.port,
+                decision_code(event.decision),
+                rule_id,
+                category_id,
+                process_name_id,
+                os_id,
+                user_id,
+                route_id
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(error)?;
+    let Some(recent_id) = recent_id else {
+        return Ok(None);
+    };
+    db.execute(
+        "UPDATE access_logs
+            SET observed_at_ms=?1,
+                repeat_count=repeat_count+1
+          WHERE id=?2",
+        params![observed_at_ms, recent_id],
+    )
+    .map(Some)
+    .map_err(error)
 }
 
 fn observed_at_ms(db: &rusqlite::Connection, observed_at: &str) -> Result<i64, String> {
@@ -1125,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_reject_logs_as_individual_audit_events() {
+    fn rolls_up_repeated_reject_logs() {
         let state = AppState::open(":memory:").unwrap();
         for source_port in [54135, 54136] {
             let line = format!(
@@ -1145,8 +1201,71 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(repeat_count, 2);
+    }
+
+    #[test]
+    fn rolls_up_repeated_dns_logs() {
+        let state = AppState::open(":memory:").unwrap();
+        for source_port in [54135, 54136, 54137] {
+            let line = format!(
+                r#"time="2026-07-20T18:20:19.379133000+08:00" level=info msg="[UDP] 198.18.0.1:{source_port} --> 119.29.29.29:53 match Match() using DIRECT""#
+            );
+            assert_eq!(
+                insert_mihomo_log_line_inner(&state, &line, false).unwrap(),
+                1
+            );
+        }
+
+        let stats = access_log_stats_inner(&state).unwrap();
+        assert_eq!(stats.allow, 3);
+        assert_eq!(stats.total, 3);
+        let db = state.db.lock().unwrap();
+        let (rows, repeat_count, category): (i64, i64, String) = db
+            .query_row(
+                "SELECT COUNT(*),MAX(l.repeat_count),category_s.value
+                   FROM access_logs l
+                   LEFT JOIN access_log_strings category_s ON category_s.id=l.category_string_id",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(repeat_count, 3);
+        assert_eq!(category, "DNS 解析");
+    }
+
+    #[test]
+    fn starts_new_rollup_when_repeated_logs_are_not_continuous() {
+        let state = AppState::open(":memory:").unwrap();
+        for (source_port, time) in [
+            (54135, "2026-07-20T18:20:19.379133000+08:00"),
+            (54136, "2026-07-20T18:20:25.379133000+08:00"),
+            (54137, "2026-07-20T18:20:40.379133000+08:00"),
+        ] {
+            let line = format!(
+                r#"time="{time}" level=info msg="[TCP] 198.18.0.1:{source_port} --> repeated.example:443 match Match() using DIRECT""#
+            );
+            assert_eq!(
+                insert_mihomo_log_line_inner(&state, &line, false).unwrap(),
+                1
+            );
+        }
+
+        let stats = access_log_stats_inner(&state).unwrap();
+        assert_eq!(stats.allow, 3);
+        assert_eq!(stats.total, 3);
+        let db = state.db.lock().unwrap();
+        let (rows, max_repeat_count): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*),MAX(repeat_count) FROM access_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(rows, 2);
-        assert_eq!(repeat_count, 1);
+        assert_eq!(max_repeat_count, 2);
     }
 
     #[test]

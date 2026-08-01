@@ -25,6 +25,10 @@ class MihomoAndroidConfigTest {
         assertTrue(config.contains("  - DOMAIN-SUFFIX,pornhub.com,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,18j.tv,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dh.net,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,51cg1.com,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,51baoliao01.com,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,zukong.net,REJECT"))
+        assertTrue(config.contains("  - DOMAIN-SUFFIX,chigua.com,REJECT"))
         assertTrue(config.contains("  - DOMAIN-SUFFIX,dns.google,REJECT"))
         assertFalse(config.contains("adult.example"))
     }

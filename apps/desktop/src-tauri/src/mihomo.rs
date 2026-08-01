@@ -820,6 +820,8 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let mut root = Mapping::new();
     insert(&mut root, "allow-lan", Value::Bool(false));
     insert(&mut root, "mode", Value::String("rule".into()));
+    insert(&mut root, "unified-delay", Value::Bool(true));
+    insert(&mut root, "tcp-concurrent", Value::Bool(true));
     insert(
         &mut root,
         "log-level",
@@ -851,6 +853,10 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::String(CONTROLLER.into()),
     );
     insert(&mut root, "secret", Value::String(secret.into()));
+    let mut profile = Mapping::new();
+    insert(&mut profile, "store-selected", Value::Bool(true));
+    insert(&mut profile, "store-fake-ip", Value::Bool(true));
+    insert(&mut root, "profile", Value::Mapping(profile));
 
     let mut sniffer = Mapping::new();
     insert(&mut sniffer, "enable", Value::Bool(true));
@@ -1803,6 +1809,26 @@ mod tests {
         assert!(config.contains("name: node-a"));
         assert!(!config.contains("controller_secret"));
         let yaml: Value = serde_yaml::from_str(&config).unwrap();
+        assert_eq!(
+            yaml.get("unified-delay").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            yaml.get("tcp-concurrent").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            yaml.get("profile")
+                .and_then(|profile| profile.get("store-selected"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            yaml.get("profile")
+                .and_then(|profile| profile.get("store-fake-ip"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
         assert_eq!(yaml.get("log-level").and_then(Value::as_str), Some("info"));
         assert_eq!(
             yaml.get("find-process-mode").and_then(Value::as_str),

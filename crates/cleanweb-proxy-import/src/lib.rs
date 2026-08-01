@@ -160,6 +160,7 @@ fn parse_ss(rest: &str, name: &str) -> Option<Value> {
     let mut map = serde_yaml::Mapping::new();
     map.insert("name".into(), name.into());
     map.insert("type".into(), "ss".into());
+    map.insert("udp".into(), true.into());
 
     // Strip query parameters (e.g. ?group=xxx) and trailing path '/' before parsing authority
     let rest = match rest.split_once('?') {
@@ -222,6 +223,7 @@ fn parse_vmess(rest: &str, name: &str) -> Option<Value> {
     map.insert("server".into(), get("add").into());
     map.insert("port".into(), get("port").parse::<u32>().ok()?.into());
     map.insert("uuid".into(), get("id").into());
+    map.insert("udp".into(), true.into());
     map.insert(
         "alterId".into(),
         get("aid").parse::<u32>().unwrap_or(0).into(),
@@ -500,6 +502,7 @@ fn parse_socks(rest: &str, name: &str) -> Option<Value> {
     map.insert("type".into(), "socks5".into());
     map.insert("server".into(), host.into());
     map.insert("port".into(), port.parse::<u32>().ok()?.into());
+    map.insert("udp".into(), true.into());
     if !username.is_empty() {
         map.insert("username".into(), username.into());
     }
@@ -622,6 +625,7 @@ mod tests {
         assert_eq!(imported.report.detected_format, "clash");
         assert!(imported.payload.contains("my-ss"));
         assert!(imported.payload.contains("my-vless"));
+        assert!(imported.payload.contains("udp: true"));
     }
 
     #[test]
@@ -678,6 +682,7 @@ mod tests {
             "proxy.example.com"
         );
         assert_eq!(node.get("port").unwrap().as_u64().unwrap(), 1080);
+        assert!(node.get("udp").unwrap().as_bool().unwrap());
         assert_eq!(node.get("username").unwrap().as_str().unwrap(), "user");
         assert_eq!(node.get("password").unwrap().as_str().unwrap(), "pass");
     }

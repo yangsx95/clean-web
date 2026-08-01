@@ -541,6 +541,43 @@ header h1 {
   box-shadow: 0 0 0 3px rgba(31, 138, 112, .12);
 }
 
+.retention-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  margin: 12px 0;
+  padding: 4px;
+  border: 1px solid var(--cw-line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.retention-tabs button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--cw-muted);
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.retention-tabs button:hover:not(:disabled),
+.retention-tabs button.active {
+  background: var(--cw-ink);
+  color: #fff;
+}
+
+.retention-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}
+
 .cw-access-row {
   min-height: 54px;
   display: grid;
@@ -667,11 +704,12 @@ header h1 {
 }
 
 .cw-settings-layout {
-  align-items: start;
+  align-items: stretch;
 }
 
 .cw-settings-layout > .cw-panel {
-  max-width: 760px;
+  width: 100%;
+  max-width: none;
 }
 
 .settings-switches,
@@ -2869,6 +2907,9 @@ header h1 { font-size: 32px; line-height: 36px; letter-spacing: 0; color: var(--
   header h1 { font-size: 28px; line-height: 32px; }
   .cw-overview-actions, .cw-page-intro { flex-direction: column; }
   .cw-stat-row, .cw-dashboard-grid, .cw-logs-layout, .cw-sub-layout, .cw-settings-layout { grid-template-columns: 1fr; }
+  .retention-tabs {
+    overflow-x: auto;
+  }
   .cw-access-row { grid-template-columns: 42px minmax(0, 1fr) 54px; gap: 8px; padding: 8px 0; }
   .cw-access-row .access-meta { display: none; }
   .subscription-row { grid-template-columns: minmax(0, 1fr) 50px; }
