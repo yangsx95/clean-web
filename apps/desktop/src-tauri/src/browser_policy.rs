@@ -195,7 +195,7 @@ fn apply_browser_policies_inner(state: &AppState) -> Result<(), String> {
     if let Some(user) = user.as_deref() {
         install_commands.push(format!(
             "/bin/mkdir -p {}",
-            shell_quote(&Path::new("/Library/Managed Preferences").join(&user))
+            shell_quote(&Path::new("/Library/Managed Preferences").join(user))
         ));
     }
     let mut installed_browser_count = 0;

@@ -931,21 +931,19 @@ pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogSt
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     prune_internal_cleanweb_dns_logs(&db)?;
+    let today_ms = local_today_start_ms(&db)?;
     db.query_row(
-        "WITH cutoff AS (
-           SELECT CAST(strftime('%s','now','localtime','start of day') AS INTEGER) * 1000 AS today_ms
-         )
-         SELECT
+        "SELECT
            COALESCE(SUM(CASE WHEN decision_code=1 THEN repeat_count ELSE 0 END),0),
            COALESCE(SUM(CASE WHEN decision_code=0 THEN repeat_count ELSE 0 END),0),
            COALESCE(SUM(CASE WHEN decision_code=2 THEN repeat_count ELSE 0 END),0),
            COALESCE(SUM(repeat_count),0),
-           COALESCE(SUM(CASE WHEN decision_code=1 AND observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=0 AND observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=2 AND observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN observed_at_ms >= cutoff.today_ms THEN repeat_count ELSE 0 END),0)
-         FROM access_logs, cutoff",
-        [],
+           COALESCE(SUM(CASE WHEN decision_code=1 AND observed_at_ms >= ?1 THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=0 AND observed_at_ms >= ?1 THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=2 AND observed_at_ms >= ?1 THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN observed_at_ms >= ?1 THEN repeat_count ELSE 0 END),0)
+         FROM access_logs",
+        params![today_ms],
         |row| {
             Ok(AccessLogStats {
                 block: row.get(0)?,
@@ -958,6 +956,15 @@ fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
                 today_total: row.get(7)?,
             })
         },
+    )
+    .map_err(error)
+}
+
+fn local_today_start_ms(db: &rusqlite::Connection) -> Result<i64, String> {
+    db.query_row(
+        "SELECT CAST(strftime('%s','now','localtime','start of day','utc') AS INTEGER) * 1000",
+        [],
+        |row| row.get(0),
     )
     .map_err(error)
 }
@@ -1167,6 +1174,28 @@ mod tests {
                 os_id,
                 user_id,
                 route_id
+            ],
+        )
+        .unwrap();
+    }
+
+    fn insert_test_access_log_ms(
+        db: &rusqlite::Connection,
+        connection_id: &str,
+        observed_at_ms: i64,
+        decision: &str,
+    ) {
+        let os_id = intern_access_log_string(db, Some("macOS")).unwrap();
+        let user_id = intern_access_log_string(db, Some("u")).unwrap();
+        db.execute(
+            "INSERT INTO access_logs(connection_hash,observed_at_ms,decision_code,operating_system_string_id,system_user_string_id)
+             VALUES(?1,?2,?3,?4,?5)",
+            params![
+                connection_hash(connection_id),
+                observed_at_ms,
+                decision_code(decision),
+                os_id,
+                user_id,
             ],
         )
         .unwrap();
@@ -1667,6 +1696,26 @@ mod tests {
         assert_eq!(stats.allow, 150);
         assert_eq!(stats.block, 2);
         assert_eq!(stats.total, 152);
+    }
+
+    #[test]
+    fn access_log_stats_count_rows_since_local_day_start() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            let today_start = local_today_start_ms(&db).unwrap();
+            insert_test_access_log_ms(&db, "yesterday-allow", today_start - 1_000, "allow");
+            insert_test_access_log_ms(&db, "today-allow", today_start + 1_000, "allow");
+            insert_test_access_log_ms(&db, "today-block", today_start + 2_000, "block");
+        }
+
+        let stats = access_log_stats_inner(&state).unwrap();
+        assert_eq!(stats.allow, 2);
+        assert_eq!(stats.block, 1);
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.today_allow, 1);
+        assert_eq!(stats.today_block, 1);
+        assert_eq!(stats.today_total, 2);
     }
 
     #[test]

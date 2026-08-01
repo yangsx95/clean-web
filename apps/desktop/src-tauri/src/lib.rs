@@ -277,12 +277,10 @@ pub fn run() {
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen {
-            has_visible_windows,
+            has_visible_windows: false,
             ..
         } => {
-            if !has_visible_windows {
-                show_main_window(app);
-            }
+            show_main_window(app);
         }
         _ => {}
     });
