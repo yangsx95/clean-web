@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 use uuid::Uuid;
 
+use crate::dns_filter::DnsFilterHandle;
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 #[cfg(debug_assertions)]
 use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
@@ -28,8 +29,10 @@ const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
 pub struct AppState {
     pub(crate) db: Mutex<Connection>,
     sessions: Mutex<HashMap<String, Instant>>,
+    pub(crate) db_path: PathBuf,
     pub(crate) data_dir: PathBuf,
     pub(crate) core_process: Mutex<Option<Child>>,
+    pub(crate) dns_filter: Mutex<Option<DnsFilterHandle>>,
     pub(crate) reload_in_progress: AtomicBool,
 }
 
@@ -134,11 +137,13 @@ impl AppState {
         Ok(Self {
             db: Mutex::new(connection),
             sessions: Mutex::new(HashMap::new()),
+            db_path: path.to_path_buf(),
             data_dir: path
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf(),
             core_process: Mutex::new(None),
+            dns_filter: Mutex::new(None),
             reload_in_progress: AtomicBool::new(false),
         })
     }

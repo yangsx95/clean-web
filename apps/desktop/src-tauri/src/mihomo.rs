@@ -20,6 +20,7 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::{
+    dns_filter,
     platform::{self, NetworkConflicts},
     proxy_crypto::decrypt_proxy_payload,
     storage::AppState,
@@ -224,19 +225,29 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
         *state.core_process.lock().map_err(|_| "内核状态不可用")? = Some(child);
         (pid, runtime.join("mihomo.log"))
     };
-    fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error)?;
+    if let Err(reason) = dns_filter::start_dns_filter(state) {
+        platform::kill_process(pid);
+        return Err(reason);
+    }
+    if let Err(reason) = fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error) {
+        platform::kill_process(pid);
+        let _ = dns_filter::stop_dns_filter(state);
+        return Err(reason);
+    }
     let mut log = String::new();
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(100));
         log = fs::read_to_string(&health_log).unwrap_or_default();
         if tun_startup_failed(&log) {
             platform::kill_process(pid);
+            let _ = dns_filter::stop_dns_filter(state);
             let _ = fs::remove_file(runtime.join("mihomo.pid"));
             return Err(
                 last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo TUN 启动失败".into())
             );
         }
         if !platform::pid_running(pid) {
+            let _ = dns_filter::stop_dns_filter(state);
             let _ = fs::remove_file(runtime.join("mihomo.pid"));
             return Err(
                 last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into())
@@ -248,16 +259,23 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
     }
     if !tun_startup_ready(&log) {
         platform::kill_process(pid);
+        let _ = dns_filter::stop_dns_filter(state);
         let _ = fs::remove_file(runtime.join("mihomo.pid"));
         return Err(
             last_log_lines(&health_log, 12).unwrap_or_else(|_| "等待 Mihomo TUN 就绪超时".into())
         );
     }
-    atomic_write(
+    if let Err(reason) = atomic_write(
         &runtime.join("active-config"),
         format!("{pid}\n{config_hash}\n").as_bytes(),
     )
-    .map_err(error)?;
+    .map_err(error)
+    {
+        platform::kill_process(pid);
+        let _ = dns_filter::stop_dns_filter(state);
+        let _ = fs::remove_file(runtime.join("mihomo.pid"));
+        return Err(reason);
+    }
     core_status(state)
 }
 
@@ -620,6 +638,7 @@ pub async fn test_all_proxy_delays(
 }
 
 pub(crate) fn stop_child(state: &AppState) -> Result<(), String> {
+    dns_filter::stop_dns_filter(state)?;
     let pid_path = state.data_dir.join("mihomo/mihomo.pid");
     if let Some(mut child) = state
         .core_process
@@ -850,10 +869,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(
         &mut dns,
         "nameserver",
-        Value::Sequence(vec![
-            Value::String("223.5.5.5".into()),
-            Value::String("119.29.29.29".into()),
-        ]),
+        Value::Sequence(vec![Value::String(dns_filter::CLEANWEB_DNS_LISTEN.into())]),
     );
     insert(
         &mut dns,
@@ -866,10 +882,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(
         &mut dns,
         "direct-nameserver",
-        Value::Sequence(vec![
-            Value::String("223.5.5.5".into()),
-            Value::String("119.29.29.29".into()),
-        ]),
+        Value::Sequence(vec![Value::String(dns_filter::CLEANWEB_DNS_LISTEN.into())]),
     );
     // 本地域名使用系统 DNS 解析，避免 fake-ip 导致无法访问路由器等内网设备
     let mut ns_policy = Mapping::new();
@@ -1293,6 +1306,9 @@ fn append_imported_rules(
             "Proxy" => "CleanWeb",
             _ => "REJECT",
         };
+        if target == "REJECT" && matches!(kind.as_str(), "Exact" | "Suffix") {
+            continue;
+        }
         if let Some(rule) = mihomo_rule(&kind, &pattern, target) {
             if emitted.insert(rule.clone()) {
                 result.push(Value::String(rule));
@@ -1304,19 +1320,21 @@ fn append_imported_rules(
 
 fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
     Some(match kind {
-        "Exact" => format!("DOMAIN,{pattern},{target}"),
-        "Suffix" => format!("DOMAIN-SUFFIX,{pattern},{target}"),
-        "Contains" => format!("DOMAIN-KEYWORD,{pattern},{target}"),
-        "Wildcard" => format!("DOMAIN-WILDCARD,{pattern},{target}"),
-        "Regex" => format!("DOMAIN-REGEX,{pattern},{target}"),
-        "Ip" | "Cidr" if pattern.contains(':') && target == "DIRECT" => {
+        "Exact" | "exact" => format!("DOMAIN,{pattern},{target}"),
+        "Suffix" | "suffix" => format!("DOMAIN-SUFFIX,{pattern},{target}"),
+        "Contains" | "contains" => format!("DOMAIN-KEYWORD,{pattern},{target}"),
+        "Wildcard" | "wildcard" => format!("DOMAIN-WILDCARD,{pattern},{target}"),
+        "Regex" | "regex" => format!("DOMAIN-REGEX,{pattern},{target}"),
+        "Ip" | "ip" | "Cidr" | "cidr" if pattern.contains(':') && target == "DIRECT" => {
             format!("IP-CIDR6,{pattern},{target}")
         }
-        "Ip" | "Cidr" if pattern.contains(':') => {
+        "Ip" | "ip" | "Cidr" | "cidr" if pattern.contains(':') => {
             format!("IP-CIDR6,{pattern},{target},no-resolve")
         }
-        "Ip" | "Cidr" if target == "DIRECT" => format!("IP-CIDR,{pattern},{target}"),
-        "Ip" | "Cidr" => format!("IP-CIDR,{pattern},{target},no-resolve"),
+        "Ip" | "ip" | "Cidr" | "cidr" if target == "DIRECT" => {
+            format!("IP-CIDR,{pattern},{target}")
+        }
+        "Ip" | "ip" | "Cidr" | "cidr" => format!("IP-CIDR,{pattern},{target},no-resolve"),
         _ => return None,
     })
 }
@@ -1621,7 +1639,7 @@ mod tests {
             db.execute("INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('direct-cn','rule','cn','https://x/cn.txt',1)",[]).unwrap();
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('direct-cn','1','Cidr','47.103.0.0/16','Allow','direct',1)",[]).unwrap();
             db.execute(
-                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('parent-block','block','Suffix','baidu.com','custom')",
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('parent-block','block','suffix','baidu.com','custom')",
                 [],
             )
             .unwrap();
@@ -1635,11 +1653,7 @@ mod tests {
         }
         let config = build_config(&state, "secret", true).unwrap();
         assert!(config.contains("enhanced-mode: fake-ip"));
-        assert!(config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
-        assert_eq!(
-            config.matches("DOMAIN-SUFFIX,bad.example,REJECT").count(),
-            1
-        );
+        assert!(!config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
         let parent_block = config.find("DOMAIN-SUFFIX,baidu.com,REJECT").unwrap();
         let built_in_direct = config.find("DOMAIN-SUFFIX,baidu.com,DIRECT").unwrap();
         assert!(
@@ -1699,6 +1713,21 @@ mod tests {
                 .map(|values| values.contains(&Value::String("223.5.5.5".into()))),
             Some(true),
             "代理节点域名和 DNS 上游需要直连 bootstrap DNS，避免启动时解析自举死锁"
+        );
+        let dns = yaml.get("dns").expect("dns config");
+        assert_eq!(
+            dns.get("nameserver")
+                .and_then(Value::as_sequence)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str),
+            Some(dns_filter::CLEANWEB_DNS_LISTEN)
+        );
+        assert_eq!(
+            dns.get("direct-nameserver")
+                .and_then(Value::as_sequence)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str),
+            Some(dns_filter::CLEANWEB_DNS_LISTEN)
         );
         let config_rules = yaml
             .get("rules")

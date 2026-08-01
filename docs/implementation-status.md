@@ -15,7 +15,7 @@
 | Tauri 管理界面与锁定状态 | 已完成 | React UI 已区分锁定/解锁，敏感命令要求管理会话。 |
 | 管理密码 | 部分完成 | Argon2 密码哈希和会话过期已实现；缺少输错退避和系统管理员授权重置。 |
 | 单 Mihomo TUN 启停 | 部分完成 | CleanWeb 生成锁定的 Mihomo 配置并启动唯一 TUN；macOS/Windows 的特权安装、升级、异常恢复和卸载仍需真实设备验收。 |
-| DNS 接管与安全搜索 | 部分完成 | Mihomo 配置启用 `dns.respect-rules` 和 TUN `dns-hijack` 负责 DNS 接管；SafeSearch 改由 Chrome/Edge 托管浏览器策略处理，DNS hosts 映射方案已移除。仍需真实设备验证浏览器策略写入、浏览器重启后的搜索安全模式，以及非受支持浏览器的产品提示。 |
+| DNS 接管与安全搜索 | 部分完成 | Mihomo 配置启用 TUN `dns-hijack` 负责系统 DNS 接管；CleanWeb DNS 过滤组件接管大体量域名拦截，并对 Google SafeSearch VIP 做本地 DNS 补强；Chrome/Edge 托管浏览器策略继续处理 SafeSearch、YouTube 受限模式和关闭 DoH。仍需真实设备验证浏览器策略写入、浏览器重启后的搜索安全模式、DNS 补强链路，以及非受支持浏览器的产品提示。 |
 | 内容过滤优先于代理路由 | 已完成 | 过滤规则排在内置 `DIRECT` 路由前，覆盖 `baidu.com` 这类国内直连域名被家长规则拦截的回归场景。 |
 | 跨平台规则核心 | 部分完成 | 规则标准化、匹配、优先级和基础测试已抽到 `crates/cleanweb-rules`；规则订阅文本解析已抽到 `crates/cleanweb-subscriptions`；代理订阅 URI/YAML 清洗已抽到 `crates/cleanweb-proxy-import`；桌面端通过兼容层复用。策略合并和 Mihomo 配置生成尚未抽取。 |
 | Tauri mobile 共享界面 | 部分完成 | `apps/mobile/` 是唯一移动端 app 壳，已新增 Tauri mobile/Vite 骨架，并挂载 `packages/frontend` 的共享 React 管理界面。Android 和 iOS Tauri shell 已生成。尚未接入 Android `VpnService` 或 iOS Network Extension 插件。 |

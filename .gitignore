@@ -13,3 +13,4 @@ apps/android/app/build/
 *.db
 *.db-shm
 *.db-wal
+output

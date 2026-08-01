@@ -1,5 +1,6 @@
 pub mod access_logs;
 pub mod browser_policy;
+pub mod dns_filter;
 pub mod mihomo;
 pub mod platform;
 pub mod proxy_crypto;

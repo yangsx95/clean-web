@@ -15,6 +15,7 @@ cleanweb-rules = { path = "../../../crates/cleanweb-rules" }
 cleanweb-subscriptions = { path = "../../../crates/cleanweb-subscriptions" }
 cleanweb-proxy-import = { path = "../../../crates/cleanweb-proxy-import" }
 flate2 = "1"
+hickory-proto = "0.26.1"
 ipnet = { version = "2", features = ["serde"] }
 keyring = "4.1"
 libc = "0.2"

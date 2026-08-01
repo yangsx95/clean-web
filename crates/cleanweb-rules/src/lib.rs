@@ -1,7 +1,7 @@
 use ipnet::IpNet;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::{collections::BTreeSet, net::IpAddr};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +63,41 @@ pub struct Decision<'a> {
     pub action: Action,
     pub rule_id: &'a str,
     pub category: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainRuleTier {
+    SecurityBlock,
+    ManualBlock,
+    ManualAllow,
+    Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct DomainRuleInput {
+    pub tier: DomainRuleTier,
+    pub kind: MatcherKind,
+    pub pattern: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DomainDecision {
+    pub blocked: bool,
+    pub tier: DomainRuleTier,
+}
+
+#[derive(Debug, Default)]
+pub struct DomainRuleIndex {
+    security_block: DomainMatcher,
+    manual_block: DomainMatcher,
+    manual_allow: DomainMatcher,
+    block: DomainMatcher,
+}
+
+#[derive(Debug, Default)]
+struct DomainMatcher {
+    exact: Option<fst::Set<Vec<u8>>>,
+    suffix: Option<fst::Set<Vec<u8>>>,
 }
 
 impl CompiledRule {
@@ -147,6 +182,129 @@ impl RuleSet {
     }
 }
 
+impl DomainRuleIndex {
+    pub fn compile(inputs: Vec<DomainRuleInput>) -> Result<Self, RuleError> {
+        let mut builder = DomainIndexBuilder::default();
+        for input in inputs {
+            let normalized = normalize_domain(&input.pattern)?;
+            match input.tier {
+                DomainRuleTier::SecurityBlock => {
+                    builder.security_block.insert(input.kind, &normalized)
+                }
+                DomainRuleTier::ManualBlock => builder.manual_block.insert(input.kind, &normalized),
+                DomainRuleTier::ManualAllow => builder.manual_allow.insert(input.kind, &normalized),
+                DomainRuleTier::Block => builder.block.insert(input.kind, &normalized),
+            }
+        }
+        builder.build()
+    }
+
+    pub fn decide(&self, domain: &str) -> Option<DomainDecision> {
+        let normalized = normalize_domain(domain).ok()?;
+        for (tier, matcher, blocked) in [
+            (DomainRuleTier::SecurityBlock, &self.security_block, true),
+            (DomainRuleTier::ManualBlock, &self.manual_block, true),
+            (DomainRuleTier::ManualAllow, &self.manual_allow, false),
+            (DomainRuleTier::Block, &self.block, true),
+        ] {
+            if matcher.matches(&normalized) {
+                return Some(DomainDecision { blocked, tier });
+            }
+        }
+        None
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.security_block.is_empty()
+            && self.manual_block.is_empty()
+            && self.manual_allow.is_empty()
+            && self.block.is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+struct DomainIndexBuilder {
+    security_block: DomainMatcherBuilder,
+    manual_block: DomainMatcherBuilder,
+    manual_allow: DomainMatcherBuilder,
+    block: DomainMatcherBuilder,
+}
+
+#[derive(Debug, Default)]
+struct DomainMatcherBuilder {
+    exact: BTreeSet<String>,
+    suffix: BTreeSet<String>,
+}
+
+impl DomainIndexBuilder {
+    fn build(self) -> Result<DomainRuleIndex, RuleError> {
+        Ok(DomainRuleIndex {
+            security_block: self.security_block.build()?,
+            manual_block: self.manual_block.build()?,
+            manual_allow: self.manual_allow.build()?,
+            block: self.block.build()?,
+        })
+    }
+}
+
+impl DomainMatcherBuilder {
+    fn insert(&mut self, kind: MatcherKind, pattern: &str) {
+        match kind {
+            MatcherKind::Exact => {
+                self.exact.insert(pattern.to_owned());
+            }
+            MatcherKind::Suffix => {
+                self.suffix.insert(reverse_domain(pattern));
+            }
+            _ => {}
+        }
+    }
+
+    fn build(self) -> Result<DomainMatcher, RuleError> {
+        Ok(DomainMatcher {
+            exact: build_fst_set(self.exact)?,
+            suffix: build_fst_set(self.suffix)?,
+        })
+    }
+}
+
+impl DomainMatcher {
+    fn matches(&self, domain: &str) -> bool {
+        self.exact.as_ref().is_some_and(|set| set.contains(domain))
+            || self
+                .suffix
+                .as_ref()
+                .is_some_and(|set| suffix_set_matches(set, domain))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.exact.is_none() && self.suffix.is_none()
+    }
+}
+
+fn build_fst_set(values: BTreeSet<String>) -> Result<Option<fst::Set<Vec<u8>>>, RuleError> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    fst::Set::from_iter(values)
+        .map(Some)
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))
+}
+
+fn suffix_set_matches(set: &fst::Set<Vec<u8>>, domain: &str) -> bool {
+    let labels: Vec<&str> = domain.split('.').collect();
+    (0..labels.len()).any(|index| set.contains(reverse_labels(&labels[index..])))
+}
+
+fn reverse_domain(domain: &str) -> String {
+    let labels: Vec<&str> = domain.split('.').collect();
+    reverse_labels(&labels)
+}
+
+fn reverse_labels(labels: &[&str]) -> String {
+    labels.iter().rev().copied().collect::<Vec<_>>().join(".")
+}
+
 pub fn take_early_network_block_rules<T, F>(rules: &mut Vec<T>, mut rule_line: F) -> Vec<T>
 where
     F: FnMut(&T) -> Option<&str>,
@@ -218,6 +376,68 @@ mod tests {
             action,
             category: "test".into(),
         }
+    }
+
+    fn domain_rule(tier: DomainRuleTier, kind: MatcherKind, pattern: &str) -> DomainRuleInput {
+        DomainRuleInput {
+            tier,
+            kind,
+            pattern: pattern.into(),
+        }
+    }
+
+    #[test]
+    fn domain_index_matches_exact_and_suffix_rules() {
+        let index = DomainRuleIndex::compile(vec![
+            domain_rule(DomainRuleTier::Block, MatcherKind::Suffix, "example.com"),
+            domain_rule(
+                DomainRuleTier::ManualAllow,
+                MatcherKind::Exact,
+                "safe.example.com",
+            ),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            index.decide("a.example.com"),
+            Some(DomainDecision {
+                blocked: true,
+                tier: DomainRuleTier::Block
+            })
+        );
+        assert_eq!(
+            index.decide("safe.example.com"),
+            Some(DomainDecision {
+                blocked: false,
+                tier: DomainRuleTier::ManualAllow
+            })
+        );
+        assert_eq!(index.decide("notexample.com"), None);
+    }
+
+    #[test]
+    fn security_blocks_beat_manual_allow() {
+        let index = DomainRuleIndex::compile(vec![
+            domain_rule(
+                DomainRuleTier::SecurityBlock,
+                MatcherKind::Suffix,
+                "bad.example",
+            ),
+            domain_rule(
+                DomainRuleTier::ManualAllow,
+                MatcherKind::Suffix,
+                "bad.example",
+            ),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            index.decide("www.bad.example"),
+            Some(DomainDecision {
+                blocked: true,
+                tier: DomainRuleTier::SecurityBlock
+            })
+        );
     }
 
     #[test]

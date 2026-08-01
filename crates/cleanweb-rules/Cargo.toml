@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+fst = "0.4"
 idna = "1"
 ipnet = { version = "2", features = ["serde"] }
 regex = "1"
