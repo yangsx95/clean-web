@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 
 export type Settings = {
   protectionEnabled: boolean;
@@ -16,7 +17,7 @@ export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
-export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string};
+export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string;repeatCount?:number};
 export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
 export type ParentRule={id:string;action:"allow"|"block"|"proxy"|"system_route";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
@@ -255,15 +256,16 @@ export async function listAccessLogs(sessionToken:string,decision?:string,search
 export async function getAccessLogStats(sessionToken:string):Promise<AccessLogStats>{
   if(isTauri())return invoke("access_log_stats",{sessionToken});
   const logs=await listAccessLogs(sessionToken,undefined,undefined,5000);
+  const count=(log:AccessLog)=>log.repeatCount??1;
   return {
-    block: logs.filter(log=>log.decision==="block").length,
-    allow: logs.filter(log=>log.decision==="allow").length,
-    warning: logs.filter(log=>log.decision==="warning").length,
-    total: logs.length,
-    todayBlock: logs.filter(log=>log.decision==="block"&&isToday(log.observedAt)).length,
-    todayAllow: logs.filter(log=>log.decision==="allow"&&isToday(log.observedAt)).length,
-    todayWarning: logs.filter(log=>log.decision==="warning"&&isToday(log.observedAt)).length,
-    todayTotal: logs.filter(log=>isToday(log.observedAt)).length,
+    block: logs.filter(log=>log.decision==="block").reduce((sum,log)=>sum+count(log),0),
+    allow: logs.filter(log=>log.decision==="allow").reduce((sum,log)=>sum+count(log),0),
+    warning: logs.filter(log=>log.decision==="warning").reduce((sum,log)=>sum+count(log),0),
+    total: logs.reduce((sum,log)=>sum+count(log),0),
+    todayBlock: logs.filter(log=>log.decision==="block"&&isToday(log.observedAt)).reduce((sum,log)=>sum+count(log),0),
+    todayAllow: logs.filter(log=>log.decision==="allow"&&isToday(log.observedAt)).reduce((sum,log)=>sum+count(log),0),
+    todayWarning: logs.filter(log=>log.decision==="warning"&&isToday(log.observedAt)).reduce((sum,log)=>sum+count(log),0),
+    todayTotal: logs.filter(log=>isToday(log.observedAt)).reduce((sum,log)=>sum+count(log),0),
   };
 }
 export async function getPublicAccessLogStats():Promise<AccessLogStats>{
@@ -271,7 +273,27 @@ export async function getPublicAccessLogStats():Promise<AccessLogStats>{
   return getAccessLogStats("browser-preview");
 }
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return isTauri()?invoke("clear_access_logs",{sessionToken}):0;}
-export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"time,domain\n";}
+export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return isTauri()?invoke("export_access_logs_csv",{sessionToken}):"\ufefftime,domain\n";}
+export async function saveAccessLogsCsv(sessionToken:string):Promise<string|null>{
+  if(!isTauri()){
+    const csv=await exportAccessLogsCsv(sessionToken);
+    const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
+    const link=document.createElement("a");
+    link.href=url;
+    link.download="cleanweb-access-logs.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+    return "cleanweb-access-logs.csv";
+  }
+  const path=await save({
+    title:"导出访问日志",
+    defaultPath:"cleanweb-access-logs.csv",
+    filters:[{name:"CSV",extensions:["csv"]}],
+  });
+  if(!path)return null;
+  await invoke("export_access_logs_csv_to_path",{sessionToken,path});
+  return path;
+}
 
 function isToday(value:string):boolean{
   const date=new Date(value);

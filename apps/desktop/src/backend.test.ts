@@ -150,7 +150,7 @@ describe("browser preview persistence", () => {
       {
         id: "local:cleanweb:entertainment-cdn",
         kind: "rule",
-        name: "内置规则 · 娱乐 CDN",
+        name: "内置规则 · 娱乐内容补充",
         url: "builtin://cleanweb/entertainment-cdn",
         format: "clash",
         category: "entertainment",
@@ -171,7 +171,7 @@ describe("browser preview persistence", () => {
     await expect(backend.deleteSubscription("browser-preview", "local:cleanweb:entertainment-cdn")).rejects.toThrow("内置规则不能删除");
 
     await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
-      { id: "local:cleanweb:entertainment-cdn", name: "内置规则 · 娱乐 CDN", enabled: true },
+      { id: "local:cleanweb:entertainment-cdn", name: "内置规则 · 娱乐内容补充", enabled: true },
     ]);
   });
 });

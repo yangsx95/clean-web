@@ -358,7 +358,8 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
            source_ip_string_id INTEGER REFERENCES access_log_strings(id),
            route_string_id INTEGER REFERENCES access_log_strings(id),
            proxy_group_string_id INTEGER REFERENCES access_log_strings(id),
-           error_string_id INTEGER REFERENCES access_log_strings(id)
+           error_string_id INTEGER REFERENCES access_log_strings(id),
+           repeat_count INTEGER NOT NULL DEFAULT 1
          );
          CREATE TABLE IF NOT EXISTS parent_rules (
            id TEXT PRIMARY KEY,
@@ -388,6 +389,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
     if migrate_compact_access_logs(db)? {
         db.execute_batch("VACUUM")?;
     }
+    add_access_log_repeat_count(db)?;
     let defaults = [
         ("protection_enabled", "false"),
         ("proxy_enabled", "false"),
@@ -484,7 +486,7 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         ),
         (
             CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_ID,
-            "内置规则 · 娱乐 CDN 补充",
+            "内置规则 · 娱乐内容补充",
             CLEANWEB_ENTERTAINMENT_CDN_SUPPLEMENT_URL,
             "clash",
             "entertainment",
@@ -704,7 +706,8 @@ fn migrate_compact_access_logs(db: &Connection) -> rusqlite::Result<bool> {
            source_ip_string_id INTEGER REFERENCES access_log_strings(id),
            route_string_id INTEGER REFERENCES access_log_strings(id),
            proxy_group_string_id INTEGER REFERENCES access_log_strings(id),
-           error_string_id INTEGER REFERENCES access_log_strings(id)
+           error_string_id INTEGER REFERENCES access_log_strings(id),
+           repeat_count INTEGER NOT NULL DEFAULT 1
          )",
         [],
     )?;
@@ -768,8 +771,8 @@ fn migrate_compact_access_logs(db: &Connection) -> rusqlite::Result<bool> {
     db.execute_batch("BEGIN IMMEDIATE")?;
     let insert_result = (|| {
         let mut insert = db.prepare(
-            "INSERT OR IGNORE INTO access_logs_compact(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,process_path_string_id,operating_system_string_id,system_user_string_id,source_ip_string_id,route_string_id,proxy_group_string_id,error_string_id)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            "INSERT OR IGNORE INTO access_logs_compact(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,process_path_string_id,operating_system_string_id,system_user_string_id,source_ip_string_id,route_string_id,proxy_group_string_id,error_string_id,repeat_count)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1)",
         )?;
         for row in rows {
             let hash = Sha256::digest(row.connection_id.as_bytes())[..8].to_vec();
@@ -805,6 +808,16 @@ fn migrate_compact_access_logs(db: &Connection) -> rusqlite::Result<bool> {
         insert_result?;
     }
     Ok(true)
+}
+
+fn add_access_log_repeat_count(db: &Connection) -> rusqlite::Result<()> {
+    if !table_has_column(db, "access_logs", "repeat_count")? {
+        db.execute(
+            "ALTER TABLE access_logs ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1633,7 +1646,7 @@ mod tests {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
         db.execute(
-            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('legacy-builtin-url','rule','娱乐 CDN','builtin://cleanweb/entertainment-cdn','clash','entertainment',1)",
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('legacy-builtin-url','rule','娱乐内容补充','builtin://cleanweb/entertainment-cdn','clash','entertainment',1)",
             [],
         )
         .unwrap();

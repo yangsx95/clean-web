@@ -8,6 +8,7 @@ type AppDialog = "unlock" | "rules" | "editRuleSubscription" | "proxy" | "custom
 type AppPage = "overview" | "rules" | "logs" | "subscriptions" | "proxy" | "settings";
 type AccessLogDecisionFilter = "all" | "block" | "warning";
 const ACCESS_LOG_REFRESH_INTERVAL_MS = 3000;
+const ACCESS_LOG_SEARCH_DEBOUNCE_MS = 400;
 
 async function decodeQrImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
@@ -75,6 +76,15 @@ function useScopedOperations() {
   return { anyBusy, isBusy, runScopedOperation };
 }
 
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
+  return debouncedValue;
+}
+
 function proxyDelayLabel(d: number | undefined) {
   if (d == null) return null;
   if (d === 0) return { text: "不可达", cls: "timeout" };
@@ -96,6 +106,29 @@ function compactCount(value: number) {
   const scaled = value / unit.threshold;
   const digits = Math.abs(scaled) >= 10 ? 0 : 1;
   return `${scaled.toFixed(digits).replace(/\.0$/, "")}${unit.suffix}`;
+}
+
+function formatAccessLogTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+}
+
+function formatAccessLogTarget(log: backend.AccessLog) {
+  const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
+  const target = log.domain ?? log.targetIp ?? (isDnsResolution ? "DNS 解析" : "未知目标");
+  return log.targetPort ? `${target}:${log.targetPort}` : target;
+}
+
+function formatAccessLogEndpoint(log: backend.AccessLog) {
+  const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
+  if (isDnsResolution) return "DNS 服务端口 :53";
+  if (log.domain && log.targetIp) return log.targetPort ? `${log.targetIp}:${log.targetPort}` : log.targetIp;
+  if (log.targetPort) return `端口 ${log.targetPort}`;
+  if (log.targetIp) return "直接 IP";
+  return "未知地址";
+}
+
+function formatAccessLogRepeat(log: backend.AccessLog) {
+  return log.repeatCount && log.repeatCount > 1 ? `x${compactCount(log.repeatCount)}` : null;
 }
 
 export function App() {
@@ -120,6 +153,7 @@ export function App() {
   const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>(emptyAccessLogStats);
   const [accessLogDecisionFilter,setAccessLogDecisionFilter]=useState<AccessLogDecisionFilter>("all");
   const [accessLogSearch,setAccessLogSearch]=useState("");
+  const debouncedAccessLogSearch=useDebouncedValue(accessLogSearch,ACCESS_LOG_SEARCH_DEBOUNCE_MS);
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
   const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "订阅导入", proxy: "代理节点", settings: "设置" };
@@ -129,7 +163,6 @@ export function App() {
   const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
   const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
-  useEffect(()=>{const preventContextMenu=(event:MouseEvent)=>event.preventDefault();window.addEventListener("contextmenu",preventContextMenu);return()=>window.removeEventListener("contextmenu",preventContextMenu);},[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;let checking=false;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{if(checking)return;checking=true;void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{}).finally(()=>{checking=false;});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();const timer=window.setInterval(showPendingQuitDialog,500);window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;window.clearInterval(timer);if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
   useEffect(() => { void (async () => {
     const [bootstrap,current,core,publicStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getBrowserPolicyStatus()]);
@@ -195,7 +228,7 @@ export function App() {
   };
   const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.subscription(id), async()=>{setRefreshingId(id);showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}});};
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);});};
-  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{const csv=await backend.exportAccessLogsCsv(sessionToken);const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="cleanweb-access-logs.csv";link.click();URL.revokeObjectURL(url);});};
+  const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.saveAccessLogsCsv(sessionToken);});};
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError("");showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){setRuntimeError(`规则已添加，但保护配置重载失败：${String(reason)}`);}});};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
@@ -206,8 +239,8 @@ export function App() {
     let cancelled=false;
     let refreshing=false;
     let unlisten:(()=>void)|undefined;
-    const decision = accessLogDecisionFilter === "all" ? undefined : accessLogDecisionFilter;
-    const search = accessLogSearch.trim() || undefined;
+    const decision = page === "logs" && accessLogDecisionFilter !== "all" ? accessLogDecisionFilter : undefined;
+    const search = page === "logs" ? debouncedAccessLogSearch.trim() || undefined : undefined;
     const refresh=()=>{
       if(refreshing)return;
       refreshing=true;
@@ -221,7 +254,7 @@ export function App() {
     const interval=window.setInterval(refresh,ACCESS_LOG_REFRESH_INTERVAL_MS);
     void backend.onAccessLogsUpdated(refresh).then(stop=>{if(cancelled)stop();else unlisten=stop;});
     return()=>{cancelled=true;window.clearInterval(interval);if(unlisten)unlisten();};
-  },[sessionToken,accessLogDecisionFilter,accessLogSearch]);
+  },[sessionToken,page,accessLogDecisionFilter,debouncedAccessLogSearch]);
   useEffect(()=>{
     if(sessionToken)return;
     let cancelled=false;
@@ -265,7 +298,7 @@ export function App() {
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{if(item.kind==="rule"){setEditingSubscription(item);setDialog("editRuleSubscription");}}} onAddRule={() => requestAction("rules")} onAddProxy={(mode) => requestAction("proxy", mode)} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
-      {page === "settings" && <SettingsPage settings={settings} coreStatus={coreStatus} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onLock={handleLock} onApplyBrowserPolicies={applyBrowserPolicies} />}
+      {page === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onApplyBrowserPolicies={applyBrowserPolicies} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
@@ -349,7 +382,7 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
 
 function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOpenLogs, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onAddRule:()=>void }) {
   const running=coreStatus?.running===true;
-  const recentLogs = logs.slice(0,4);
+  const recentLogs = logs.slice(0,5);
   const enabledControls = [
     true,
     settings.strictModeEnabled,
@@ -401,18 +434,19 @@ function SettingLine({ title, active, children }: { title:string; active:boolean
 function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
   if (logs.length === 0) {
     const samples = [
-      { id:"sample-1", time:"10:42", target:"games.example.net", meta:"短视频 / 443", decision:"拦截", kind:"block" },
-      { id:"sample-2", time:"10:39", target:"school.portal.edu", meta:"家长白名单 / 443", decision:"放行", kind:"allow" },
-      { id:"sample-3", time:"10:31", target:"198.51.100.12", meta:"未知 IP / 8443", decision:"警告", kind:"warning" },
-      { id:"sample-4", time:"10:26", target:"search.clean", meta:"安全搜索 / 53", decision:"放行", kind:"allow" },
+      { id:"sample-1", time:"10:42:18", target:"games.example.net:443", meta:"短视频", decision:"拦截", kind:"block" },
+      { id:"sample-2", time:"10:39:04", target:"school.portal.edu:443", meta:"家长白名单", decision:"放行", kind:"allow" },
+      { id:"sample-3", time:"10:31:55", target:"198.51.100.12:8443", meta:"未知 IP", decision:"警告", kind:"warning" },
+      { id:"sample-4", time:"10:26:37", target:"search.clean:53", meta:"安全搜索", decision:"放行", kind:"allow" },
+      { id:"sample-5", time:"10:22:09", target:"updates.example.org:443", meta:"默认策略", decision:"放行", kind:"allow" },
     ];
     return <div className="mini-log-list">{samples.map((row,index)=><div className={`mini-log-row ${index===0?"is-new":""}`} key={row.id}><span className={`dot ${row.kind}`} /><time>{row.time}</time><b title={row.target}>{row.target}</b><small title={row.meta}>{row.meta}</small><span className={`decision ${row.kind}`}>{row.decision}</span></div>)}</div>;
   }
   return <div className="mini-log-list">{logs.slice(0,8).map((log,index)=>{
-    const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
-    const target = log.domain ?? log.targetIp ?? (isDnsResolution ? "DNS 解析" : "未知目标");
-    const meta = [log.category ?? log.rule ?? "默认策略", log.targetPort ? `${log.targetPort}` : undefined, log.route].filter(Boolean).join(" / ");
-    return <div className={`mini-log-row ${index<3?"is-new":""}`} key={log.id}><span className={`dot ${log.decision}`} /><time>{new Date(log.observedAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</time><b title={target}>{target}</b><small title={meta}>{meta}</small><span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span></div>;
+    const target = formatAccessLogTarget(log);
+    const meta = [log.category ?? log.rule ?? "默认策略", log.route].filter(Boolean).join(" / ");
+    const repeat = formatAccessLogRepeat(log);
+    return <div className={`mini-log-row ${index<3?"is-new":""}`} key={log.id}><span className={`dot ${log.decision}`} /><time>{formatAccessLogTime(log.observedAt)}</time><b title={target}>{target}{repeat&&<span className="log-repeat">{repeat}</span>}</b><small title={meta}>{meta}</small><span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span></div>;
   })}</div>;
 }
 
@@ -445,14 +479,14 @@ function SampleLogs() {
 }
 
 function AccessLogRow({ log }: { log:backend.AccessLog }) {
-  const isDnsResolution = log.category === "DNS 解析" && log.targetPort === 53;
-  const target = log.domain ?? log.targetIp ?? (isDnsResolution ? "DNS 解析" : "未知目标");
-  const endpoint = log.targetIp ? `${log.targetIp}${log.targetPort ? `:${log.targetPort}` : ""}` : isDnsResolution ? "DNS 服务端口 :53" : log.targetPort ? `:${log.targetPort}` : "未知地址";
+  const target = formatAccessLogTarget(log);
+  const endpoint = formatAccessLogEndpoint(log);
   const rule = log.category ?? log.rule ?? "默认策略";
   const source = `${log.processName?.trim() || "设备流量"} / ${log.route ?? "直连"}`;
+  const repeat = formatAccessLogRepeat(log);
   return <div className="cw-access-row">
-    <time>{new Date(log.observedAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</time>
-    <div className="access-target"><b>{target}</b><span>{endpoint}</span></div>
+    <time>{formatAccessLogTime(log.observedAt)}</time>
+    <div className="access-target"><b>{target}{repeat&&<span className="log-repeat">{repeat}</span>}</b><span>{endpoint}</span></div>
     <span className={`decision ${log.decision}`}>{log.decision==="block"?"拦截":log.decision==="warning"?"警告":"放行"}</span>
     <div className="access-meta"><small>{rule}</small><small>{source}</small></div>
   </div>;
@@ -480,19 +514,19 @@ function SubscriptionRows({ items, refreshingId, isBusy, onRefresh, onToggle, on
   return <div className="subscription-rows">{items.map(item=>{const rowBusy=isBusy(busyScope.subscription(item.id));return <div className="subscription-row" key={item.id}><div className="subscription-main"><b>{item.name}</b><small className={item.lastError?"error-text":""}>{item.lastError??`${item.format??"自动检测"} · ${item.updateIntervalHours??24}小时更新`}</small></div><span className="subscription-category">{item.category??(item.kind==="proxy"?"代理":"自定义")}</span><Switch checked={item.enabled} label={`${item.name}订阅`} disabled={rowBusy} onChange={(value)=>onToggle(item.id,value)}/><div className="row-actions"><button className="row-action" disabled={rowBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>{item.kind==="rule"&&<button className="row-action" disabled={rowBusy} onClick={()=>onEdit(item)}><Pencil size={15}/></button>}<button className="row-action" disabled={rowBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button></div></div>;})}</div>;
 }
 
-function SettingsPage({ settings, coreStatus, isBusy, browserPolicyStatus, onToggle, onRetention, onLock, onApplyBrowserPolicies }: { settings:backend.Settings; coreStatus:backend.CoreStatus|null; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onLock:()=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
-  const running = coreStatus?.running === true;
+function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onRetention, onApplyBrowserPolicies }: { settings:backend.Settings; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
+  const [tab,setTab]=useState<"protection"|"browser"|"privacy">("protection");
   return <>
-    <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、浏览器增强保护、日志保留和管理会话。</p><div><button className="secondary" onClick={()=>void onLock()}>锁定管理台</button></div></section>
+    <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、浏览器增强保护和日志保留。</p></section>
+    <section className="rules-tabs settings-tabs" role="tablist" aria-label="设置分类">
+      <button role="tab" aria-selected={tab==="protection"} className={tab==="protection"?"active":""} onClick={()=>setTab("protection")}>保护开关 <span>6</span></button>
+      <button role="tab" aria-selected={tab==="browser"} className={tab==="browser"?"active":""} onClick={()=>setTab("browser")}>浏览器保护</button>
+      <button role="tab" aria-selected={tab==="privacy"} className={tab==="privacy"?"active":""} onClick={()=>setTab("privacy")}>日志隐私</button>
+    </section>
     <section className="cw-settings-layout">
-      <div>
-        <article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>
-        <BrowserPolicyPanel status={browserPolicyStatus} busy={isBusy(busyScope.setting("browser_policies"))} onApply={onApplyBrowserPolicies}/>
-        <article className="cw-panel management-panel"><h3>管理会话</h3><div className="readonly-field">管理台已解锁 · 除非手动锁定，否则 14 分钟后过期</div><div className="readonly-field">密码重置需要本机系统管理员授权</div><p>V1 不提供账户、云同步、远程监控或自动遥测。</p><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">日志保留：7 天</option><option value="30d">日志保留：30 天</option><option value="90d">日志保留：90 天</option><option value="forever">日志保留：永久</option></select></article>
-      </div>
-      <div>
-        <article className="cw-dark-card runtime-card"><div className="cw-panel-head"><h3>运行健康状态</h3><span>{running?"运行中":"未运行"}</span></div><strong>{running ? `PID ${coreStatus?.pid ?? "-"}` : "IDLE"} · {running ? "OK" : "OFF"}</strong><p>进程和路由健康检查同时成功后才显示运行中。</p></article>
-      </div>
+      {tab==="protection"&&<article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>}
+      {tab==="browser"&&<BrowserPolicyPanel status={browserPolicyStatus} busy={isBusy(busyScope.setting("browser_policies"))} onApply={onApplyBrowserPolicies}/>}
+      {tab==="privacy"&&<article className="cw-panel management-panel"><h3>日志隐私</h3><SettingToggle title="访问日志" note="最终网络决策仅保存在本机" checked={settings.accessLoggingEnabled} disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/><select aria-label="日志保留时间" value={settings.logRetention} disabled={isBusy(busyScope.setting("log_retention"))} onChange={(event)=>void onRetention(event.target.value)}><option value="7d">日志保留：7 天</option><option value="30d">日志保留：30 天</option><option value="90d">日志保留：90 天</option><option value="forever">日志保留：永久</option></select><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>}
     </section>
   </>;
 }

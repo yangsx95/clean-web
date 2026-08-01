@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Seek, SeekFrom},
     net::IpAddr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -19,6 +19,9 @@ const CONTROLLER_LOGS: &str = "http://127.0.0.1:19090/logs";
 const ACCESS_LOGS_UPDATED_EVENT: &str = "access-logs-updated";
 const LOG_STREAM_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_FILE_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const LOG_SYNC_OFFSET_PREFIX: &str = "access_log_file_offset:";
+const HIGH_FREQUENCY_LOG_BUCKET_MS: i64 = 10_000;
+const UTF8_BOM: &str = "\u{feff}";
 #[cfg(target_os = "macos")]
 const MACOS_PRIVILEGED_LOG: &str = "/Library/Application Support/CleanWeb/mihomo.log";
 
@@ -97,6 +100,7 @@ pub struct AccessLog {
     pub route: Option<String>,
     pub proxy_group: Option<String>,
     pub error: Option<String>,
+    pub repeat_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +150,7 @@ pub fn start_access_log_collector(app: AppHandle) {
                     continue;
                 }
             };
+            let _ = mark_mihomo_log_files_synced_to_end(&state);
             let mut buffer = String::new();
             let mut last_file_sync = Instant::now();
             while let Ok(Some(chunk)) = response.chunk().await {
@@ -317,24 +322,91 @@ fn insert_parsed_log_event(
     os: &str,
     user: &str,
 ) -> Result<usize, String> {
+    let domain_id = intern_access_log_string(db, event.domain.as_deref())?;
+    let target_ip_id = intern_access_log_string(db, event.target_ip.as_deref())?;
+    let rule_id = intern_access_log_string(db, event.rule.as_deref())?;
+    let category_id = intern_access_log_string(db, event.category)?;
+    let process_name_id = intern_access_log_string(db, event.process_name.as_deref())?;
+    let os_id = intern_access_log_string(db, Some(os))?;
+    let user_id = intern_access_log_string(db, Some(user))?;
+    let route_id = intern_access_log_string(db, Some(event.route.as_str()))?;
+    let observed_at_ms = observed_at_ms(db, observed_at)?;
+    if should_rollup_event(event) {
+        let bucket_ms =
+            observed_at_ms / HIGH_FREQUENCY_LOG_BUCKET_MS * HIGH_FREQUENCY_LOG_BUCKET_MS;
+        return db
+            .execute(
+                "INSERT INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id,repeat_count)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,1)
+                 ON CONFLICT(connection_hash) DO UPDATE SET observed_at_ms=excluded.observed_at_ms,repeat_count=access_logs.repeat_count+1",
+                params![
+                    rollup_hash(bucket_ms, event),
+                    observed_at_ms,
+                    domain_id,
+                    target_ip_id,
+                    event.port,
+                    decision_code(event.decision),
+                    rule_id,
+                    category_id,
+                    process_name_id,
+                    os_id,
+                    user_id,
+                    route_id
+                ],
+            )
+            .map_err(error);
+    }
     db.execute(
-        "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id) VALUES(?1,CAST(COALESCE((julianday(?2)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER),?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
+        "INSERT OR IGNORE INTO access_logs(connection_hash,observed_at_ms,domain_string_id,target_ip_string_id,target_port,decision_code,rule_string_id,category_string_id,process_name_string_id,operating_system_string_id,system_user_string_id,route_string_id,proxy_group_string_id,repeat_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,1)",
         params![
             connection_hash(&event.id),
-            observed_at,
-            intern_access_log_string(db, event.domain.as_deref())?,
-            intern_access_log_string(db, event.target_ip.as_deref())?,
+            observed_at_ms,
+            domain_id,
+            target_ip_id,
             event.port,
             decision_code(event.decision),
-            intern_access_log_string(db, event.rule.as_deref())?,
-            intern_access_log_string(db, event.category)?,
-            intern_access_log_string(db, event.process_name.as_deref())?,
-            intern_access_log_string(db, Some(os))?,
-            intern_access_log_string(db, Some(user))?,
-            intern_access_log_string(db, Some(event.route.as_str()))?
+            rule_id,
+            category_id,
+            process_name_id,
+            os_id,
+            user_id,
+            route_id
         ],
     )
     .map_err(error)
+}
+
+fn should_rollup_event(event: &ParsedLogEvent) -> bool {
+    event.decision == "allow"
+        && event.route == "DIRECT"
+        && event.port != Some(53)
+        && (event.domain.is_some() || event.target_ip.is_some())
+}
+
+fn observed_at_ms(db: &rusqlite::Connection, observed_at: &str) -> Result<i64, String> {
+    db.query_row(
+        "SELECT CAST(COALESCE((julianday(?1)-2440587.5)*86400000,(julianday('now')-2440587.5)*86400000) AS INTEGER)",
+        params![observed_at],
+        |row| row.get(0),
+    )
+    .map_err(error)
+}
+
+fn rollup_hash(bucket_ms: i64, event: &ParsedLogEvent) -> Vec<u8> {
+    connection_hash(&format!(
+        "rollup|{bucket_ms}|{}|{}|{}|{}|{}|{}|{}|{}",
+        event.domain.as_deref().unwrap_or(""),
+        event.target_ip.as_deref().unwrap_or(""),
+        event
+            .port
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        event.decision,
+        event.rule.as_deref().unwrap_or(""),
+        event.category.unwrap_or(""),
+        event.process_name.as_deref().unwrap_or(""),
+        event.route
+    ))
 }
 
 fn sync_mihomo_log_files(state: &AppState) -> Result<usize, String> {
@@ -345,17 +417,37 @@ fn sync_mihomo_log_files(state: &AppState) -> Result<usize, String> {
     Ok(inserted)
 }
 
+fn mark_mihomo_log_files_synced_to_end(state: &AppState) -> Result<(), String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    for path in mihomo_log_paths(state) {
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        set_log_file_offset(&db, &log_file_offset_key(&path), metadata.len())?;
+    }
+    Ok(())
+}
+
 fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> {
-    let file = match File::open(path) {
+    let mut file = match File::open(path) {
         Ok(file) => file,
         Err(_) => return Ok(0),
     };
-    let events = BufReader::new(file)
+    let file_len = file.metadata().map_err(error)?.len();
+    let offset_key = log_file_offset_key(path);
+    let start_offset = {
+        let db = state.db.lock().map_err(|_| "数据库不可用")?;
+        log_file_offset(&db, &offset_key)?.filter(|offset| *offset <= file_len)
+    }
+    .unwrap_or(0);
+    file.seek(SeekFrom::Start(start_offset)).map_err(error)?;
+    let events = BufReader::new(&mut file)
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| parse_mihomo_log_event(&line))
         .collect::<Vec<_>>();
-    if events.is_empty() {
+    let end_offset = file.stream_position().map_err(error)?;
+    if events.is_empty() && end_offset == start_offset {
         return Ok(0);
     }
     let fallback_timestamp = current_timestamp(state);
@@ -370,7 +462,37 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
     if inserted > 0 {
         cleanup_retention(&db)?;
     }
+    set_log_file_offset(&db, &offset_key, end_offset)?;
     Ok(inserted)
+}
+
+fn log_file_offset_key(path: &Path) -> String {
+    format!(
+        "{}{:x}",
+        LOG_SYNC_OFFSET_PREFIX,
+        Sha256::digest(path.display().to_string().as_bytes())
+    )
+}
+
+fn log_file_offset(db: &rusqlite::Connection, key: &str) -> Result<Option<u64>, String> {
+    db.query_row(
+        "SELECT value FROM settings WHERE key=?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(error)
+    .map(|value| value.and_then(|text| text.parse().ok()))
+}
+
+fn set_log_file_offset(db: &rusqlite::Connection, key: &str, offset: u64) -> Result<(), String> {
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES(?1,?2)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![key, offset.to_string()],
+    )
+    .map(|_| ())
+    .map_err(error)
 }
 
 fn mihomo_log_paths(state: &AppState) -> Vec<PathBuf> {
@@ -452,6 +574,7 @@ fn is_dns_resolution_connection(connection: &Connection) -> bool {
             .any(|item| item.eq_ignore_ascii_case("REJECT"))
 }
 
+#[cfg(test)]
 fn normalize_dns_resolution_rows(db: &rusqlite::Connection) -> Result<(), String> {
     let category_id = intern_access_log_string(db, Some("DNS 解析"))?;
     let process_id = intern_access_log_string(db, Some("mihomo"))?;
@@ -523,7 +646,6 @@ pub fn list_access_logs(
 ) -> Result<Vec<AccessLog>, String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    normalize_dns_resolution_rows(&db)?;
     let search = search.unwrap_or_default();
     let pattern = format!("%{search}%");
     let mut statement=db.prepare(
@@ -541,7 +663,8 @@ pub fn list_access_logs(
                 source_s.value,
                 route_s.value,
                 proxy_s.value,
-                error_s.value
+                error_s.value,
+                l.repeat_count
            FROM access_logs l
            LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
            LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
@@ -584,6 +707,7 @@ pub fn list_access_logs(
                     route: row.get(12)?,
                     proxy_group: row.get(13)?,
                     error: row.get(14)?,
+                    repeat_count: row.get(15)?,
                 })
             },
         )
@@ -609,17 +733,16 @@ pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogSt
 
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    normalize_dns_resolution_rows(&db)?;
     db.query_row(
         "SELECT
-           COALESCE(SUM(CASE WHEN decision_code=1 THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=0 THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=2 THEN 1 ELSE 0 END),0),
-           COUNT(*),
-           COALESCE(SUM(CASE WHEN decision_code=1 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=0 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN decision_code=2 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0),
-           COALESCE(SUM(CASE WHEN date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN 1 ELSE 0 END),0)
+           COALESCE(SUM(CASE WHEN decision_code=1 THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=0 THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=2 THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(repeat_count),0),
+           COALESCE(SUM(CASE WHEN decision_code=1 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=0 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN decision_code=2 AND date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0),
+           COALESCE(SUM(CASE WHEN date(observed_at_ms / 1000,'unixepoch','localtime')=date('now','localtime') THEN repeat_count ELSE 0 END),0)
          FROM access_logs",
         [],
         |row| {
@@ -658,8 +781,22 @@ pub fn export_access_logs_csv(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     state.require_session(&session_token)?;
+    export_access_logs_csv_inner(&state)
+}
+
+#[tauri::command]
+pub fn export_access_logs_csv_to_path(
+    session_token: String,
+    path: PathBuf,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.require_session(&session_token)?;
+    let csv = export_access_logs_csv_inner(&state)?;
+    std::fs::write(path, csv.as_bytes()).map_err(error)
+}
+
+fn export_access_logs_csv_inner(state: &AppState) -> Result<String, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    normalize_dns_resolution_rows(&db)?;
     let mut statement = db
         .prepare(
             "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', l.observed_at_ms / 1000, 'unixepoch'),
@@ -675,7 +812,8 @@ pub fn export_access_logs_csv(
                 source_s.value,
                 route_s.value,
                 proxy_s.value,
-                error_s.value
+                error_s.value,
+                CAST(l.repeat_count AS TEXT)
            FROM access_logs l
            LEFT JOIN access_log_strings domain_s ON domain_s.id=l.domain_string_id
            LEFT JOIN access_log_strings target_ip_s ON target_ip_s.id=l.target_ip_string_id
@@ -691,10 +829,11 @@ pub fn export_access_logs_csv(
           ORDER BY l.observed_at_ms DESC, l.id DESC",
         )
         .map_err(error)?;
-    let mut output = String::from("time,domain,target_ip,target_port,decision,rule,category,process,os,user,source_ip,route,proxy_group,error\n");
+    let mut output = String::from(UTF8_BOM);
+    output.push_str("time,domain,target_ip,target_port,decision,rule,category,process,os,user,source_ip,route,proxy_group,error,repeat_count\n");
     let rows = statement
         .query_map([], |row| {
-            let values = (0..14)
+            let values = (0..15)
                 .map(|index| {
                     row.get::<_, Option<String>>(index)
                         .ok()
@@ -790,6 +929,7 @@ fn error(value: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use crate::storage::AppState;
+    use std::io::Write;
 
     fn insert_test_access_log(
         db: &rusqlite::Connection,
@@ -832,6 +972,35 @@ mod tests {
     #[test]
     fn csv_escapes_quotes() {
         assert_eq!(csv("a\"b".into()), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn exported_csv_starts_with_utf8_bom_for_spreadsheet_apps() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            let domain_id = intern_access_log_string(&db, Some("搜索.example")).unwrap();
+            let category_id = intern_access_log_string(&db, Some("DNS 解析")).unwrap();
+            let os_id = intern_access_log_string(&db, Some("macOS")).unwrap();
+            let user_id = intern_access_log_string(&db, Some("u")).unwrap();
+            db.execute(
+                "INSERT INTO access_logs(connection_hash,observed_at_ms,domain_string_id,decision_code,category_string_id,operating_system_string_id,system_user_string_id,repeat_count)
+                 VALUES(?1,CAST((julianday('2026-07-20T18:20:19Z')-2440587.5)*86400000 AS INTEGER),?2,1,?3,?4,?5,1)",
+                params![
+                    connection_hash("csv-bom"),
+                    domain_id,
+                    category_id,
+                    os_id,
+                    user_id
+                ],
+            )
+            .unwrap();
+        }
+
+        let output = export_access_logs_csv_inner(&state).unwrap();
+        assert!(output.starts_with(UTF8_BOM));
+        assert!(output.contains("\"搜索.example\""));
+        assert!(output.contains("\"DNS 解析\""));
     }
 
     #[test]
@@ -928,6 +1097,91 @@ mod tests {
     }
 
     #[test]
+    fn rolls_up_high_frequency_direct_allow_logs() {
+        let state = AppState::open(":memory:").unwrap();
+        for source_port in [54135, 54136, 54137] {
+            let line = format!(
+                r#"time="2026-07-20T18:20:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:{source_port} --> datacloak.cpirhzl.com:5600 match IPCIDR(116.224.0.0/12) using DIRECT""#
+            );
+            assert_eq!(
+                insert_mihomo_log_line_inner(&state, &line, false).unwrap(),
+                1
+            );
+        }
+
+        let stats = access_log_stats_inner(&state).unwrap();
+        assert_eq!(stats.allow, 3);
+        assert_eq!(stats.total, 3);
+        let db = state.db.lock().unwrap();
+        let (rows, repeat_count): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*),MAX(repeat_count) FROM access_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(repeat_count, 3);
+    }
+
+    #[test]
+    fn keeps_reject_logs_as_individual_audit_events() {
+        let state = AppState::open(":memory:").unwrap();
+        for source_port in [54135, 54136] {
+            let line = format!(
+                r#"time="2026-07-20T18:20:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:{source_port} --> bad.example:443 match DomainSuffix(bad.example) using REJECT""#
+            );
+            assert_eq!(
+                insert_mihomo_log_line_inner(&state, &line, false).unwrap(),
+                1
+            );
+        }
+
+        let db = state.db.lock().unwrap();
+        let (rows, repeat_count): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*),MAX(repeat_count) FROM access_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(repeat_count, 1);
+    }
+
+    #[test]
+    fn syncs_mihomo_log_files_incrementally() {
+        let state = AppState::open(":memory:").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mihomo.log");
+        std::fs::write(
+            &path,
+            r#"time="2026-07-20T18:20:19.379133000+08:00" level=info msg="[TCP] 198.18.0.1:54135 --> example.com:443 match Match() using DIRECT"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(sync_mihomo_log_file(&state, &path).unwrap(), 1);
+        assert_eq!(sync_mihomo_log_file(&state, &path).unwrap(), 0);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(
+                br#"time="2026-07-20T18:20:20.379133000+08:00" level=info msg="[TCP] 198.18.0.1:54136 --> other.example:443 match Match() using DIRECT"
+"#,
+            )
+            .unwrap();
+        assert_eq!(sync_mihomo_log_file(&state, &path).unwrap(), 1);
+
+        let db = state.db.lock().unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM access_logs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
     fn records_dns_resolution_logs_as_allowed_dns_category() {
         let state = AppState::open(":memory:").unwrap();
         let line = r#"time="2026-08-01T09:16:58.239991000+08:00" level=info msg="[UDP] mihomo --> 223.5.5.5:53 match IPCIDR(223.5.5.5/32) using DIRECT""#;
@@ -976,7 +1230,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_legacy_dns_resolution_warnings_before_stats() {
+    fn normalizes_legacy_dns_resolution_warnings_when_explicitly_run() {
         let state = AppState::open(":memory:").unwrap();
         {
             let db = state.db.lock().unwrap();
@@ -988,6 +1242,7 @@ mod tests {
                 Some(53),
                 Some("DIRECT"),
             );
+            normalize_dns_resolution_rows(&db).unwrap();
         }
 
         let stats = access_log_stats_inner(&state).unwrap();

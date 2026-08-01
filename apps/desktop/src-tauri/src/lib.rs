@@ -173,6 +173,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(AppLifecycle::default())
+        .plugin(tauri_plugin_dialog::init())
         .enable_macos_default_menu(false)
         .menu(build_desktop_menu)
         .on_menu_event(|app, event| {
@@ -247,6 +248,7 @@ pub fn run() {
             access_logs::public_access_log_stats,
             access_logs::clear_access_logs,
             access_logs::export_access_logs_csv,
+            access_logs::export_access_logs_csv_to_path,
             browser_policy::get_browser_policy_status,
             browser_policy::apply_browser_policies,
         ])

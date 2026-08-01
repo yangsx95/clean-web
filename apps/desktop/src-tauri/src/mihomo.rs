@@ -753,6 +753,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let proxy_enabled = setting_bool(&db, "proxy_enabled")?;
     let safe_search_enabled = setting_bool(&db, "safe_search_enabled")?;
+    let access_logging_enabled = setting_bool(&db, "access_logging_enabled")?;
     let safe_search_mappings = if safe_search_enabled {
         safe_search_mappings(&db)?
     } else {
@@ -818,12 +819,30 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let mut root = Mapping::new();
     insert(&mut root, "allow-lan", Value::Bool(false));
     insert(&mut root, "mode", Value::String("rule".into()));
-    insert(&mut root, "log-level", Value::String("info".into()));
+    insert(
+        &mut root,
+        "log-level",
+        Value::String(
+            if access_logging_enabled {
+                "info"
+            } else {
+                "warning"
+            }
+            .into(),
+        ),
+    );
     insert(&mut root, "ipv6", Value::Bool(true));
     insert(
         &mut root,
         "find-process-mode",
-        Value::String("strict".into()),
+        Value::String(
+            if access_logging_enabled {
+                "strict"
+            } else {
+                "off"
+            }
+            .into(),
+        ),
     );
     insert(
         &mut root,
@@ -1176,6 +1195,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "MATCH,{}",
         if proxy_enabled { "CleanWeb" } else { "DIRECT" }
     )));
+    append_direct_domain_fake_ip_filters(&mut root, &all_rules);
     insert(&mut root, "rules", Value::Sequence(all_rules));
     serde_yaml::to_string(&root).map_err(error)
 }
@@ -1404,6 +1424,42 @@ fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
         "Ip" | "Cidr" => format!("IP-CIDR,{pattern},{target},no-resolve"),
         _ => return None,
     })
+}
+
+fn append_direct_domain_fake_ip_filters(root: &mut Mapping, rules: &[Value]) {
+    let Some(fake_filter) = root
+        .get_mut(Value::String("dns".into()))
+        .and_then(Value::as_mapping_mut)
+        .and_then(|dns| dns.get_mut(Value::String("fake-ip-filter".into())))
+        .and_then(Value::as_sequence_mut)
+    else {
+        return;
+    };
+    let mut existing = fake_filter
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    for rule in rules.iter().filter_map(Value::as_str) {
+        let mut parts = rule.split(',');
+        let Some(kind) = parts.next() else {
+            continue;
+        };
+        let Some(pattern) = parts.next() else {
+            continue;
+        };
+        let Some(target) = parts.next() else {
+            continue;
+        };
+        let filter = match (kind, target) {
+            ("DOMAIN", "DIRECT") => pattern.to_owned(),
+            ("DOMAIN-SUFFIX", "DIRECT") => format!("+.{pattern}"),
+            _ => continue,
+        };
+        if existing.insert(filter.clone()) {
+            fake_filter.push(Value::String(filter));
+        }
+    }
 }
 
 fn safe_search_manifest() -> Result<SafeSearchManifest, String> {
@@ -1721,6 +1777,11 @@ mod tests {
         assert!(config.contains("name: node-a"));
         assert!(!config.contains("controller_secret"));
         let yaml: Value = serde_yaml::from_str(&config).unwrap();
+        assert_eq!(yaml.get("log-level").and_then(Value::as_str), Some("info"));
+        assert_eq!(
+            yaml.get("find-process-mode").and_then(Value::as_str),
+            Some("strict")
+        );
         assert!(
             yaml.get("mixed-port").is_none(),
             "TUN 模式不得向其他应用暴露本地代理端口"
@@ -1804,8 +1865,40 @@ mod tests {
         assert!(fake_ip_filter.contains(&Value::String("www.google.*".into())));
         assert!(fake_ip_filter.contains(&Value::String("www.youtube-nocookie.com".into())));
         assert!(fake_ip_filter.contains(&Value::String("216.239.38.120".into())));
+        assert!(
+            fake_ip_filter.contains(&Value::String("+.aliyuncs.com".into())),
+            "DIRECT 域名后缀必须跳过 fake-ip，否则 MySQL/RDS 等非 HTTP 连接会在直连拨号时二次解析失败"
+        );
+        assert!(
+            fake_ip_filter.contains(&Value::String("+.baidu.com".into())),
+            "手动放行或内置直连域名也必须跳过 fake-ip"
+        );
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
+    }
+
+    #[test]
+    fn lowers_mihomo_overhead_when_access_logging_is_disabled() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE settings SET value='false' WHERE key='access_logging_enabled'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let config = build_config(&state, "secret", true).unwrap();
+        let yaml: Value = serde_yaml::from_str(&config).unwrap();
+        assert_eq!(
+            yaml.get("log-level").and_then(Value::as_str),
+            Some("warning")
+        );
+        assert_eq!(
+            yaml.get("find-process-mode").and_then(Value::as_str),
+            Some("off")
+        );
     }
 
     #[test]

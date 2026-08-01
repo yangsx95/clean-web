@@ -19,6 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -68,6 +69,16 @@ describe("management actions", () => {
     expect(screen.getByRole("dialog", { name: "添加规则订阅" })).toBeTruthy();
   });
 
+  it("keeps the native context menu available in editable fields and app content", async () => {
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("button", { name: "添加拦截" }));
+
+    expect(fireEvent.contextMenu(screen.getByLabelText("规则内容"))).toBe(true);
+    expect(fireEvent.contextMenu(screen.getByRole("dialog", { name: "添加拦截规则" }))).toBe(true);
+  });
+
   it("shows a strict mode switch on the overview", async () => {
     render(<App />);
     await unlockManagement();
@@ -103,6 +114,9 @@ describe("management actions", () => {
     render(<App />);
     await unlockManagement();
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.queryByText("运行健康状态")).toBeNull();
+    expect(screen.queryByRole("tab", { name: "管理会话" })).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: "浏览器保护" }));
     await userEvent.click(await screen.findByRole("button", { name: "应用浏览器保护" }));
 
     expect(apply).toHaveBeenCalledWith("browser-preview");
@@ -174,13 +188,17 @@ describe("management actions", () => {
     interval.mockRestore();
   });
 
-  it("searches access logs through the backend instead of only filtering loaded rows", async () => {
+  it("debounces access log searches before querying the backend", async () => {
     const listLogs = vi.spyOn(backend, "listAccessLogs").mockResolvedValue([]);
 
     render(<App />);
     await unlockManagement();
     await userEvent.click(screen.getByRole("button", { name: "访问日志" }));
-    await userEvent.type(screen.getByLabelText("搜索访问日志"), "baidu.com");
+    listLogs.mockClear();
+
+    fireEvent.change(screen.getByLabelText("搜索访问日志"), { target: { value: "baidu.com" } });
+
+    expect(listLogs).not.toHaveBeenCalled();
 
     await waitFor(() => {
       expect(listLogs).toHaveBeenCalledWith("browser-preview", undefined, "baidu.com", 500);
@@ -214,8 +232,94 @@ describe("management actions", () => {
     await waitFor(() => expect(backend.listAccessLogs).toHaveBeenCalledTimes(2));
     act(() => pollLogs?.());
 
-    expect(await screen.findByText("fresh.example")).toBeTruthy();
+    expect(await screen.findByText("fresh.example:443")).toBeTruthy();
     interval.mockRestore();
+  });
+
+  it("shows seconds in overview and access log timestamps", async () => {
+    vi.spyOn(backend, "listAccessLogs").mockResolvedValue([{
+      id: "timed-log",
+      observedAt: "2026-07-26T11:03:32Z",
+      domain: "timed.example",
+      targetPort: 443,
+      decision: "allow",
+      operatingSystem: "test",
+      systemUser: "test",
+    }]);
+
+    render(<App />);
+    await unlockManagement();
+
+    expect(await screen.findByText("timed.example:443")).toBeTruthy();
+    expect(screen.getAllByText(/\d{2}:\d{2}:\d{2}/).length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "访问日志" }));
+    expect(await screen.findByText("timed.example:443")).toBeTruthy();
+    expect(screen.getAllByText(/\d{2}:\d{2}:\d{2}/).length).toBeGreaterThan(0);
+  });
+
+  it("shows ports with log targets in overview and access log rows", async () => {
+    vi.spyOn(backend, "listAccessLogs").mockResolvedValue([
+      {
+        id: "domain-port-log",
+        observedAt: "2026-07-26T11:03:32Z",
+        domain: "port.example",
+        targetIp: "203.0.113.8",
+        targetPort: 9443,
+        decision: "allow",
+        operatingSystem: "test",
+        systemUser: "test",
+      },
+      {
+        id: "ip-port-log",
+        observedAt: "2026-07-26T11:03:31Z",
+        targetIp: "198.51.100.42",
+        targetPort: 8443,
+        decision: "warning",
+        operatingSystem: "test",
+        systemUser: "test",
+      },
+    ]);
+
+    render(<App />);
+    await unlockManagement();
+
+    expect(await screen.findByText("port.example:9443")).toBeTruthy();
+    expect(screen.getByText("198.51.100.42:8443")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "访问日志" }));
+    expect(await screen.findByText("port.example:9443")).toBeTruthy();
+    expect(screen.getAllByText("203.0.113.8:9443").length).toBeGreaterThan(0);
+    expect(screen.getByText("198.51.100.42:8443")).toBeTruthy();
+    expect(screen.getAllByText("端口 8443").length).toBeGreaterThan(0);
+  });
+
+  it("refreshes overview recent logs without stale log-page search filters", async () => {
+    vi.spyOn(backend, "listAccessLogs").mockImplementation(async (_token, _decision, search) => {
+      if (search === "baidu.com") return [];
+      return [{
+        id: "overview-live-log",
+        observedAt: "2026-07-26T11:03:32Z",
+        domain: "overview-live.example",
+        targetPort: 443,
+        decision: "allow",
+        operatingSystem: "test",
+        systemUser: "test",
+      }];
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "访问日志" }));
+    fireEvent.change(screen.getByLabelText("搜索访问日志"), { target: { value: "baidu.com" } });
+
+    await waitFor(() => expect(screen.getByText("没有匹配的访问记录")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "概览" }));
+
+    expect(await screen.findByText("overview-live.example:443")).toBeTruthy();
+    await waitFor(() => {
+      expect(backend.listAccessLogs).toHaveBeenLastCalledWith("browser-preview", undefined, undefined, 500);
+    });
   });
 
   it("confirms app quit requests and explains that protection will stop first", async () => {
@@ -268,15 +372,15 @@ describe("management actions", () => {
     subscribe.mockRestore();
   });
 
-  it("disables the default browser context menu", async () => {
+  it("allows the default browser context menu for copying app content", async () => {
     render(<App />);
     await screen.findByLabelText("CleanWeb 锁定状态");
 
     const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     const allowed = window.dispatchEvent(event);
 
-    expect(allowed).toBe(false);
-    expect(event.defaultPrevented).toBe(true);
+    expect(allowed).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
   });
 
   it("uses access log stats instead of the recent log list for counters", async () => {
@@ -538,7 +642,7 @@ describe("management actions", () => {
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true},
-      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · 娱乐 CDN",url:"builtin://cleanweb/entertainment-cdn",format:"clash",category:"entertainment",enabled:true},
+      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"内置规则 · 娱乐内容补充",url:"builtin://cleanweb/entertainment-cdn",format:"clash",category:"entertainment",enabled:true},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
     render(<App />);
@@ -548,15 +652,15 @@ describe("management actions", () => {
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
     expect(screen.getAllByText("内置启用")).toHaveLength(2);
-    expect(screen.getByText("内置规则 · 娱乐 CDN")).toBeTruthy();
+    expect(screen.getByText("内置规则 · 娱乐内容补充")).toBeTruthy();
     expect(screen.queryByText("https://example.test/default")).toBeNull();
     expect(screen.queryByRole("switch", { name: "内置规则 · 色情内容订阅" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除内置规则 · 色情内容" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "编辑内置规则 · 娱乐 CDN" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "删除内置规则 · 娱乐 CDN" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "编辑内置规则 · 娱乐内容补充" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除内置规则 · 娱乐内容补充" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
     expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
-    expect(screen.queryByText("内置规则 · 娱乐 CDN")).toBeNull();
+    expect(screen.queryByText("内置规则 · 娱乐内容补充")).toBeNull();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
