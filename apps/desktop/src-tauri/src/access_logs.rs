@@ -25,6 +25,7 @@ const LOG_STREAM_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_FILE_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const LOG_SYNC_OFFSET_PREFIX: &str = "access_log_file_offset:";
 const HIGH_FREQUENCY_LOG_BUCKET_MS: i64 = 10_000;
+const MAX_RAW_MIHOMO_LOG_BYTES: u64 = 16 * 1024 * 1024;
 const UTF8_BOM: &str = "\u{feff}";
 #[cfg(target_os = "macos")]
 const MACOS_PRIVILEGED_LOG: &str = "/Library/Application Support/CleanWeb/mihomo.log";
@@ -186,6 +187,8 @@ pub fn start_access_log_collector(app: AppHandle) {
                     let state = app.state::<AppState>();
                     if setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
                         sync_mihomo_log_files_and_emit(&app, &state);
+                    } else {
+                        let _ = prune_mihomo_log_files(&state);
                     }
                     last_file_sync = Instant::now();
                 }
@@ -193,6 +196,8 @@ pub fn start_access_log_collector(app: AppHandle) {
             let state = app.state::<AppState>();
             if setting_bool(&state, "access_logging_enabled").unwrap_or(false) {
                 sync_mihomo_log_files_and_emit(&app, &state);
+            } else {
+                let _ = prune_mihomo_log_files(&state);
             }
             tokio_sleep(Duration::from_secs(2)).await;
         }
@@ -486,11 +491,15 @@ fn sync_mihomo_log_files(state: &AppState) -> Result<usize, String> {
 }
 
 fn mark_mihomo_log_files_synced_to_end(state: &AppState) -> Result<(), String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
     for path in mihomo_log_paths(state) {
         let Ok(metadata) = std::fs::metadata(&path) else {
             continue;
         };
+        if metadata.len() > MAX_RAW_MIHOMO_LOG_BYTES {
+            prune_mihomo_log_file(state, &path, metadata.len())?;
+            continue;
+        }
+        let db = state.db.lock().map_err(|_| "数据库不可用")?;
         set_log_file_offset(&db, &log_file_offset_key(&path), metadata.len())?;
     }
     Ok(())
@@ -508,14 +517,25 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
         log_file_offset(&db, &offset_key)?.filter(|offset| *offset <= file_len)
     }
     .unwrap_or(0);
+    let mut start_offset = start_offset;
+    let skipped_prefix = file_len.saturating_sub(start_offset) > MAX_RAW_MIHOMO_LOG_BYTES;
+    if skipped_prefix {
+        start_offset = file_len.saturating_sub(MAX_RAW_MIHOMO_LOG_BYTES);
+    }
     file.seek(SeekFrom::Start(start_offset)).map_err(error)?;
-    let events = BufReader::new(&mut file)
+    let mut reader = BufReader::new(&mut file);
+    if skipped_prefix {
+        let mut discard = String::new();
+        let _ = reader.read_line(&mut discard);
+    }
+    let events = reader
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| parse_mihomo_log_event(&line))
         .collect::<Vec<_>>();
     let end_offset = file.stream_position().map_err(error)?;
     if events.is_empty() && end_offset == start_offset {
+        prune_mihomo_log_file(state, path, file_len)?;
         return Ok(0);
     }
     let fallback_timestamp = current_timestamp(state);
@@ -530,8 +550,33 @@ fn sync_mihomo_log_file(state: &AppState, path: &Path) -> Result<usize, String> 
     if inserted > 0 {
         cleanup_retention(&db)?;
     }
-    set_log_file_offset(&db, &offset_key, end_offset)?;
+    let next_offset = if prune_mihomo_log_file(state, path, file_len)? {
+        0
+    } else {
+        end_offset
+    };
+    set_log_file_offset(&db, &offset_key, next_offset)?;
     Ok(inserted)
+}
+
+fn prune_mihomo_log_files(state: &AppState) -> Result<(), String> {
+    for path in mihomo_log_paths(state) {
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        prune_mihomo_log_file(state, &path, metadata.len())?;
+    }
+    Ok(())
+}
+
+fn prune_mihomo_log_file(state: &AppState, path: &Path, file_len: u64) -> Result<bool, String> {
+    if file_len <= MAX_RAW_MIHOMO_LOG_BYTES {
+        return Ok(false);
+    }
+    platform::truncate_mihomo_log(path)?;
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    set_log_file_offset(&db, &log_file_offset_key(path), 0)?;
+    Ok(true)
 }
 
 fn log_file_offset_key(path: &Path) -> String {
@@ -1310,6 +1355,27 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM access_logs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn prunes_oversized_raw_mihomo_log_and_resets_offset() {
+        let state = AppState::open(":memory:").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mihomo.log");
+        std::fs::write(&path, b"large raw log").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            set_log_file_offset(&db, &log_file_offset_key(&path), 123).unwrap();
+        }
+
+        assert!(prune_mihomo_log_file(&state, &path, MAX_RAW_MIHOMO_LOG_BYTES + 1).unwrap());
+
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        let db = state.db.lock().unwrap();
+        assert_eq!(
+            log_file_offset(&db, &log_file_offset_key(&path)).unwrap(),
+            Some(0)
+        );
     }
 
     #[test]

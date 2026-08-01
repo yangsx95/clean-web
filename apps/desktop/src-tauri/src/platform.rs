@@ -7,16 +7,16 @@
 //! "fail-open" policy in docs/architecture.md).
 
 use serde::Serialize;
-use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Write},
     os::unix::fs::PermissionsExt,
     os::unix::net::{UnixListener, UnixStream},
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::Duration,
 };
+use std::{path::Path, process::Command};
 
 #[cfg(target_os = "macos")]
 const SYSTEM_RUNTIME_DIR: &str = "/Library/Application Support/CleanWeb";
@@ -33,7 +33,7 @@ const DNS_BACKUP_FILE: &str = "/Library/Application Support/CleanWeb/dns-backup.
 #[cfg(target_os = "macos")]
 const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
 #[cfg(target_os = "macos")]
-const HELPER_PROTOCOL_VERSION: &str = "2026-07-31-dns-takeover";
+const HELPER_PROTOCOL_VERSION: &str = "2026-08-01-bounded-mihomo-log";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -268,6 +268,26 @@ pub fn stop_mihomo_privileged() -> Result<(), String> {
     }
 }
 
+pub fn truncate_mihomo_log(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if path == Path::new(&format!("{SYSTEM_RUNTIME_DIR}/mihomo.log")) {
+        ensure_privileged_helper()?;
+        let response = call_helper(&HelperRequest::TruncateMihomoLog)?;
+        return if response.ok {
+            Ok(())
+        } else {
+            Err(response
+                .message
+                .unwrap_or_else(|| "CleanWeb 特权服务截断 Mihomo 日志失败".into()))
+        };
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_len(0))
+        .map_err(|value| format!("无法截断 Mihomo 日志：{value}"))
+}
+
 #[cfg(target_os = "macos")]
 pub fn run_privileged_helper() -> Result<(), String> {
     let _ = fs::remove_file(HELPER_SOCKET);
@@ -315,6 +335,10 @@ fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
             Ok(()) => HelperResponse::ok(),
             Err(reason) => HelperResponse::err(reason),
         },
+        HelperRequest::TruncateMihomoLog => match helper_truncate_mihomo_log() {
+            Ok(()) => HelperResponse::ok(),
+            Err(reason) => HelperResponse::err(reason),
+        },
         HelperRequest::Start { binary, config } => match helper_start_mihomo(&binary, &config) {
             Ok((pid, log)) => HelperResponse {
                 ok: true,
@@ -329,6 +353,16 @@ fn handle_helper_client(mut stream: UnixStream) -> Result<(), String> {
     stream
         .write_all(format!("{body}\n").as_bytes())
         .map_err(|value| format!("无法写入特权服务响应：{value}"))
+}
+
+#[cfg(target_os = "macos")]
+fn helper_truncate_mihomo_log() -> Result<(), String> {
+    let log = Path::new(SYSTEM_RUNTIME_DIR).join("mihomo.log");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&log)
+        .and_then(|file| file.set_len(0))
+        .map_err(|value| format!("无法截断 Mihomo 日志：{value}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -667,6 +701,7 @@ enum HelperRequest {
     Version,
     Start { binary: String, config: String },
     Stop,
+    TruncateMihomoLog,
 }
 
 #[cfg(target_os = "macos")]
