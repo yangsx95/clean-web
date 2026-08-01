@@ -271,7 +271,7 @@ jobs:
           if-no-files-found: error
 
   build-ios:
-    name: Build unsigned iOS package
+    name: Build unsigned iOS simulator package
     runs-on: macos-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.mobile == 'true'
@@ -289,7 +289,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-ios-sim,x86_64-apple-ios
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -302,8 +302,8 @@ jobs:
       - name: Test shared frontend
         run: npm test
 
-      - name: Build iOS app
-        run: npm run tauri:mobile -- ios build
+      - name: Build unsigned iOS simulator app
+        run: npm run tauri:mobile -- ios build --target aarch64-sim --no-sign --ci
 
       - name: Package iOS artifacts
         shell: bash
@@ -320,7 +320,7 @@ jobs:
       - name: Upload iOS artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: cleanweb-ios-unsigned
+          name: cleanweb-ios-simulator-unsigned
           path: ios-artifacts/*
           if-no-files-found: error
 
