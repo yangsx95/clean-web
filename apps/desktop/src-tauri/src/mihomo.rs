@@ -960,111 +960,11 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "DOMAIN-SUFFIX,lan,DIRECT",
         "DOMAIN-SUFFIX,internal,DIRECT",
     ];
-    // 系统服务与国内直连域名，避免系统级与国内流量误走代理。
-    // 未覆盖的国内公网地址由“内置路由 · 中国 IP 直连”订阅提供 CIDR 兜底。
-    let direct_rules = [
-        // Apple 系统服务（推送通知、iCloud、App Store 等）
-        "DOMAIN-SUFFIX,apple.com,DIRECT",
-        "DOMAIN-SUFFIX,apple.com.cn,DIRECT",
-        "DOMAIN-SUFFIX,icloud.com,DIRECT",
-        "DOMAIN-SUFFIX,icloud.com.cn,DIRECT",
-        "DOMAIN-SUFFIX,mzstatic.com,DIRECT",
-        "DOMAIN-SUFFIX,apple-cloudkit.com,DIRECT",
-        "DOMAIN-SUFFIX,cdn-apple.com,DIRECT",
-        "DOMAIN-SUFFIX,apple-mapkit.com,DIRECT",
-        // Microsoft 系统服务（Windows 更新、推送等）
-        "DOMAIN-SUFFIX,microsoft.com,DIRECT",
-        "DOMAIN-SUFFIX,windowsupdate.com,DIRECT",
-        "DOMAIN-SUFFIX,windows.com,DIRECT",
-        "DOMAIN-SUFFIX,msn.com,DIRECT",
-        "DOMAIN-SUFFIX,live.com,DIRECT",
-        "DOMAIN-SUFFIX,office.com,DIRECT",
-        // 腾讯系（微信、QQ、腾讯云、腾讯文档 CDN 等）
-        "DOMAIN-SUFFIX,qq.com,DIRECT",
-        "DOMAIN-SUFFIX,weixin.qq.com,DIRECT",
-        "DOMAIN-SUFFIX,tencent.com,DIRECT",
-        "DOMAIN-SUFFIX,gtimg.com,DIRECT",
-        "DOMAIN-SUFFIX,idqqimg.com,DIRECT",
-        "DOMAIN-SUFFIX,qpic.cn,DIRECT",
-        "DOMAIN-SUFFIX,myqcloud.com,DIRECT",
-        "DOMAIN-SUFFIX,qcloud.com,DIRECT",
-        "DOMAIN-SUFFIX,cdn.bcebos.com,DIRECT",
-        // 阿里系（淘宝、天猫、支付宝、阿里云等）
-        "DOMAIN-SUFFIX,alibaba.com,DIRECT",
-        "DOMAIN-SUFFIX,alicdn.com,DIRECT",
-        "DOMAIN-SUFFIX,aliyun.com,DIRECT",
-        "DOMAIN-SUFFIX,aliyuncs.com,DIRECT",
-        "DOMAIN-SUFFIX,taobao.com,DIRECT",
-        "DOMAIN-SUFFIX,tmall.com,DIRECT",
-        "DOMAIN-SUFFIX,alipay.com,DIRECT",
-        "DOMAIN-SUFFIX,alibabacloud.com,DIRECT",
-        "DOMAIN-SUFFIX,mmstat.com,DIRECT",
-        // 百度系
-        "DOMAIN-SUFFIX,baidu.com,DIRECT",
-        "DOMAIN-SUFFIX,bdstatic.com,DIRECT",
-        "DOMAIN-SUFFIX,bdimg.com,DIRECT",
-        "DOMAIN-SUFFIX,bcebos.com,DIRECT",
-        "DOMAIN-SUFFIX,bdydns.com,DIRECT",
-        // 字节跳动系（抖音、飞书等）
-        "DOMAIN-SUFFIX,bytedance.com,DIRECT",
-        "DOMAIN-SUFFIX,byteimg.com,DIRECT",
-        "DOMAIN-SUFFIX,douyin.com,DIRECT",
-        "DOMAIN-SUFFIX,douyinpic.com,DIRECT",
-        "DOMAIN-SUFFIX,feishu.cn,DIRECT",
-        // 京东
-        "DOMAIN-SUFFIX,jd.com,DIRECT",
-        "DOMAIN-SUFFIX,360buy.com,DIRECT",
-        "DOMAIN-SUFFIX,360buyimg.com,DIRECT",
-        // 网易
-        "DOMAIN-SUFFIX,163.com,DIRECT",
-        "DOMAIN-SUFFIX,126.com,DIRECT",
-        "DOMAIN-SUFFIX,netease.com,DIRECT",
-        // 微博/新浪
-        "DOMAIN-SUFFIX,weibo.com,DIRECT",
-        "DOMAIN-SUFFIX,sina.com.cn,DIRECT",
-        "DOMAIN-SUFFIX,sinaimg.cn,DIRECT",
-        "DOMAIN-SUFFIX,sinajs.com,DIRECT",
-        // B站
-        "DOMAIN-SUFFIX,bilibili.com,DIRECT",
-        "DOMAIN-SUFFIX,bilivideo.com,DIRECT",
-        "DOMAIN-SUFFIX,hdslb.com,DIRECT",
-        "DOMAIN-SUFFIX,biliapi.net,DIRECT",
-        // 美团/大众点评
-        "DOMAIN-SUFFIX,meituan.com,DIRECT",
-        "DOMAIN-SUFFIX,dianping.com,DIRECT",
-        // 拼多多
-        "DOMAIN-SUFFIX,pinduoduo.com,DIRECT",
-        "DOMAIN-SUFFIX,yangkeduo.com,DIRECT",
-        // 小米
-        "DOMAIN-SUFFIX,mi.com,DIRECT",
-        "DOMAIN-SUFFIX,xiaomi.com,DIRECT",
-        "DOMAIN-SUFFIX,miui.com,DIRECT",
-        // 华为
-        "DOMAIN-SUFFIX,huawei.com,DIRECT",
-        "DOMAIN-SUFFIX,dbankcdn.com,DIRECT",
-        // 知乎/豆瓣/小红书
-        "DOMAIN-SUFFIX,zhihu.com,DIRECT",
-        "DOMAIN-SUFFIX,zhimg.com,DIRECT",
-        "DOMAIN-SUFFIX,douban.com,DIRECT",
-        "DOMAIN-SUFFIX,xiaohongshu.com,DIRECT",
-        // 开发者/工具
-        "DOMAIN-SUFFIX,csdn.net,DIRECT",
-        "DOMAIN-SUFFIX,gitee.com,DIRECT",
-        "DOMAIN-SUFFIX,oschina.net,DIRECT",
-        // 政府/教育域名
-        "DOMAIN-SUFFIX,gov.cn,DIRECT",
-        "DOMAIN-SUFFIX,edu.cn,DIRECT",
-        // 国内通用 CDN 与基础设施
-        "DOMAIN-SUFFIX,cdn.bcebos.com,DIRECT",
-        "DOMAIN-SUFFIX,qlogo.cn,DIRECT",
-        "DOMAIN-SUFFIX,tencent-cloud.com,DIRECT",
-    ];
     let early_network_blocks =
         cleanweb_rules::take_early_network_block_rules(&mut rules, Value::as_str);
     let mut all_rules: Vec<Value> = early_network_blocks;
     all_rules.extend(lan_rules.iter().map(|r| Value::String((*r).into())));
     all_rules.append(&mut rules);
-    all_rules.extend(direct_rules.iter().map(|r| Value::String((*r).into())));
     all_rules.push(Value::String(format!(
         "MATCH,{}",
         if proxy_enabled { "CleanWeb" } else { "DIRECT" }
@@ -1624,7 +1524,7 @@ mod tests {
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('direct-cn','1','Cidr','47.103.0.0/16','Allow','direct',1)",[]).unwrap();
             db.execute("INSERT INTO subscriptions(id,kind,name,url,format,enabled) VALUES('safe','rule','safe','https://x/safe.yml','safe-search',1)",[]).unwrap();
             db.execute("INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('safe','www.google.com','forcesafesearch.google.com',1)",[]).unwrap();
-            db.execute("INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('safe','forcesafesearch.google.com','216.239.38.120',2)",[]).unwrap();
+            db.execute("INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('safe','family-search.example.com','203.0.113.10',2)",[]).unwrap();
             db.execute(
                 "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('parent-block','block','suffix','baidu.com','custom')",
                 [],
@@ -1643,11 +1543,9 @@ mod tests {
         assert!(!config.contains("fake-ip-range"));
         assert!(!config.contains("fake-ip-filter"));
         assert!(!config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
-        let parent_block = config.find("DOMAIN-SUFFIX,baidu.com,REJECT").unwrap();
-        let built_in_direct = config.find("DOMAIN-SUFFIX,baidu.com,DIRECT").unwrap();
         assert!(
-            parent_block < built_in_direct,
-            "家长拦截规则必须先于内置的代理路由规则"
+            !config.contains("DOMAIN-SUFFIX,baidu.com,DIRECT"),
+            "厂商域名直连不应写死在 Mihomo 生成逻辑中"
         );
         assert!(config.contains("name: node-a"));
         assert!(!config.contains("controller_secret"));
@@ -1754,9 +1652,9 @@ mod tests {
         );
         assert!(
             config_rules.contains(&Value::String(
-                "IP-CIDR,216.239.38.120/32,CleanWeb,no-resolve".into()
+                "IP-CIDR,203.0.113.10/32,CleanWeb,no-resolve".into()
             )),
-            "SafeSearch 订阅里的目标 IP 必须走代理，避免 redir-host 解析后的安全搜索 VIP 直连失败"
+            "SafeSearch 订阅里的 IP target 必须按订阅数据通用生成代理路由"
         );
         assert!(yaml.get("dns").and_then(|dns| dns.get("hosts")).is_none());
         std::env::remove_var("CLEANWEB_TEST_PROXY_KEY_B64");
@@ -1999,7 +1897,7 @@ mod tests {
     #[test]
     fn extracts_sorted_tun_routes_from_config() {
         let routes = config_tun_route_addresses(
-            "tun:\n  route-address:\n    - 216.239.38.120/32\n    - 114.114.114.114/32\n    - 216.239.38.120/32\n",
+            "tun:\n  route-address:\n    - 203.0.113.10/32\n    - 114.114.114.114/32\n    - 203.0.113.10/32\n",
         )
         .unwrap();
 
@@ -2007,7 +1905,7 @@ mod tests {
             routes,
             vec![
                 "114.114.114.114/32".to_string(),
-                "216.239.38.120/32".to_string()
+                "203.0.113.10/32".to_string()
             ]
         );
     }
