@@ -1921,6 +1921,99 @@ h1 {
   font-weight: 700;
 }
 
+.builtin-rule-row {
+  align-items: start;
+}
+
+.builtin-rule-state {
+  min-width: 0;
+  text-align: center;
+}
+
+.builtin-rule-state strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  border-radius: var(--radius-full);
+  padding: 4px 9px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 800;
+}
+
+.builtin-rule-state strong.ready {
+  color: var(--color-success);
+  background: var(--color-primary-light);
+}
+
+.builtin-rule-state strong.pending,
+.builtin-rule-state strong.updating {
+  color: var(--color-info);
+  background: #eff6ff;
+}
+
+.builtin-rule-state strong.failed {
+  color: var(--color-danger);
+  background: #fef2f2;
+}
+
+.builtin-rule-state strong.disabled {
+  color: var(--color-text-secondary);
+  background: #f3f4f6;
+}
+
+.builtin-rule-state small {
+  display: block;
+  margin-top: 6px;
+  color: var(--cw-muted);
+  font-size: 11px;
+  line-height: 15px;
+  overflow-wrap: anywhere;
+}
+
+.builtin-rule-progress {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: -3px;
+}
+
+.builtin-rule-progress > div {
+  height: 7px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: #eef0ed;
+}
+
+.builtin-rule-progress > div > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-success);
+  transition: width 220ms ease;
+}
+
+.builtin-rule-progress.downloading > div > span,
+.builtin-rule-progress.importing > div > span,
+.builtin-rule-progress.applying > div > span,
+.builtin-rule-progress.queued > div > span {
+  background: var(--color-info);
+}
+
+.builtin-rule-progress.failed > div > span {
+  background: var(--color-danger);
+}
+
+.builtin-rule-progress small {
+  color: var(--cw-muted);
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
 .proxy-toolbar-actions { display: flex; align-items: center; gap: 8px; }
 .proxy-toolbar-actions .secondary { display: inline-flex; align-items: center; gap: 6px; }
 .proxy-toolbar-actions .secondary.selected { color: var(--color-primary); border-color: var(--color-primary); background: var(--color-primary-light); }

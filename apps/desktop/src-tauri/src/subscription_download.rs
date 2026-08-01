@@ -166,7 +166,10 @@ fn store_proxy_payload(
 fn subscription_record(state: &AppState, id: &str) -> Result<SubscriptionRecord, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.query_row(
-        "SELECT id, kind, name, url, format, category, update_interval_hours, enabled, last_updated_at, last_error FROM subscriptions WHERE id=?1",
+        "SELECT s.id, s.kind, s.name, s.url, s.format, s.category, s.update_interval_hours, s.enabled, s.last_updated_at, s.last_error,
+         COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) +
+         COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id),0) AS imported_rule_count
+         FROM subscriptions s WHERE s.id=?1",
         params![id],
         |row| {
             Ok(SubscriptionRecord {
@@ -180,6 +183,7 @@ fn subscription_record(state: &AppState, id: &str) -> Result<SubscriptionRecord,
                 enabled: row.get::<_, i64>(7)? != 0,
                 last_updated_at: row.get(8)?,
                 last_error: row.get(9)?,
+                imported_rule_count: row.get(10)?,
             })
         },
     )

@@ -72,6 +72,7 @@ pub struct SubscriptionRecord {
     pub enabled: bool,
     pub last_updated_at: Option<String>,
     pub last_error: Option<String>,
+    pub imported_rule_count: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -701,7 +702,10 @@ fn list_subscriptions_inner(
     state: &AppState,
 ) -> Result<Vec<SubscriptionRecord>, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let sql = "SELECT id, kind, name, url, format, category, update_interval_hours, enabled, last_updated_at, last_error FROM subscriptions WHERE (?1 IS NULL OR kind=?1) ORDER BY created_at DESC";
+    let sql = "SELECT s.id, s.kind, s.name, s.url, s.format, s.category, s.update_interval_hours, s.enabled, s.last_updated_at, s.last_error,
+               COALESCE((SELECT COUNT(*) FROM imported_rules r WHERE r.subscription_id=s.id),0) +
+               COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id),0) AS imported_rule_count
+               FROM subscriptions s WHERE (?1 IS NULL OR s.kind=?1) ORDER BY s.created_at DESC";
     let mut statement = db.prepare(sql).map_err(error)?;
     let records = statement
         .query_map(params![kind], |row| {
@@ -716,6 +720,7 @@ fn list_subscriptions_inner(
                 enabled: row.get::<_, i64>(7)? != 0,
                 last_updated_at: row.get(8)?,
                 last_error: row.get(9)?,
+                imported_rule_count: row.get(10)?,
             })
         })
         .map_err(error)?
@@ -1203,6 +1208,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(imported_count, 0, "打包规则正文不应写入可执行规则表");
+    }
+
+    #[test]
+    fn list_subscriptions_includes_imported_rule_count() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('rules','rule','规则','https://example.test/rules.txt',1)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('rules','r1','suffix','example.test','block','custom',1)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES('rules','search.example','safe.example',2)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let records = list_subscriptions_inner(Some("rule".into()), &state).unwrap();
+        let record = records.iter().find(|item| item.id == "rules").unwrap();
+        assert_eq!(record.imported_rule_count, 2);
     }
 
     #[test]

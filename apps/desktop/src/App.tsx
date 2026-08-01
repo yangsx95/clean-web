@@ -42,6 +42,11 @@ type PolicyApplyStatus = {
   message: string;
   detail?: string;
 };
+type SubscriptionProgress = {
+  phase: "queued" | "downloading" | "importing" | "applying" | "complete" | "failed";
+  percent: number;
+  message: string;
+};
 type ErrorNotice = {
   message: string;
   detail?: string;
@@ -163,6 +168,7 @@ export function App() {
   const [settings, setSettings] = useState<backend.Settings | null>(null);
   const [subscriptions, setSubscriptions] = useState<backend.Subscription[]>([]);
   const [refreshingId,setRefreshingId]=useState<string|null>(null);
+  const [subscriptionProgress,setSubscriptionProgress]=useState<Record<string,SubscriptionProgress>>({});
   const [coreStatus,setCoreStatus]=useState<backend.CoreStatus|null>(null);
   const [runtimeError,setRuntimeError]=useState<ErrorNotice|null>(null);
   const { anyBusy, isBusy, runScopedOperation } = useScopedOperations();
@@ -247,7 +253,31 @@ export function App() {
       setRuntimeError({message:"删除订阅失败",detail:notice.detail??notice.message});
     }
   };
-  const refreshSubscription=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.subscription(id), async()=>{setRefreshingId(id);showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});try{await backend.refreshSubscription(sessionToken,id);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}finally{setRefreshingId(null);}});};
+  const refreshSubscription=async(id:string)=>{
+    if(!sessionToken){setDialog("unlock");return;}
+    const setProgress=(progress:SubscriptionProgress)=>setSubscriptionProgress(previous=>({...previous,[id]:progress}));
+    await runScopedOperation(busyScope.subscription(id), async()=>{
+      setRefreshingId(id);
+      setProgress({phase:"queued",percent:8,message:"准备更新"});
+      showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});
+      try{
+        setProgress({phase:"downloading",percent:32,message:"正在下载规则"});
+        await backend.refreshSubscription(sessionToken,id);
+        setProgress({phase:"importing",percent:68,message:"正在验证并写入规则"});
+        setSubscriptions(await backend.listSubscriptions(sessionToken));
+        setProgress({phase:"applying",percent:88,message:"正在应用到保护内核"});
+        await reloadRuntime(sessionToken);
+        setProgress({phase:"complete",percent:100,message:"下载并应用完成"});
+        window.setTimeout(()=>setSubscriptionProgress(previous=>{const next={...previous};if(next[id]?.phase==="complete")delete next[id];return next;}),2600);
+      }catch(reason){
+        const notice=toErrorNotice(reason,"订阅更新失败，继续使用最后一次有效规则");
+        setProgress({phase:"failed",percent:100,message:notice.message});
+        throw reason;
+      }finally{
+        setRefreshingId(null);
+      }
+    });
+  };
   const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);});};
   const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);await runScopedOperation(busyScope.logs, async()=>{showPolicyStatus({state:"applying",message:"正在导出访问日志…"});try{const path=await backend.saveAccessLogsCsv(sessionToken);if(path)showPolicyStatus({state:"applied",message:"访问日志已导出"});else showPolicyStatus({state:"applied",message:"已取消导出"});}catch(reason){const notice=toErrorNotice(reason,"访问日志导出失败，请稍后重试");const exportNotice={message:"访问日志导出失败，请稍后重试",detail:notice.detail??notice.message};showPolicyStatus({state:"failed",message:exportNotice.message,detail:exportNotice.detail});setRuntimeError(exportNotice);}});};
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError(null);showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){const notice=toErrorNotice(reason,"规则已添加，但保护配置重载失败");setRuntimeError({message:"规则已添加，但保护配置重载失败",detail:notice.detail??notice.message});}});};
@@ -316,7 +346,7 @@ export function App() {
       {runtimeError&&<ErrorNoticeView notice={runtimeError}/>}
       {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus}/>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
-      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
+      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} onRefresh={refreshSubscription} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "subscriptions" && <SubscriptionsPage subscriptions={subscriptions} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggle={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{if(item.kind==="rule"){setEditingSubscription(item);setDialog("editRuleSubscription");}}} onAddRule={() => requestAction("rules")} onAddProxy={(mode) => requestAction("proxy", mode)} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
@@ -613,7 +643,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
   </button>;
 });
 
-function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
+function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, onRefresh, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external">("block");
   const isBuiltinSubscription = (item: backend.Subscription) => item.id.startsWith("default:") || item.id.startsWith("local:cleanweb:") || item.url.startsWith("builtin://") || item.name.startsWith("内置规则") || item.name.startsWith("内置路由");
   const builtinSubscriptions = subscriptions.filter(isBuiltinSubscription);
@@ -622,6 +652,29 @@ function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, on
   const routeRules = parentRules.filter((item) => item.action !== "block");
   const subscriptionFormat = (item: backend.Subscription) => item.format ?? "自动检测";
   const updateInterval = (item: backend.Subscription) => item.updateIntervalHours ? `${item.updateIntervalHours}小时更新` : "手动更新";
+  const formatUpdatedAt = (value?: string) => {
+    if (!value) return "从未同步";
+    const date = new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("zh-CN", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }).format(date);
+  };
+  const builtinStatus = (item: backend.Subscription) => {
+    const progress = refreshProgress[item.id];
+    if (progress?.phase === "failed") return { label:"更新失败", className:"failed", detail:progress.message };
+    if (item.lastError) return { label:"更新失败", className:"failed", detail:item.lastError };
+    if (progress && progress.phase !== "complete") return { label:progress.phase === "applying" ? "应用中" : "更新中", className:"updating", detail:progress.message };
+    if (!item.enabled) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
+    if ((item.importedRuleCount ?? 0) > 0) return { label:"已同步", className:"ready", detail:`${item.importedRuleCount} 条规则 · ${formatUpdatedAt(item.lastUpdatedAt)}` };
+    if (item.lastUpdatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(item.lastUpdatedAt)} 更新` };
+    return { label:"待同步", className:"pending", detail:"点击刷新后下载并应用" };
+  };
+  const builtinProgress = (item: backend.Subscription): SubscriptionProgress => {
+    const progress = refreshProgress[item.id];
+    if (progress) return progress;
+    if (item.lastError) return { phase:"failed", percent:100, message:"更新失败，保留上次有效规则" };
+    if ((item.importedRuleCount ?? 0) > 0 || item.lastUpdatedAt) return { phase:"complete", percent:100, message:"已下载并应用" };
+    return { phase:"queued", percent:0, message:"尚未下载" };
+  };
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
   const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : action === "system_route" ? "系统路由" : "直连";
   const renderParentRule = (item: backend.ParentRule) => {
@@ -643,17 +696,26 @@ function Rules({ parentRules, subscriptions, refreshingId, isBusy, onRefresh, on
     <section className="table-card">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
       {builtinSubscriptions.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
-      {builtinSubscriptions.map((item) => (
-        <div className="table-row" key={item.id}>
+      {builtinSubscriptions.map((item) => {
+        const status = builtinStatus(item);
+        const progress = builtinProgress(item);
+        return <div className="table-row builtin-rule-row" key={item.id}>
           <div>
             <b>{item.name}</b>
             <small className={item.lastError ? "error-text" : ""}>{item.lastError ?? `由 CleanWeb 维护，合并开源规则来源 · ${updateInterval(item)}`}</small>
           </div>
           <span>{subscriptionFormat(item)}</span>
-          <span className="required-source">内置启用</span>
+          <div className="builtin-rule-state">
+            <strong className={status.className}>{status.label}</strong>
+            <small>{status.detail}</small>
+          </div>
           <div className="row-actions"><button className="row-action" aria-label={`更新${item.name}`} disabled={isBusy(busyScope.subscription(item.id))||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button></div>
-        </div>
-      ))}
+          <div className={`builtin-rule-progress ${progress.phase}`} aria-label={`${item.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
+            <div><span style={{width:`${progress.percent}%`}}/></div>
+            <small>{progress.message}</small>
+          </div>
+        </div>;
+      })}
     </section></>}
     {tab==="external"&&<><section className="toolbar"><div><h2>外部订阅</h2><p>用户导入的第三方规则来源，更新失败时保留最后一次有效规则。</p></div><button className="primary" disabled={isBusy(busyScope.createSubscription)} onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
     <section className="table-card">
