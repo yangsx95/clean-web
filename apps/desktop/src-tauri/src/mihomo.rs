@@ -33,15 +33,23 @@ const X64_GZ: &str = "mihomo-darwin-amd64-compatible-v1.19.28.gz";
 const ARM_SHA256: &str = "40cdae2fab4b18df15f40eaa9dc3af70ab3d8be7f77164ae1e5f1af3a2a4fb44";
 #[cfg(target_os = "macos")]
 const X64_SHA256: &str = "a469cc2f6800e71b50eca3f74bc72a8f6f7e990a5d4aaecb81a68cf331516d9d";
+#[cfg(target_os = "macos")]
+const ARM_BINARY_SHA256: &str = "55b7286331cb30a54b2564013b02b84a0c280e8b690bd1e5da4b9d4f4ca007ac";
+#[cfg(target_os = "macos")]
+const X64_BINARY_SHA256: &str = "35db993895dc2dc7f039cc8e6367c2ef6078d8bc887da2cff12e8cec5307e9d3";
 
 #[cfg(target_os = "windows")]
 const X64_GZ: &str = "mihomo-windows-amd64-v1.19.28.gz";
 #[cfg(target_os = "windows")]
 const X64_SHA256: &str = "16c476b5b80f3b6b120d2bb49f8b79626a5ad7f79c2898dac848f2730bc24944";
 #[cfg(target_os = "windows")]
+const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52dd965ef207ae4f0eeb";
+#[cfg(target_os = "windows")]
 const ARM_GZ: &str = "";
 #[cfg(target_os = "windows")]
 const ARM_SHA256: &str = "";
+#[cfg(target_os = "windows")]
+const ARM_BINARY_SHA256: &str = "";
 const CONTROLLER: &str = "127.0.0.1:19090";
 
 #[derive(Debug, Serialize)]
@@ -1080,10 +1088,10 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "DOMAIN-SUFFIX,qlogo.cn,DIRECT",
         "DOMAIN-SUFFIX,tencent-cloud.com,DIRECT",
     ];
-    let mut all_rules: Vec<Value> = lan_rules
-        .iter()
-        .map(|r| Value::String((*r).into()))
-        .collect();
+    let early_network_blocks =
+        cleanweb_rules::take_early_network_block_rules(&mut rules, Value::as_str);
+    let mut all_rules: Vec<Value> = early_network_blocks;
+    all_rules.extend(lan_rules.iter().map(|r| Value::String((*r).into())));
     all_rules.append(&mut rules);
     all_rules.extend(direct_rules.iter().map(|r| Value::String((*r).into())));
     all_rules.push(Value::String(format!(
@@ -1376,17 +1384,20 @@ fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
     if cfg!(target_arch = "aarch64") {
         return Err("Windows ARM64 is not supported".into());
     }
-    let (asset, expected) = if cfg!(target_arch = "aarch64") {
-        (ARM_GZ, ARM_SHA256)
+    let (asset, archive_expected, binary_expected) = if cfg!(target_arch = "aarch64") {
+        (ARM_GZ, ARM_SHA256, ARM_BINARY_SHA256)
     } else {
-        (X64_GZ, X64_SHA256)
+        (X64_GZ, X64_SHA256, X64_BINARY_SHA256)
     };
     #[cfg(target_os = "windows")]
     let output = runtime.join("mihomo.exe");
     #[cfg(not(target_os = "windows"))]
     let output = runtime.join("mihomo");
     if output.is_file() {
-        return Ok(output);
+        let bytes = fs::read(&output).map_err(error)?;
+        if format!("{:x}", Sha256::digest(&bytes)) == binary_expected {
+            return Ok(output);
+        }
     }
     let resource = app
         .path()
@@ -1398,12 +1409,19 @@ fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
         return Err(format!("缺少官方 Mihomo 内核资源：{}", resource.display()));
     }
     let bytes = fs::read(&resource).map_err(error)?;
-    if format!("{:x}", Sha256::digest(&bytes)) != expected {
+    if format!("{:x}", Sha256::digest(&bytes)) != archive_expected {
         return Err("Mihomo 内核校验失败".into());
     }
     let mut decoder = GzDecoder::new(bytes.as_slice());
     let mut file = File::create(&output).map_err(error)?;
     io::copy(&mut decoder, &mut file).map_err(error)?;
+    file.sync_all().map_err(error)?;
+    drop(file);
+    let output_bytes = fs::read(&output).map_err(error)?;
+    if format!("{:x}", Sha256::digest(&output_bytes)) != binary_expected {
+        let _ = fs::remove_file(&output);
+        return Err("Mihomo 内核解压校验失败".into());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1734,6 +1752,63 @@ mod tests {
     }
 
     #[test]
+    fn ip_block_rules_precede_builtin_direct_routes() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('block-google-dns','block','Ip','8.8.8.8','custom')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('block-private-lan','block','Cidr','10.0.0.0/8','custom')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO parent_rules(id,action,kind,pattern,category) VALUES('block-private-v6','block','Cidr','fd00::/8','custom')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let config = build_config(&state, "secret", true).unwrap();
+        let block_google_dns = config
+            .find("IP-CIDR,8.8.8.8,REJECT,no-resolve")
+            .expect("manual Google DNS IP block");
+        let direct_google_dns = config
+            .find("IP-CIDR,8.8.8.8/32,DIRECT,no-resolve")
+            .expect("built-in Google DNS direct route");
+        assert!(
+            block_google_dns < direct_google_dns,
+            "显式 DNS IP 黑名单必须先于内置 DNS 直连规则"
+        );
+
+        let block_lan = config
+            .find("IP-CIDR,10.0.0.0/8,REJECT,no-resolve")
+            .expect("manual private CIDR block");
+        let direct_lan = config
+            .find("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve")
+            .expect("built-in private CIDR direct route");
+        assert!(
+            block_lan < direct_lan,
+            "显式内网 CIDR 黑名单必须先于内置内网直连规则"
+        );
+
+        let block_ipv6_lan = config
+            .find("IP-CIDR6,fd00::/8,REJECT,no-resolve")
+            .expect("manual private IPv6 CIDR block");
+        let direct_ipv6_lan = config
+            .find("IP-CIDR6,fd00::/8,DIRECT,no-resolve")
+            .expect("built-in private IPv6 CIDR direct route");
+        assert!(
+            block_ipv6_lan < direct_ipv6_lan,
+            "显式 IPv6 内网 CIDR 黑名单必须先于内置 IPv6 内网直连规则"
+        );
+    }
+
+    #[test]
     fn lowers_mihomo_overhead_when_access_logging_is_disabled() {
         let state = AppState::open(":memory:").unwrap();
         {
@@ -2000,11 +2075,20 @@ mod tests {
         assert!(asset.is_file(), "official Mihomo ARM resource is missing");
         let bytes = fs::read(&asset).unwrap();
         assert_eq!(format!("{:x}", Sha256::digest(&bytes)), ARM_SHA256);
+        let decompressed = {
+            let mut decoder = GzDecoder::new(bytes.as_slice());
+            let mut decompressed = Vec::new();
+            io::copy(&mut decoder, &mut decompressed).unwrap();
+            decompressed
+        };
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&decompressed)),
+            ARM_BINARY_SHA256
+        );
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("mihomo");
-        let mut decoder = GzDecoder::new(bytes.as_slice());
         let mut file = File::create(&binary).unwrap();
-        io::copy(&mut decoder, &mut file).unwrap();
+        file.write_all(&decompressed).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

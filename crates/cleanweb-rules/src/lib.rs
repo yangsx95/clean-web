@@ -147,6 +147,37 @@ impl RuleSet {
     }
 }
 
+pub fn take_early_network_block_rules<T, F>(rules: &mut Vec<T>, mut rule_line: F) -> Vec<T>
+where
+    F: FnMut(&T) -> Option<&str>,
+{
+    let mut early_rules = Vec::new();
+    let mut remaining_rules = Vec::with_capacity(rules.len());
+    for rule in rules.drain(..) {
+        if rule_line(&rule).is_some_and(is_early_network_block_rule_line) {
+            early_rules.push(rule);
+        } else {
+            remaining_rules.push(rule);
+        }
+    }
+    *rules = remaining_rules;
+    early_rules
+}
+
+pub fn is_early_network_block_rule_line(rule: &str) -> bool {
+    let mut parts = rule.split(',');
+    let Some(kind) = parts.next() else {
+        return false;
+    };
+    let Some(_) = parts.next() else {
+        return false;
+    };
+    let Some(action) = parts.next() else {
+        return false;
+    };
+    matches!(kind, "IP-CIDR" | "IP-CIDR6") && action == "REJECT"
+}
+
 fn normalize_domain(value: &str) -> Result<String, RuleError> {
     let trimmed = value.trim().trim_end_matches('.').to_ascii_lowercase();
     if trimmed.is_empty() || trimmed.contains('/') {
@@ -267,5 +298,50 @@ mod tests {
         assert!(set
             .decide(None, Some("198.51.100.9".parse().unwrap()))
             .is_none());
+    }
+
+    #[test]
+    fn identifies_early_network_block_rule_lines() {
+        assert!(is_early_network_block_rule_line(
+            "IP-CIDR,8.8.8.8,REJECT,no-resolve"
+        ));
+        assert!(is_early_network_block_rule_line(
+            "IP-CIDR6,fd00::/8,REJECT,no-resolve"
+        ));
+        assert!(!is_early_network_block_rule_line(
+            "IP-CIDR,8.8.8.8/32,DIRECT,no-resolve"
+        ));
+        assert!(!is_early_network_block_rule_line(
+            "DOMAIN-SUFFIX,example.com,REJECT"
+        ));
+    }
+
+    #[test]
+    fn splits_early_network_block_rules_without_reordering_the_rest() {
+        let mut rules = vec![
+            "DOMAIN-SUFFIX,blocked.example,REJECT".to_string(),
+            "IP-CIDR,8.8.8.8,REJECT,no-resolve".to_string(),
+            "IP-CIDR,1.1.1.1/32,DIRECT,no-resolve".to_string(),
+            "IP-CIDR6,fd00::/8,REJECT,no-resolve".to_string(),
+            "MATCH,DIRECT".to_string(),
+        ];
+
+        let early = take_early_network_block_rules(&mut rules, |rule| Some(rule.as_str()));
+
+        assert_eq!(
+            early,
+            vec![
+                "IP-CIDR,8.8.8.8,REJECT,no-resolve".to_string(),
+                "IP-CIDR6,fd00::/8,REJECT,no-resolve".to_string(),
+            ]
+        );
+        assert_eq!(
+            rules,
+            vec![
+                "DOMAIN-SUFFIX,blocked.example,REJECT".to_string(),
+                "IP-CIDR,1.1.1.1/32,DIRECT,no-resolve".to_string(),
+                "MATCH,DIRECT".to_string(),
+            ]
+        );
     }
 }

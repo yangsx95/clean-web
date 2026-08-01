@@ -36,13 +36,13 @@ const DNS_BACKUP_FILE: &str = "/Library/Application Support/CleanWeb/dns-backup.
 #[cfg(target_os = "macos")]
 const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
 #[cfg(target_os = "macos")]
-const HELPER_PROTOCOL_VERSION: &str = "2026-08-01-peer-verified-helper";
+const HELPER_PROTOCOL_VERSION: &str = "2026-08-01-mihomo-binary-hash-helper";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const EXPECTED_MIHOMO_SHA256: &str =
-    "40cdae2fab4b18df15f40eaa9dc3af70ab3d8be7f77164ae1e5f1af3a2a4fb44";
+    "55b7286331cb30a54b2564013b02b84a0c280e8b690bd1e5da4b9d4f4ca007ac";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const EXPECTED_MIHOMO_SHA256: &str =
-    "a469cc2f6800e71b50eca3f74bc72a8f6f7e990a5d4aaecb81a68cf331516d9d";
+    "35db993895dc2dc7f039cc8e6367c2ef6078d8bc887da2cff12e8cec5307e9d3";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1033,5 +1033,29 @@ mod tests {
             "/Library/Application Support/CleanWeb/config.yaml"
         ))
         .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_accepts_official_decompressed_mihomo_binary_hash() {
+        use flate2::read::GzDecoder;
+        use std::io;
+
+        #[cfg(target_arch = "aarch64")]
+        const ASSET: &str = "mihomo-darwin-arm64-v1.19.28.gz";
+        #[cfg(target_arch = "x86_64")]
+        const ASSET: &str = "mihomo-darwin-amd64-compatible-v1.19.28.gz";
+
+        let resource = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/mihomo")
+            .join(ASSET);
+        let bytes = fs::read(resource).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("mihomo");
+        let mut decoder = GzDecoder::new(bytes.as_slice());
+        let mut file = File::create(&binary).unwrap();
+        io::copy(&mut decoder, &mut file).unwrap();
+
+        validate_mihomo_binary_hash(&binary).unwrap();
     }
 }
