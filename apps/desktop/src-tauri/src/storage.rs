@@ -853,7 +853,7 @@ pub fn initialize_password(password: String, state: State<'_, AppState>) -> Resu
     Ok(())
 }
 
-fn verify_management_password(password: &str, state: &State<'_, AppState>) -> Result<(), String> {
+pub(crate) fn verify_management_password(password: &str, state: &AppState) -> Result<(), String> {
     let hash = {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
         db.query_row(

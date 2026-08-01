@@ -692,7 +692,7 @@ pub async fn test_all_proxy_delays(
     Ok(ProxyDelayResult { delays })
 }
 
-fn stop_child(state: &AppState) -> Result<(), String> {
+pub(crate) fn stop_child(state: &AppState) -> Result<(), String> {
     let pid_path = state.data_dir.join("mihomo/mihomo.pid");
     if let Some(mut child) = state
         .core_process

@@ -82,10 +82,18 @@ fn hide_main_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn confirmed_quit(app: tauri::AppHandle, lifecycle: tauri::State<'_, AppLifecycle>) {
+fn confirmed_quit(
+    password: String,
+    app: tauri::AppHandle,
+    lifecycle: tauri::State<'_, AppLifecycle>,
+    state: tauri::State<'_, storage::AppState>,
+) -> Result<(), String> {
+    storage::verify_management_password(&password, &state)?;
+    mihomo::stop_child(&state)?;
     lifecycle.quit_requested.store(false, Ordering::SeqCst);
     lifecycle.confirmed_exit.store(true, Ordering::SeqCst);
     app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]

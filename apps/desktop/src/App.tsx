@@ -125,7 +125,7 @@ export function App() {
   const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", subscriptions: "订阅导入", proxy: "代理节点", settings: "设置" };
   const requestAction = (action: "rules" | "proxy", mode: ProxyImportMode = "subscription") => { if (action === "proxy") setProxyImportMode(mode); setDialog(locked ? "unlock" : action); };
   const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
-  const quitApp = async () => { setDialog(null); await backend.confirmedQuit(); };
+  const quitApp = async (password: string) => { await backend.confirmedQuit(password); setDialog(null); };
   const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
   const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
@@ -145,7 +145,6 @@ export function App() {
       }
     }
     setReady(true);
-    if(current.protectionEnabled)void backend.autoStartProtection().then(setCoreStatus).catch(async reason=>{setRuntimeError(String(reason));try{setSettings(await backend.getSettings());}catch{}});
   })(); }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(()=>reloadRuntime(sessionToken,{silent:true})).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
@@ -287,7 +286,7 @@ function PolicyApplyBanner({status}:{status:PolicyApplyStatus}) {
   </div>;
 }
 
-function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog, onHideToBackground, onQuitApp }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:string;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:AppDialog;setDialog:(dialog:AppDialog)=>void;onHideToBackground:()=>Promise<void>;onQuitApp:()=>Promise<void> }) {
+function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComplete, onUnlock, dialog, setDialog, onHideToBackground, onQuitApp }: { coreStatus:backend.CoreStatus|null;stats:backend.AccessLogStats;runtimeError:string;needsSetup:boolean;onSetupComplete:()=>void;onUnlock:(password:string)=>Promise<void>;dialog:AppDialog;setDialog:(dialog:AppDialog)=>void;onHideToBackground:()=>Promise<void>;onQuitApp:(password:string)=>Promise<void> }) {
   const running = coreStatus?.running === true;
   return <div className="locked-shell">
     <section className="locked-status-card" aria-label="CleanWeb 锁定状态">
@@ -310,7 +309,7 @@ function LockedStatus({ coreStatus, stats, runtimeError, needsSetup, onSetupComp
   </div>;
 }
 
-function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: { running:boolean; onClose:()=>void; onHideToBackground:()=>Promise<void>; onQuitApp:()=>Promise<void> }) {
+function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: { running:boolean; onClose:()=>void; onHideToBackground:()=>Promise<void>; onQuitApp:(password:string)=>Promise<void> }) {
   const [error,setError]=useState("");
   const [submitting,setSubmitting]=useState(false);
   const submitQuit=async(event:FormEvent<HTMLFormElement>)=>{
@@ -320,8 +319,7 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
     setError("");
     try{
       const password=String(new FormData(event.currentTarget).get("password")??"");
-      await backend.verifyPassword(password);
-      await onQuitApp();
+      await onQuitApp(password);
     }catch(reason){
       setError(String(reason));
     }finally{
@@ -332,9 +330,9 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
     <section className="modal quit-modal" role="dialog" aria-modal="true" aria-labelledby="quit-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
       <div className={running?"modal-symbol":"modal-symbol warning"}><ShieldCheck/></div>
-      <h2 id="quit-title">{running?"保护仍会在后台运行":"确认关闭 CleanWeb"}</h2>
-      <p>{running?"当前保护和代理由后台服务继续执行。关闭窗口或退出管理界面不会自动停止网络接管；如需停止，请先解锁并关闭总保护。":"当前没有运行中的保护服务。你可以关闭窗口到后台，或退出 CleanWeb 管理界面。"}</p>
-      {running&&<div className="quit-status" role="status"><b>后台保护运行中</b><span>退出应用后，代理和过滤仍可能继续生效。</span></div>}
+      <h2 id="quit-title">{running?"退出前将关闭保护":"确认关闭 CleanWeb"}</h2>
+      <p>{running?"退出 CleanWeb 会先关闭保护内核，并恢复系统 DNS 与路由设置。":"当前没有运行中的保护服务。你可以关闭窗口到后台，或退出 CleanWeb 管理界面。"}</p>
+      {running&&<div className="quit-status" role="status"><b>保护运行中</b><span>输入管理密码后将先停止保护，再退出应用。</span></div>}
       <form onSubmit={submitQuit}>
         <label htmlFor="quit-password">管理密码</label>
         <input id="quit-password" name="password" type="password" placeholder="输入管理密码后退出" required autoFocus autoComplete="current-password" onKeyDown={(e) => { if (e.nativeEvent.isComposing || e.keyCode === 229) e.preventDefault(); }} onCompositionEnd={(e) => { const el = e.currentTarget; el.value = el.value.replace(/[^\x20-\x7E]/g, ""); }} onInput={(e) => { const el = e.currentTarget; el.value = el.value.replace(/[^\x20-\x7E]/g, ""); }} />
@@ -342,7 +340,7 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
         <div className="modal-actions">
           <button type="button" className="secondary" onClick={onClose}>取消</button>
           <button type="button" className="secondary" onClick={()=>void onHideToBackground()}>继续后台运行</button>
-          <button type="submit" className="primary danger" disabled={submitting}>{submitting?"验证中…":"退出"}</button>
+          <button type="submit" className="primary danger" disabled={submitting}>{submitting?"正在退出…":"退出"}</button>
         </div>
       </form>
     </section>

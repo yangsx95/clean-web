@@ -138,19 +138,18 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("false");
   });
 
-  it("keeps protection enabled when auto start is cancelled on app launch", async () => {
+  it("does not auto start protection on app launch", async () => {
     const enabled = { ...await backend.getSettings(), protectionEnabled: true };
     const settings = vi.spyOn(backend, "getSettings")
-      .mockResolvedValueOnce(enabled)
       .mockResolvedValueOnce(enabled);
     const autoStart = vi.spyOn(backend, "autoStartProtection")
-      .mockRejectedValueOnce(new Error("已取消管理员授权，CleanWeb 未开启保护"));
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
 
     render(<App />);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("已取消管理员授权");
-    expect(screen.getByLabelText("CleanWeb 锁定状态")).toBeTruthy();
+    expect(await screen.findByLabelText("CleanWeb 锁定状态")).toBeTruthy();
     expect(screen.queryByRole("switch", { name: "总保护" })).toBeNull();
+    expect(autoStart).not.toHaveBeenCalled();
     settings.mockRestore();
     autoStart.mockRestore();
   });
@@ -219,7 +218,7 @@ describe("management actions", () => {
     interval.mockRestore();
   });
 
-  it("confirms app quit requests while protection keeps running", async () => {
+  it("confirms app quit requests and explains that protection will stop first", async () => {
     let requestQuit = () => {};
     const coreStatus = vi.spyOn(backend, "getCoreStatus")
       .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
@@ -230,9 +229,9 @@ describe("management actions", () => {
     expect(await screen.findByLabelText("CleanWeb 锁定状态")).toBeTruthy();
     act(() => requestQuit());
 
-    expect(await screen.findByRole("dialog", { name: "保护仍会在后台运行" })).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("后台保护运行中");
-    expect(screen.getByText("退出应用后，代理和过滤仍可能继续生效。")).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "退出前将关闭保护" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("保护运行中");
+    expect(screen.getByText("输入管理密码后将先停止保护，再退出应用。")).toBeTruthy();
     subscribe.mockRestore();
     coreStatus.mockRestore();
   });
@@ -251,8 +250,7 @@ describe("management actions", () => {
     let requestQuit = () => {};
     const subscribe = vi.spyOn(backend, "onQuitRequested")
       .mockImplementation(async (callback) => { requestQuit = callback; return () => {}; });
-    const verify = vi.spyOn(backend, "verifyPassword").mockRejectedValueOnce(new Error("管理密码错误")).mockResolvedValueOnce(undefined);
-    const quit = vi.spyOn(backend, "confirmedQuit").mockResolvedValue(undefined);
+    const quit = vi.spyOn(backend, "confirmedQuit").mockRejectedValueOnce(new Error("管理密码错误")).mockResolvedValueOnce(undefined);
 
     render(<App />);
     await screen.findByLabelText("CleanWeb 锁定状态");
@@ -261,13 +259,12 @@ describe("management actions", () => {
     await userEvent.type(await screen.findByLabelText("管理密码"), "wrongpass");
     await userEvent.click(screen.getByRole("button", { name: "退出" }));
     expect(await screen.findByText("Error: 管理密码错误")).toBeTruthy();
-    expect(quit).not.toHaveBeenCalled();
+    expect(quit).toHaveBeenCalledWith("wrongpass");
 
     await userEvent.clear(screen.getByLabelText("管理密码"));
     await userEvent.type(screen.getByLabelText("管理密码"), "parent123");
     await userEvent.click(screen.getByRole("button", { name: "退出" }));
-    expect(verify).toHaveBeenLastCalledWith("parent123");
-    expect(quit).toHaveBeenCalled();
+    expect(quit).toHaveBeenLastCalledWith("parent123");
     subscribe.mockRestore();
   });
 
