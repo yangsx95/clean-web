@@ -6,10 +6,13 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use keyring::{Entry, Error as KeyringError};
 use rand_core::{OsRng, RngCore};
 use rusqlite::{params, Connection};
-use std::{path::PathBuf, sync::OnceLock};
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 const LEGACY_ENVELOPE_PREFIX: &str = "cw1:aes-256-gcm:";
 const ENVELOPE_PREFIX: &str = "cw2:aes-256-gcm:";
+#[cfg(any(test, debug_assertions))]
 const KEY_SOURCE_DEBUG: &str = "debug";
 const KEY_SOURCE_KEYCHAIN: &str = "keychain";
 const KEYCHAIN_SERVICE: &str = "CleanWeb";

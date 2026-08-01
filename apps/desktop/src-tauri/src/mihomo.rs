@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
+    net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
     time::Duration,
@@ -247,17 +248,17 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
                 last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo TUN 启动失败".into())
             );
         }
-        if tun_startup_ready(&log) {
-            break;
-        }
         if !platform::pid_running(pid) {
             let _ = fs::remove_file(runtime.join("mihomo.pid"));
             return Err(
                 last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into())
             );
         }
+        if tun_startup_ready(&log) || mihomo_controller_ready(&secret) {
+            break;
+        }
     }
-    if !tun_startup_ready(&log) {
+    if !tun_startup_ready(&log) && !mihomo_controller_ready(&secret) {
         platform::kill_process(pid);
         let _ = fs::remove_file(runtime.join("mihomo.pid"));
         return Err(
@@ -1728,6 +1729,31 @@ fn tun_startup_failed(log: &str) -> bool {
     let log = log.to_ascii_lowercase();
     log.contains("start tun listening error")
         || log.contains("configure tun interface") && log.contains("operation not permitted")
+}
+
+fn mihomo_controller_ready(secret: &str) -> bool {
+    let Ok(mut addrs) = CONTROLLER.to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(100)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
+    let request = format!(
+        "GET /configs HTTP/1.1\r\nHost: {CONTROLLER}\r\nAuthorization: Bearer {secret}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = [0_u8; 64];
+    let Ok(read) = stream.read(&mut response) else {
+        return false;
+    };
+    response[..read].starts_with(b"HTTP/1.1 200") || response[..read].starts_with(b"HTTP/1.0 200")
 }
 fn error(value: impl std::fmt::Display) -> String {
     value.to_string()

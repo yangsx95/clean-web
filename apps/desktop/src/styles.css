@@ -1134,12 +1134,38 @@ h1 {
   background: #fef2f2;
   color: #991b1b;
   font-size: 13px;
-  white-space: pre-wrap;
 }
 
 .runtime-error.compact {
   margin-bottom: 14px;
   font-size: 12px;
+}
+
+.runtime-error details,
+.policy-apply-banner details {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.runtime-error summary,
+.policy-apply-banner summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-error pre,
+.policy-apply-banner pre {
+  max-height: 160px;
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: rgba(127, 29, 29, 0.06);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .policy-apply-banner {
@@ -1150,6 +1176,7 @@ h1 {
   background: #eff6ff;
   color: #1e3a8a;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   font-size: 13px;
