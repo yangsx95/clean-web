@@ -15,7 +15,7 @@ on:
         description: "Windows CPU packages to build"
         required: true
         type: choice
-        default: "x64"
+        default: "all"
         options:
           - "x64"
           - "arm64"
@@ -32,9 +32,8 @@ on:
         description: "macOS CPU packages to build"
         required: true
         type: choice
-        default: "universal"
+        default: "all"
         options:
-          - "universal"
           - "arm64"
           - "x64"
           - "all"
@@ -275,11 +274,13 @@ jobs:
           - arch: x64
             rust_target: x86_64-pc-windows-msvc
             artifact_suffix: x64
-            bundle_path: apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            nsis_path: apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            msi_path: apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - arch: arm64
             rust_target: aarch64-pc-windows-msvc
             artifact_suffix: arm64
-            bundle_path: apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            nsis_path: apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            msi_path: apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
 
     steps:
       - name: Checkout
@@ -289,7 +290,7 @@ jobs:
         id: package
         shell: pwsh
         run: |
-          $selected = "x64"
+          $selected = "all"
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $selected = "${{ inputs.windows_packages }}"
           } elseif ("${{ startsWith(github.ref, 'refs/tags/') }}" -eq "true") {
@@ -336,19 +337,27 @@ jobs:
         if: steps.package.outputs.should_build == 'true'
         run: npm ci
 
-      - name: Build Tauri NSIS installer
+      - name: Build Tauri Windows installers
         if: steps.package.outputs.should_build == 'true'
-        run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles nsis
+        run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles nsis,msi
 
-      - name: Upload Windows artifacts
+      - name: Upload Windows NSIS artifact
         if: steps.package.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: cleanweb-windows-${{ matrix.artifact_suffix }}-unsigned
-          path: ${{ matrix.bundle_path }}
+          name: cleanweb-windows-${{ matrix.artifact_suffix }}-nsis-unsigned
+          path: ${{ matrix.nsis_path }}
           if-no-files-found: error
 
-  build-macos-universal:
+      - name: Upload Windows MSI artifact
+        if: steps.package.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cleanweb-windows-${{ matrix.artifact_suffix }}-msi-unsigned
+          path: ${{ matrix.msi_path }}
+          if-no-files-found: error
+
+  build-macos:
     name: Build unsigned macOS DMG (${{ matrix.package }})
     runs-on: macos-latest
     needs:
@@ -359,10 +368,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - package: universal
-            rust_target: universal-apple-darwin
-            artifact_suffix: universal
-            bundle_path: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           - package: arm64
             rust_target: aarch64-apple-darwin
             artifact_suffix: arm64
@@ -381,7 +386,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          selected="universal"
+          selected="all"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             selected="${{ inputs.macos_packages }}"
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
@@ -562,10 +567,10 @@ jobs:
       - frontend-validation
       - desktop-rust-validation
       - build-windows
-      - build-macos-universal
+      - build-macos
       - build-android
       - build-ios
-    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' && needs.static-validation.result == 'success' && needs.frontend-validation.result == 'success' && ((inputs.build_windows != 'true' && inputs.build_macos != 'true') || needs.desktop-rust-validation.result == 'success') && (inputs.build_windows != 'true' || needs.build-windows.result == 'success') && (inputs.build_macos != 'true' || needs.build-macos-universal.result == 'success') && (inputs.build_android != 'true' || needs.build-android.result == 'success') && (inputs.build_ios != 'true' || needs.build-ios.result == 'success')
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' && needs.static-validation.result == 'success' && needs.frontend-validation.result == 'success' && ((inputs.build_windows != 'true' && inputs.build_macos != 'true') || needs.desktop-rust-validation.result == 'success') && (inputs.build_windows != 'true' || needs.build-windows.result == 'success') && (inputs.build_macos != 'true' || needs.build-macos.result == 'success') && (inputs.build_android != 'true' || needs.build-android.result == 'success') && (inputs.build_ios != 'true' || needs.build-ios.result == 'success')
     permissions:
       contents: write
 

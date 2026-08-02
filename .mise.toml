@@ -51,7 +51,7 @@ description = "Run desktop Rust clippy"
 run = "node scripts/mise/rust-task.mjs lint"
 
 [tasks.rust-targets-macos]
-description = "Install Rust targets for macOS universal desktop builds"
+description = "Install Rust targets for macOS desktop builds"
 run = "rustup target add x86_64-apple-darwin aarch64-apple-darwin"
 
 [tasks.rust-targets-windows]
@@ -71,8 +71,11 @@ description = "Build the default desktop Tauri bundle"
 run = "npm run tauri -- build"
 
 [tasks.desktop-build-macos]
-description = "Build an unsigned macOS universal DMG"
-run = "npm run tauri -- build --target universal-apple-darwin --bundles dmg"
+description = "Build unsigned macOS Apple Silicon and Intel DMGs"
+run = """
+npm run tauri -- build --target aarch64-apple-darwin --bundles dmg
+npm run tauri -- build --target x86_64-apple-darwin --bundles dmg
+"""
 
 [tasks.desktop-build-macos-arm64]
 description = "Build an unsigned macOS Apple Silicon DMG"
@@ -83,16 +86,16 @@ description = "Build an unsigned macOS Intel DMG"
 run = "npm run tauri -- build --target x86_64-apple-darwin --bundles dmg"
 
 [tasks.desktop-build-windows]
-description = "Build an unsigned Windows NSIS installer"
-run = "npm run tauri -- build --bundles nsis"
+description = "Build unsigned Windows NSIS and MSI installers"
+run = "npm run tauri -- build --bundles nsis,msi"
 
 [tasks.desktop-build-windows-x64]
-description = "Build an unsigned Windows x64 NSIS installer"
-run = "npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis"
+description = "Build unsigned Windows x64 NSIS and MSI installers"
+run = "npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis,msi"
 
 [tasks.desktop-build-windows-arm64]
-description = "Build an unsigned Windows ARM64 NSIS installer"
-run = "npm run tauri -- build --target aarch64-pc-windows-msvc --bundles nsis"
+description = "Build unsigned Windows ARM64 NSIS and MSI installers"
+run = "npm run tauri -- build --target aarch64-pc-windows-msvc --bundles nsis,msi"
 
 [tasks.android-build]
 description = "Build an unsigned Android APK"
