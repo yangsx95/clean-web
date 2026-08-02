@@ -38,7 +38,7 @@ on:
           - "x64"
           - "all"
       build_android:
-        description: "Build the unsigned Android package"
+        description: "Build Android packages"
         required: true
         type: choice
         default: "false"
@@ -448,7 +448,7 @@ jobs:
           if-no-files-found: error
 
   build-android:
-    name: Build unsigned Android package
+    name: Build Android packages
     runs-on: ubuntu-latest
     needs:
       - detect-changes
@@ -494,13 +494,56 @@ jobs:
       - name: Build Android APK
         run: npm run tauri:mobile -- android build --apk
 
-      - name: Upload Android artifacts
+      - name: Create Android test signing key
+        run: |
+          mkdir -p build/android-signing
+          keytool -genkeypair \
+            -v \
+            -keystore build/android-signing/cleanweb-debug.keystore \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=CleanWeb,C=US"
+
+      - name: Sign Android APKs for sideload testing
+        run: |
+          set -euo pipefail
+          mkdir -p build/android-signed
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          mapfile -t APK_FILES < <(find apps/mobile/src-tauri/gen/android/app/build/outputs/apk -type f -name '*-unsigned.apk' | sort)
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
+            echo "No unsigned APK files found to sign." >&2
+            exit 1
+          fi
+          for APK in "${APK_FILES[@]}"; do
+            BASENAME="$(basename "$APK" .apk)"
+            OUT="build/android-signed/${BASENAME%-unsigned}-debug-signed.apk"
+            "$APKSIGNER" sign \
+              --ks build/android-signing/cleanweb-debug.keystore \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --out "$OUT" \
+              "$APK"
+            "$APKSIGNER" verify --verbose "$OUT"
+          done
+
+      - name: Upload unsigned Android artifacts
         uses: actions/upload-artifact@v7
         with:
           name: cleanweb-android-unsigned
           path: |
             apps/mobile/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
             apps/mobile/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
+
+      - name: Upload debug-signed Android artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: cleanweb-android-debug-signed
+          path: build/android-signed/*.apk
           if-no-files-found: error
 
   build-ios:

@@ -41,6 +41,7 @@ Validation:
 
 - `npm run build:mobile`
 - Android Gradle compile/package through `npm run tauri:mobile -- android build --apk`
+- GitHub Actions uploads both unsigned Android artifacts for official signing and debug-signed APKs for sideload testing. Do not install `*-unsigned.apk` directly on a device.
 - On a real Android 10+ device:
   - permission prompt appears once;
   - starting protection creates Android VPN system indicator;
