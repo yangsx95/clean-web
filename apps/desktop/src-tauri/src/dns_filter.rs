@@ -166,7 +166,7 @@ fn safe_search_response(
 ) -> Option<Vec<u8>> {
     let target = config.safe_search_mappings.get(domain)?;
     let query = request.queries.first()?;
-    let answer = safe_search_answer(query.name().clone(), query.query_type(), target)?;
+    let answers = safe_search_answers(query.name().clone(), query.query_type(), target, config)?;
     let mut response = Message::new(
         request.metadata.id,
         hickory_proto::op::MessageType::Response,
@@ -175,32 +175,76 @@ fn safe_search_response(
     response.metadata = Metadata::response_from_request(&request.metadata);
     response.metadata.recursion_available = true;
     response.add_queries(request.queries.iter().cloned());
-    response.add_answer(answer);
+    for answer in answers {
+        response.add_answer(answer);
+    }
     response.to_vec().ok()
 }
 
-fn safe_search_answer(name: Name, query_type: RecordType, target: &str) -> Option<Record> {
+fn safe_search_answers(
+    name: Name,
+    query_type: RecordType,
+    target: &str,
+    config: &DnsFilterConfig,
+) -> Option<Vec<Record>> {
     if let Ok(address) = target.parse::<IpAddr>() {
         return match (query_type, address) {
-            (RecordType::A, IpAddr::V4(address)) => Some(Record::from_rdata(
+            (RecordType::A, IpAddr::V4(address)) => Some(vec![Record::from_rdata(
                 name,
                 SAFE_SEARCH_CNAME_TTL,
                 RData::A(A(address)),
-            )),
-            (RecordType::AAAA, IpAddr::V6(address)) => Some(Record::from_rdata(
+            )]),
+            (RecordType::AAAA, IpAddr::V6(address)) => Some(vec![Record::from_rdata(
                 name,
                 SAFE_SEARCH_CNAME_TTL,
                 RData::AAAA(AAAA(address)),
-            )),
+            )]),
             _ => None,
         };
     }
     let target = Name::from_ascii(target).ok()?;
-    Some(Record::from_rdata(
+    let mut answers = vec![Record::from_rdata(
         name,
         SAFE_SEARCH_CNAME_TTL,
-        RData::CNAME(CNAME(target)),
-    ))
+        RData::CNAME(CNAME(target.clone())),
+    )];
+    if matches!(query_type, RecordType::A | RecordType::AAAA) {
+        answers.extend(resolve_safe_search_target_answers(
+            target,
+            query_type,
+            &config.upstreams,
+        ));
+    }
+    Some(answers)
+}
+
+fn resolve_safe_search_target_answers(
+    target: Name,
+    query_type: RecordType,
+    upstreams: &[String],
+) -> Vec<Record> {
+    let mut query = Message::query();
+    query.add_query(hickory_proto::op::Query::query(target.clone(), query_type));
+    let Ok(packet) = query.to_vec() else {
+        return Vec::new();
+    };
+    let Ok(response) = forward_dns_packet(&packet, upstreams) else {
+        return Vec::new();
+    };
+    let Ok(message) = Message::from_vec(&response) else {
+        return Vec::new();
+    };
+    message
+        .answers
+        .into_iter()
+        .filter(|record| {
+            record.name == target
+                && matches!(
+                    (query_type, &record.data),
+                    (RecordType::A, RData::A(_)) | (RecordType::AAAA, RData::AAAA(_))
+                )
+        })
+        .collect()
 }
 
 fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, std::io::Error> {
@@ -680,9 +724,15 @@ fn error(value: impl std::fmt::Display) -> String {
 mod tests {
     use crate::storage::AppState;
 
+    use std::{
+        net::{Ipv4Addr, UdpSocket},
+        thread,
+        time::Duration,
+    };
+
     use hickory_proto::{
         op::{Message, Query, ResponseCode},
-        rr::{Name, RecordType},
+        rr::{Name, RData, RecordType},
     };
 
     use super::*;
@@ -718,10 +768,15 @@ mod tests {
     }
 
     #[test]
-    fn safe_search_domains_return_google_cname() {
+    fn safe_search_domains_return_cname_with_target_address() {
+        let upstream = spawn_dns_upstream(
+            "forcesafesearch.google.com.",
+            RecordType::A,
+            RData::A(A(Ipv4Addr::new(216, 239, 38, 120))),
+        );
         let config = DnsFilterConfig {
             domain_index: DomainRuleIndex::default(),
-            upstreams: Vec::new(),
+            upstreams: vec![upstream],
             safe_search_enabled: true,
             safe_search_mappings: HashMap::from([(
                 "www.google.com".into(),
@@ -742,11 +797,43 @@ mod tests {
         .unwrap();
         let message = Message::from_vec(&response).unwrap();
 
-        assert_eq!(message.answers.len(), 1);
+        assert_eq!(message.answers.len(), 2);
         assert_eq!(
             message.answers[0].data.to_string(),
             "forcesafesearch.google.com."
         );
+        assert_eq!(message.answers[1].data.to_string(), "216.239.38.120");
+    }
+
+    fn spawn_dns_upstream(name: &str, expected_record_type: RecordType, data: RData) -> String {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let address = socket.local_addr().unwrap().to_string();
+        let name = Name::from_ascii(name).unwrap();
+        thread::spawn(move || {
+            let mut buffer = [0_u8; UDP_PACKET_SIZE];
+            let Ok((len, peer)) = socket.recv_from(&mut buffer) else {
+                return;
+            };
+            let request = Message::from_vec(&buffer[..len]).unwrap();
+            assert_eq!(
+                request.queries.first().map(Query::query_type),
+                Some(expected_record_type)
+            );
+            let mut response = Message::new(
+                request.metadata.id,
+                hickory_proto::op::MessageType::Response,
+                request.metadata.op_code,
+            );
+            response.metadata = Metadata::response_from_request(&request.metadata);
+            response.metadata.recursion_available = true;
+            response.add_queries(request.queries.iter().cloned());
+            response.add_answer(Record::from_rdata(name, SAFE_SEARCH_CNAME_TTL, data));
+            let _ = socket.send_to(&response.to_vec().unwrap(), peer);
+        });
+        address
     }
 
     #[test]
