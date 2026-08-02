@@ -30,6 +30,10 @@ run = "npm run build"
 description = "Build the mobile frontend"
 run = "npm run build:mobile"
 
+[tasks.diff-check]
+description = "Check staged and unstaged patches for whitespace errors"
+run = "git diff --check"
+
 [tasks.rules-check]
 description = "Validate bundled Clash rule resources"
 run = "npm run rules:check"
@@ -40,11 +44,27 @@ run = "cd apps/desktop/src-tauri && cargo fmt --check"
 
 [tasks.rust-test]
 description = "Run desktop Rust tests"
-run = "cd apps/desktop/src-tauri && cargo test"
+run = """
+ROOT="$(git rev-parse --show-toplevel)"
+mkdir -p "$ROOT/build/local-cache/mise/tmp" "$ROOT/build/local-cache/mise/cargo-home" "$ROOT/build/local-cache/mise/cargo-target/desktop-test"
+cd "$ROOT/apps/desktop/src-tauri"
+TMPDIR="$ROOT/build/local-cache/mise/tmp" \
+CARGO_HOME="$ROOT/build/local-cache/mise/cargo-home" \
+CARGO_TARGET_DIR="$ROOT/build/local-cache/mise/cargo-target/desktop-test" \
+cargo test --lib
+"""
 
 [tasks.rust-lint]
 description = "Run desktop Rust clippy"
-run = "cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings"
+run = """
+ROOT="$(git rev-parse --show-toplevel)"
+mkdir -p "$ROOT/build/local-cache/mise/tmp" "$ROOT/build/local-cache/mise/cargo-home" "$ROOT/build/local-cache/mise/cargo-target/desktop-lint"
+cd "$ROOT/apps/desktop/src-tauri"
+TMPDIR="$ROOT/build/local-cache/mise/tmp" \
+CARGO_HOME="$ROOT/build/local-cache/mise/cargo-home" \
+CARGO_TARGET_DIR="$ROOT/build/local-cache/mise/cargo-target/desktop-lint" \
+cargo clippy --all-targets -- -D warnings
+"""
 
 [tasks.rust-targets-macos]
 description = "Install Rust targets for macOS universal desktop builds"
@@ -81,6 +101,7 @@ run = "npm run tauri:mobile -- ios build --target aarch64-sim --no-sign --ci"
 [tasks.check]
 description = "Run the full local verification suite"
 run = """
+mise run diff-check
 mise run rules-check
 mise run test
 mise run build
@@ -88,3 +109,7 @@ mise run rust-fmt
 mise run rust-test
 mise run rust-lint
 """
+
+[tasks.check-precommit]
+description = "Run the required checks before committing"
+run = "mise run check"
