@@ -53,6 +53,12 @@ const ARM_SHA256: &str = "";
 const ARM_BINARY_SHA256: &str = "";
 const CONTROLLER: &str = "127.0.0.1:19090";
 
+struct MihomoAsset {
+    archive: &'static str,
+    archive_sha256: &'static str,
+    binary_sha256: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreStatus {
@@ -1297,22 +1303,14 @@ pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
 }
 
 fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
-    #[cfg(target_os = "windows")]
-    if cfg!(target_arch = "aarch64") {
-        return Err("Windows ARM64 is not supported".into());
-    }
-    let (asset, archive_expected, binary_expected) = if cfg!(target_arch = "aarch64") {
-        (ARM_GZ, ARM_SHA256, ARM_BINARY_SHA256)
-    } else {
-        (X64_GZ, X64_SHA256, X64_BINARY_SHA256)
-    };
+    let asset = selected_mihomo_asset()?;
     #[cfg(target_os = "windows")]
     let output = runtime.join("mihomo.exe");
     #[cfg(not(target_os = "windows"))]
     let output = runtime.join("mihomo");
     if output.is_file() {
         let bytes = fs::read(&output).map_err(error)?;
-        if format!("{:x}", Sha256::digest(&bytes)) == binary_expected {
+        if format!("{:x}", Sha256::digest(&bytes)) == asset.binary_sha256 {
             return Ok(output);
         }
     }
@@ -1321,12 +1319,12 @@ fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
         .resource_dir()
         .map_err(error)?
         .join("resources/mihomo")
-        .join(asset);
+        .join(asset.archive);
     if !resource.is_file() {
         return Err(format!("缺少官方 Mihomo 内核资源：{}", resource.display()));
     }
     let bytes = fs::read(&resource).map_err(error)?;
-    if format!("{:x}", Sha256::digest(&bytes)) != archive_expected {
+    if format!("{:x}", Sha256::digest(&bytes)) != asset.archive_sha256 {
         return Err("Mihomo 内核校验失败".into());
     }
     let mut decoder = GzDecoder::new(bytes.as_slice());
@@ -1345,6 +1343,40 @@ fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
         fs::set_permissions(&output, fs::Permissions::from_mode(0o700)).map_err(error)?;
     }
     Ok(output)
+}
+
+#[cfg(target_os = "macos")]
+fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
+    Ok(if cfg!(target_arch = "aarch64") {
+        MihomoAsset {
+            archive: ARM_GZ,
+            archive_sha256: ARM_SHA256,
+            binary_sha256: ARM_BINARY_SHA256,
+        }
+    } else {
+        MihomoAsset {
+            archive: X64_GZ,
+            archive_sha256: X64_SHA256,
+            binary_sha256: X64_BINARY_SHA256,
+        }
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
+    if cfg!(target_arch = "aarch64") {
+        return Err("Windows ARM64 is not supported".into());
+    }
+    Ok(MihomoAsset {
+        archive: X64_GZ,
+        archive_sha256: X64_SHA256,
+        binary_sha256: X64_BINARY_SHA256,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
+    Err("Mihomo desktop core is only bundled for macOS and Windows".into())
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -1988,7 +2020,7 @@ mod tests {
         ));
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn official_arm_core_accepts_generated_config() {
         let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
