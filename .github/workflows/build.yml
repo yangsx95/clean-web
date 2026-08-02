@@ -150,8 +150,8 @@ jobs:
           echo "desktop=$desktop" >> "$GITHUB_OUTPUT"
           echo "mobile=$mobile" >> "$GITHUB_OUTPUT"
 
-  checks:
-    name: Run shared checks once
+  static-validation:
+    name: Validate static assets
     runs-on: ubuntu-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.desktop == 'true' || needs.detect-changes.outputs.mobile == 'true'
@@ -160,22 +160,72 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup mise
-        uses: jdx/mise-action@v2
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          install: true
-          cache: true
+          node-version: 22
+          cache: npm
 
-      - name: Cache npm
-        uses: actions/cache@v4
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Validate bundled rules
+        run: npm run rules:check
+
+  frontend-validation:
+    name: Validate frontend
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.desktop == 'true' || needs.detect-changes.outputs.mobile == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            npm-${{ runner.os }}-
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test frontend
+        run: npm test
+
+      - name: Build desktop frontend
+        if: needs.detect-changes.outputs.desktop == 'true'
+        run: npm run build
+
+      - name: Build mobile frontend
+        if: needs.detect-changes.outputs.mobile == 'true'
+        run: npm run build:mobile
+
+  desktop-rust-validation:
+    name: Validate desktop Rust
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.desktop == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust checks
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/clean-web/mise
           key: rust-checks-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml', 'crates/**/Cargo.toml') }}
@@ -183,54 +233,52 @@ jobs:
             rust-checks-${{ runner.os }}-
 
       - name: Install dependencies
-        run: mise run install
+        run: npm ci
 
-      - name: Check patch whitespace
-        run: mise run diff-check
-
-      - name: Validate bundled rules
-        run: mise run rules-check
-
-      - name: Test frontend
-        run: mise run test
-
-      - name: Build desktop frontend
-        if: needs.detect-changes.outputs.desktop == 'true'
-        run: mise run build
-
-      - name: Build mobile frontend
-        if: needs.detect-changes.outputs.mobile == 'true'
-        run: mise run build-mobile
+      - name: Install Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf \
+            pkg-config \
+            xdg-utils
 
       - name: Check Rust formatting
-        if: needs.detect-changes.outputs.desktop == 'true'
-        run: mise run rust-fmt
+        run: cd apps/desktop/src-tauri && cargo fmt --check
 
       - name: Test Rust
-        if: needs.detect-changes.outputs.desktop == 'true'
-        run: mise run rust-test
+        run: node scripts/mise/rust-task.mjs test
 
       - name: Lint Rust
-        if: needs.detect-changes.outputs.desktop == 'true'
-        run: mise run rust-lint
+        run: node scripts/mise/rust-task.mjs lint
 
   build-windows:
     name: Build unsigned Windows installer
     runs-on: windows-latest
     needs:
       - detect-changes
-      - checks
+      - static-validation
+      - frontend-validation
+      - desktop-rust-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_windows == 'true')
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup mise
-        uses: jdx/mise-action@v2
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          install: true
-          cache: true
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -239,10 +287,10 @@ jobs:
           key: desktop-windows
 
       - name: Install frontend dependencies
-        run: mise run install
+        run: npm ci
 
       - name: Build Tauri NSIS installer
-        run: mise run desktop-build-windows
+        run: npm run tauri -- build --bundles nsis
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
@@ -258,21 +306,26 @@ jobs:
     runs-on: macos-latest
     needs:
       - detect-changes
-      - checks
+      - static-validation
+      - frontend-validation
+      - desktop-rust-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == 'true')
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup mise
-        uses: jdx/mise-action@v2
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          install: true
-          cache: true
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Rust targets
-        run: mise run rust-targets-macos
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -281,10 +334,10 @@ jobs:
           key: desktop-macos
 
       - name: Install frontend dependencies
-        run: mise run install
+        run: npm ci
 
       - name: Build Tauri Universal DMG
-        run: mise run desktop-build-macos
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
@@ -300,18 +353,22 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - detect-changes
-      - checks
+      - static-validation
+      - frontend-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.mobile == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == 'true')
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup mise
-        uses: jdx/mise-action@v2
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          install: true
-          cache: true
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -321,10 +378,10 @@ jobs:
           cache: gradle
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Rust targets
-        run: mise run rust-targets-android
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -333,10 +390,10 @@ jobs:
           key: mobile-android
 
       - name: Install dependencies
-        run: mise run install
+        run: npm ci
 
       - name: Build Android APK
-        run: mise run android-build
+        run: npm run tauri:mobile -- android build --apk
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v7
@@ -352,21 +409,25 @@ jobs:
     runs-on: macos-latest
     needs:
       - detect-changes
-      - checks
+      - static-validation
+      - frontend-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.mobile == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_ios == 'true')
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup mise
-        uses: jdx/mise-action@v2
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          install: true
-          cache: true
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Rust targets
-        run: mise run rust-targets-ios
+        run: rustup target add aarch64-apple-ios-sim x86_64-apple-ios
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -375,10 +436,10 @@ jobs:
           key: mobile-ios
 
       - name: Install dependencies
-        run: mise run install
+        run: npm ci
 
       - name: Build unsigned iOS simulator app
-        run: mise run ios-build-sim
+        run: npm run tauri:mobile -- ios build --target aarch64-sim --no-sign --ci
 
       - name: Package iOS artifacts
         shell: bash
@@ -403,12 +464,14 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs:
-      - checks
+      - static-validation
+      - frontend-validation
+      - desktop-rust-validation
       - build-windows
       - build-macos-universal
       - build-android
       - build-ios
-    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' && needs.checks.result == 'success' && (inputs.build_windows != 'true' || needs.build-windows.result == 'success') && (inputs.build_macos != 'true' || needs.build-macos-universal.result == 'success') && (inputs.build_android != 'true' || needs.build-android.result == 'success') && (inputs.build_ios != 'true' || needs.build-ios.result == 'success')
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' && needs.static-validation.result == 'success' && needs.frontend-validation.result == 'success' && ((inputs.build_windows != 'true' && inputs.build_macos != 'true') || needs.desktop-rust-validation.result == 'success') && (inputs.build_windows != 'true' || needs.build-windows.result == 'success') && (inputs.build_macos != 'true' || needs.build-macos-universal.result == 'success') && (inputs.build_android != 'true' || needs.build-android.result == 'success') && (inputs.build_ios != 'true' || needs.build-ios.result == 'success')
     permissions:
       contents: write
 
@@ -437,7 +500,7 @@ jobs:
           path: release-artifacts
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.release_tag }}
           files: |
