@@ -281,6 +281,7 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri -> target
           key: desktop-windows
+          save-if: false
 
       - name: Install frontend dependencies
         run: npm ci
@@ -327,6 +328,7 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri -> target
           key: desktop-macos
+          save-if: false
 
       - name: Install frontend dependencies
         run: npm ci
@@ -383,6 +385,7 @@ jobs:
         with:
           workspaces: apps/mobile/src-tauri -> target
           key: mobile-android
+          save-if: false
 
       - name: Install dependencies
         run: npm ci
@@ -429,6 +432,7 @@ jobs:
         with:
           workspaces: apps/mobile/src-tauri -> target
           key: mobile-ios
+          save-if: false
 
       - name: Install dependencies
         run: npm ci
