@@ -10,6 +10,7 @@ use std::process::Command;
 #[cfg(not(target_os = "macos"))]
 use std::{fs::OpenOptions, process::Stdio};
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use flate2::read::GzDecoder;
 use reqwest::Url;
 use rusqlite::{params, OptionalExtension};
@@ -45,14 +46,9 @@ const X64_GZ: &str = "mihomo-windows-amd64-v1.19.28.gz";
 const X64_SHA256: &str = "16c476b5b80f3b6b120d2bb49f8b79626a5ad7f79c2898dac848f2730bc24944";
 #[cfg(target_os = "windows")]
 const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52dd965ef207ae4f0eeb";
-#[cfg(target_os = "windows")]
-const ARM_GZ: &str = "";
-#[cfg(target_os = "windows")]
-const ARM_SHA256: &str = "";
-#[cfg(target_os = "windows")]
-const ARM_BINARY_SHA256: &str = "";
 const CONTROLLER: &str = "127.0.0.1:19090";
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct MihomoAsset {
     archive: &'static str,
     archive_sha256: &'static str,
@@ -1302,6 +1298,7 @@ pub(crate) fn controller_secret(state: &AppState) -> Result<String, String> {
     Ok(value)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
     let asset = selected_mihomo_asset()?;
     #[cfg(target_os = "windows")]
@@ -1375,7 +1372,7 @@ fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
+fn ensure_binary(_app: &AppHandle, _runtime: &Path) -> Result<PathBuf, String> {
     Err("Mihomo desktop core is only bundled for macOS and Windows".into())
 }
 

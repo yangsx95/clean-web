@@ -945,6 +945,7 @@ fn detect_macos_conflicts() -> NetworkConflicts {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_command(program: &str, args: &[&str]) -> Option<String> {
     Command::new(program)
         .args(args)
