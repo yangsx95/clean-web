@@ -1,7 +1,7 @@
 use ipnet::IpNet;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, net::IpAddr};
+use std::net::IpAddr;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,8 +224,8 @@ pub struct DomainRuleIndexBuilder {
 
 #[derive(Debug, Default)]
 struct DomainMatcherBuilder {
-    exact: BTreeSet<String>,
-    suffix: BTreeSet<String>,
+    exact: Vec<String>,
+    suffix: Vec<String>,
 }
 
 impl DomainRuleIndexBuilder {
@@ -254,10 +254,10 @@ impl DomainMatcherBuilder {
     fn insert(&mut self, kind: MatcherKind, pattern: &str) {
         match kind {
             MatcherKind::Exact => {
-                self.exact.insert(pattern.to_owned());
+                self.exact.push(pattern.to_owned());
             }
             MatcherKind::Suffix => {
-                self.suffix.insert(reverse_domain(pattern));
+                self.suffix.push(reverse_domain(pattern));
             }
             _ => {}
         }
@@ -285,10 +285,12 @@ impl DomainMatcher {
     }
 }
 
-fn build_fst_set(values: BTreeSet<String>) -> Result<Option<fst::Set<Vec<u8>>>, RuleError> {
+fn build_fst_set(mut values: Vec<String>) -> Result<Option<fst::Set<Vec<u8>>>, RuleError> {
     if values.is_empty() {
         return Ok(None);
     }
+    values.sort_unstable();
+    values.dedup();
     fst::Set::from_iter(values)
         .map(Some)
         .map_err(|_| RuleError::InvalidDomain("domain index".into()))
