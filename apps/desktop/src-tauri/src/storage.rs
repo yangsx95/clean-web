@@ -305,6 +305,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
     add_access_log_repeat_count(db)?;
     create_access_log_indexes(db)?;
     create_imported_rule_indexes(db)?;
+    migrate_adblock_dns_parser_v2(db)?;
     let defaults = [
         ("protection_enabled", "false"),
         ("proxy_enabled", "false"),
@@ -359,6 +360,39 @@ fn create_imported_rule_indexes(db: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+fn migrate_adblock_dns_parser_v2(db: &Connection) -> rusqlite::Result<()> {
+    let completed = db
+        .query_row(
+            "SELECT value FROM settings WHERE key='migration.adblock_dns_parser_v2'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|value| value == "true");
+    if completed {
+        return Ok(());
+    }
+    db.execute(
+        "DELETE FROM imported_rules
+          WHERE subscription_id IN (
+            SELECT id FROM subscriptions WHERE format='adblock'
+          )",
+        [],
+    )?;
+    db.execute(
+        "UPDATE subscriptions
+            SET last_updated_at=NULL,last_error=NULL
+          WHERE format='adblock'",
+        [],
+    )?;
+    db.execute(
+        "INSERT OR REPLACE INTO settings(key,value)
+         VALUES('migration.adblock_dns_parser_v2','true')",
+        [],
+    )?;
+    Ok(())
+}
+
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
     for source in default_rule_sources() {
         db.execute(
@@ -396,6 +430,8 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
         "DELETE FROM subscriptions
           WHERE id LIKE 'builtin:blackmatrix7:%'
              OR id='default:blocklistproject:malware'
+             OR id='default:easylist:ads'
+             OR id='default:easylist:privacy'
              OR id='local:cleanweb:entertainment-cdn'
              OR id='default:cleanweb:strict-supplement'",
         [],
@@ -1740,17 +1776,19 @@ mod tests {
     fn recommended_sources_are_metadata_only() {
         let sources = get_recommended_rule_sources();
         assert!(
-            sources.iter().any(|source| source.name == "EasyList · Ads"
-                && source.format == "adblock"
-                && source.category == "ads"),
-            "推荐源应开放给添加订阅入口"
+            sources
+                .iter()
+                .any(|source| source.name == "StevenBlack · Unified Hosts"
+                    && source.format == "hosts"
+                    && source.category == "ads"),
+            "推荐广告源应优先使用 DNS/hosts 友好的格式"
         );
 
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
         let recommended_subscription_count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE name='AdGuard · Base Filter'",
+                "SELECT COUNT(*) FROM subscriptions WHERE name='Dan Pollock · Hosts'",
                 [],
                 |row| row.get(0),
             )
@@ -1822,15 +1860,15 @@ mod tests {
             "娱乐内容具体分类规则必须自动刷新导入"
         );
         assert_eq!(
-            records.get("default:easylist:ads"),
+            records.get("default:stevenblack:unified"),
             Some(&(
-                "https://easylist.to/easylist/easylist.txt".into(),
-                "adblock".into(),
+                "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts".into(),
+                "hosts".into(),
                 Some(24),
                 false,
                 true,
             )),
-            "广告规则应作为默认关闭的可选内置订阅"
+            "广告规则应使用 DNS/hosts 友好的可选内置订阅"
         );
         let imported_count: i64 = db
             .query_row(
@@ -2158,6 +2196,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 3, "内置能力订阅初始化时必须恢复");
+    }
+
+    #[test]
+    fn adblock_dns_parser_migration_discards_legacy_imports() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled,last_updated_at)
+             VALUES('ads','rule','Ads','https://example.test/ads.txt','adblock','ads',1,CURRENT_TIMESTAMP),
+                   ('hosts','rule','Hosts','https://example.test/hosts.txt','hosts','pornography',1,CURRENT_TIMESTAMP)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+             VALUES('ads','ad-1','Suffix','google.com','Block','ads',1),
+                   ('hosts','host-1','Suffix','blocked.example','Block','pornography',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM settings WHERE key='migration.adblock_dns_parser_v2'",
+            [],
+        )
+        .unwrap();
+
+        initialize_schema(&db).unwrap();
+
+        let adblock_rules: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id='ads'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let hosts_rules: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id='hosts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let adblock_updated_at: Option<String> = db
+            .query_row(
+                "SELECT last_updated_at FROM subscriptions WHERE id='ads'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(adblock_rules, 0);
+        assert_eq!(hosts_rules, 1);
+        assert_eq!(adblock_updated_at, None);
     }
 
     #[test]

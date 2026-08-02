@@ -166,8 +166,11 @@ fn parse_ip_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>, St
 }
 
 fn parse_adblock_line(line: &str) -> Result<Option<(MatcherKind, String, Action)>, String> {
-    if line.contains("##") || line.contains("#@#") || line.contains("$script") {
-        return Err("cosmetic and script rules are unsupported".into());
+    if line.contains("##") || line.contains("#@#") {
+        return Err("cosmetic Adblock rules are unsupported".into());
+    }
+    if line.contains('$') {
+        return Err("option-scoped Adblock rules are unsupported for DNS filtering".into());
     }
     if let Some(value) = line.strip_prefix("@@||") {
         return adblock_domain(value, Action::Allow);
@@ -270,6 +273,18 @@ mod tests {
         assert_eq!(report.rules.len(), 2);
         assert_eq!(report.rules[1].rule.action, Action::Allow);
         assert_eq!(report.ignored.len(), 1);
+    }
+
+    #[test]
+    fn adblock_option_scoped_rules_are_not_dns_blocks() {
+        let report = import(
+            SubscriptionFormat::Adblock,
+            "||google.com^$third-party\n||baidu.com^$script\n@@||github.com^$domain=example.com\n||ads.example^",
+        );
+
+        assert_eq!(report.rules.len(), 1);
+        assert_eq!(report.rules[0].rule.pattern, "ads.example");
+        assert_eq!(report.ignored.len(), 3);
     }
 
     #[test]

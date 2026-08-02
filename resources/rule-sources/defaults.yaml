@@ -138,28 +138,28 @@ default_rule_sources:
     toggleable: true
     enabled_by_default: false
     description: AdAway 官方 hosts 广告拦截列表，体量较轻
-  - id: default:easylist:ads
-    name: EasyList · Ads
-    url: https://easylist.to/easylist/easylist.txt
-    format: adblock
+  - id: default:stevenblack:unified
+    name: StevenBlack · Unified Hosts
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+    format: hosts
     category: ads
     update_interval_hours: 24
     ui_group: 广告与跟踪
     ui_order: 71
     toggleable: true
     enabled_by_default: false
-    description: EasyList 官方英文广告过滤规则
-  - id: default:easylist:privacy
-    name: EasyPrivacy · Tracking
-    url: https://easylist.to/easylist/easyprivacy.txt
-    format: adblock
+    description: StevenBlack 合并去重 hosts 列表，覆盖广告、跟踪与恶意域名
+  - id: default:loyalsoldier:reject
+    name: Loyalsoldier · Reject Domains
+    url: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
+    format: domain-list
     category: ads
     update_interval_hours: 24
     ui_group: 广告与跟踪
     ui_order: 72
     toggleable: true
     enabled_by_default: false
-    description: EasyPrivacy 官方跟踪器拦截规则
+    description: Loyalsoldier 广告与跟踪纯域名列表，适合 DNS 层拦截
   - id: default:adguard:dns-filter
     name: AdGuard · DNS Filter
     url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
@@ -211,31 +211,11 @@ recommended_rule_sources:
     format: hosts
     category: ads
     description: AdAway 官方 hosts 列表，适合作为轻量广告拦截源
-  - name: EasyList · Ads
-    url: https://easylist.to/easylist/easylist.txt
-    format: adblock
-    category: ads
-    description: EasyList 官方英文广告过滤列表，覆盖主流网页广告
-  - name: EasyPrivacy · Tracking
-    url: https://easylist.to/easylist/easyprivacy.txt
-    format: adblock
-    category: ads
-    description: EasyPrivacy 官方跟踪器过滤列表，补充隐私保护
   - name: AdGuard · DNS Filter
     url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
     format: adblock
     category: ads
     description: AdGuard 官方 DNS 过滤规则，适合网络层广告与跟踪拦截
-  - name: AdGuard · Base Filter
-    url: https://filters.adtidy.org/extension/chromium/filters/2.txt
-    format: adblock
-    category: ads
-    description: AdGuard 官方基础过滤规则，覆盖网页广告和常见跟踪
-  - name: AdGuard · Chinese Filter
-    url: https://filters.adtidy.org/extension/chromium/filters/224.txt
-    format: adblock
-    category: ads
-    description: AdGuard 官方中文过滤规则，适合补充国内网页广告
   - name: StevenBlack · Unified Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
     format: hosts
@@ -266,16 +246,6 @@ recommended_rule_sources:
     format: hosts
     category: malware
     description: URLhaus 实时恶意软件分发域名列表
-  - name: EasyList China
-    url: https://easylist-downloads.adblockplus.org/easylistchina.txt
-    format: adblock
-    category: ads
-    description: EasyList 中文补充规则，覆盖国内网站广告
-  - name: uBlock 隐私保护
-    url: https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt
-    format: adblock
-    category: ads
-    description: uBlock Origin 隐私保护规则，拦截跟踪器和指纹收集
   - name: Loyalsoldier 直连域名
     url: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
     format: domain-list
