@@ -1917,12 +1917,18 @@ mod tests {
         let state = AppState::open(":memory:").unwrap();
         let db = state.db.lock().unwrap();
         db.execute(
-            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('default:blocklistproject:porn','rule','内置规则 · BlocklistProject porn-nl','https://example.test/porn.txt','domain-list','pornography',1)",
+            "UPDATE subscriptions
+             SET name='内置规则 · BlocklistProject porn-nl',
+                 url='https://example.test/porn.txt'
+             WHERE id='default:blocklistproject:porn'",
             [],
         )
         .unwrap();
         db.execute(
-            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('local:cleanweb:entertainment-cdn','rule','内置规则 · CleanWeb entertainment-cdn','https://example.test/entertainment.txt','clash','entertainment',1)",
+            "UPDATE subscriptions
+             SET name='内置规则 · CleanWeb entertainment-cdn',
+                 url='https://example.test/entertainment.txt'
+             WHERE id='local:cleanweb:entertainment-cdn'",
             [],
         )
         .unwrap();
