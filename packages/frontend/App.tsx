@@ -1,4 +1,4 @@
-import React, { memo, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import React, { memo, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import jsQR from "jsqr";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Search, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
@@ -172,6 +172,14 @@ function preventPasswordImeTextInput(event: React.KeyboardEvent<HTMLInputElement
   if (event.nativeEvent.isComposing || event.keyCode === 229) event.preventDefault();
 }
 
+const plainTextInputProps = {
+  autoComplete: "off",
+  autoCorrect: "off",
+  autoCapitalize: "none",
+  spellCheck: false,
+  "data-form-type": "other",
+} as const;
+
 function sanitizePasswordInput(event: React.FormEvent<HTMLInputElement>) {
   const el = event.currentTarget;
   el.value = el.value.replace(/[^\x20-\x7E]/g, "");
@@ -203,6 +211,7 @@ export function App() {
   const debouncedAccessLogSearch=useDebouncedValue(accessLogSearch,ACCESS_LOG_SEARCH_DEBOUNCE_MS);
   const [parentRules,setParentRules]=useState<backend.ParentRule[]>([]);
   const [browserPolicyStatus,setBrowserPolicyStatus]=useState<backend.BrowserPolicyStatus|null>(null);
+  const [proxyInfoCache,setProxyInfoCache]=useState<Record<string,backend.SubscriptionProxyInfo>>({});
   const titles: Record<AppPage, string> = { overview: "网络过滤已开启", rules: "规则管理", logs: "访问日志", proxy: "代理节点", settings: "设置" };
   const requestAction = (action: "rules" | "proxy", mode: ProxyImportMode = "subscription") => { if (action === "proxy") setProxyImportMode(mode); setDialog(locked ? "unlock" : action); };
   const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
@@ -231,7 +240,7 @@ export function App() {
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(count=>count>0?reloadRuntime(sessionToken,{silent:true}):undefined).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
-  const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats); setLocked(true); };
+  const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);setProxyInfoCache({}); setLocked(true); };
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
     if(!options.silent)showPolicyStatus({state:"applying",message:options.applyingMessage??"正在应用网络策略…"});
     try{
@@ -319,7 +328,7 @@ export function App() {
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError(null);showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){const notice=toErrorNotice(reason,"规则已添加，但保护配置重载失败");setRuntimeError({message:"规则已添加，但保护配置重载失败",detail:notice.detail??notice.message});}});};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
   const deleteParentRule=async(id:string)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在删除规则并应用配置…"});await backend.deleteParentRule(sessionToken,id);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
-  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});setSettings(await backend.getSettings());}catch(reason){const notice=toErrorNotice(reason,"代理节点切换失败，请稍后重试");showPolicyFailure();setRuntimeError(notice);throw reason;}};
+  const selectProxyNode=async(name:string)=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);setSettings(previous=>previous?({...previous,automaticNodeSelection:false}):previous);try{showPolicyStatus({state:"applying",message:"正在切换代理节点…"});const result=await backend.selectProxy(sessionToken,"CleanWeb",name);if(result?.requiresReload)await reloadRuntime(sessionToken,{applyingMessage:"正在应用代理节点…"});else showPolicyStatus({state:"applied",message:"代理节点已切换"});}catch(reason){const notice=toErrorNotice(reason,"代理节点切换失败，请稍后重试");showPolicyFailure();setRuntimeError(notice);throw reason;}};
   const applyBrowserPolicies=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.setting("browser_policies"),async()=>{showPolicyStatus({state:"applying",message:"正在配置浏览器增强保护…"});try{const status=await backend.applyBrowserPolicies(sessionToken);setBrowserPolicyStatus(status);showPolicyStatus({state:"applied",message:"浏览器策略已写入，重启浏览器后完全生效"});}catch(reason){const notice=toErrorNotice(reason,"浏览器增强保护配置失败，请检查系统授权后重试");showPolicyFailure();setRuntimeError(notice);}});};
   useEffect(()=>{
     let cancelled=false;
@@ -340,6 +349,15 @@ export function App() {
     }).then(stop=>{if(cancelled)stop();else unlisten=stop;});
     return()=>{cancelled=true;if(unlisten)unlisten();};
   },[]);
+  useEffect(()=>{if(refreshingId)setProxyInfoCache(previous=>{const next={...previous};delete next[refreshingId];return next;});},[refreshingId]);
+  useEffect(()=>{
+    const proxyIds=new Set(subscriptions.filter(item=>item.kind==="proxy").map(item=>item.id));
+    setProxyInfoCache(previous=>{
+      const next:Record<string,backend.SubscriptionProxyInfo>={};
+      for(const [id,info] of Object.entries(previous))if(proxyIds.has(id))next[id]=info;
+      return next;
+    });
+  },[subscriptions]);
   useEffect(()=>{
     if(!sessionToken)return;
     if(page!=="overview"&&page!=="logs")return;
@@ -402,7 +420,7 @@ export function App() {
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={refreshSubscription} onRefreshDue={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
-      {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
+      {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
       {page === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onApplyBrowserPolicies={applyBrowserPolicies} />}
     </main>
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
@@ -587,7 +605,7 @@ function LogsPage({ locked, logs, logStats, decisionFilter, search, isBusy, sett
         <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills" role="group" aria-label="日志筛选"><button className={decisionFilter==="all"?"active":""} onClick={()=>onDecisionFilterChange("all")}>全部</button><button className={decisionFilter==="block"?"active":""} onClick={()=>onDecisionFilterChange("block")}>已拦截</button><button className={decisionFilter==="warning"?"active":""} onClick={()=>onDecisionFilterChange("warning")}>未知 IP</button></div></div>
         <div className="log-search-wrap">
           <Search size={16} aria-hidden="true" />
-          <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>onSearchChange(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" />
+          <input className="log-search" aria-label="搜索访问日志" value={search} onChange={event=>onSearchChange(event.target.value)} placeholder="搜索域名、IP、规则、分类、路由" {...plainTextInputProps} />
           {search&&<button type="button" className="log-search-clear" aria-label="清空日志搜索" onClick={()=>onSearchChange("")}><X size={14} /></button>}
         </div>
         <div className="cw-log-list">
@@ -652,18 +670,27 @@ function BrowserPolicyPanel({ settings, status, busy, isBusy, onToggle, onApply 
   const installedCount = browsers.filter(browser => browser.installed).length;
   return <article className="cw-panel browser-policy-panel">
     <div className="cw-panel-head"><h3>浏览器增强保护</h3></div>
-    <p>按浏览器查看和配置增强保护；只有点击应用时才会请求系统授权。</p>
+    <p>Chromium 内核浏览器共用同一组策略开关；下方按浏览器显示安装和配置状态。</p>
+    <div className="browser-policy-global">
+      <h4>Chromium 统一策略</h4>
+      <div className="browser-policy-controls">
+        {browserPolicyOptions.map(option=>{
+          const settingKey = `browser_policy.${option.key}`;
+          const checked = settings.browserPolicy[option.key] ?? true;
+          return <SettingToggle key={option.key} title={option.title} label={option.title} note={checked ? "启用后会应用到已安装的 Chromium 浏览器" : "未启用"} checked={checked} disabled={isBusy(busyScope.setting(settingKey))} onChange={(value)=>onToggle(settingKey,value)}/>;
+        })}
+      </div>
+    </div>
     <div className="browser-policy-list">
-      {browsers.length === 0 ? <div className="table-empty">正在读取浏览器状态</div> : browsers.map(browser => <BrowserPolicyRow browser={browser} settings={settings} isBusy={isBusy} onToggle={onToggle} key={browser.id}/>)}
+      {browsers.length === 0 ? <div className="table-empty">正在读取浏览器状态</div> : browsers.map(browser => <BrowserPolicyRow browser={browser} key={browser.id}/>)}
     </div>
     <button className="primary full" disabled={busy || installedCount === 0} onClick={()=>void onApply()}><MonitorCheck size={16}/>{busy ? "配置中…" : "应用浏览器保护"}</button>
   </article>;
 }
 
-function BrowserPolicyRow({ browser, settings, isBusy, onToggle }: { browser:backend.BrowserPolicyBrowserStatus; settings:backend.Settings; isBusy:(scope:string)=>boolean; onToggle:(key:string,enabled:boolean)=>Promise<void> }) {
+function BrowserPolicyRow({ browser }: { browser:backend.BrowserPolicyBrowserStatus }) {
   const statusText = !browser.installed ? "未安装" : browser.configured ? "已配置" : "需配置";
   const statusClass = !browser.installed ? "missing" : browser.configured ? "configured" : "pending";
-  const detailByKey = new Map(browser.details.map(detail => [detail.key.replace("browser_policy.",""), detail]));
   if (!browser.installed) {
     return <div className="browser-policy-row is-missing">
       <div className="browser-policy-main"><b>{browser.name}</b></div>
@@ -674,15 +701,6 @@ function BrowserPolicyRow({ browser, settings, isBusy, onToggle }: { browser:bac
     <div className="browser-policy-main">
       <b>{browser.name}</b>
       <span>{browser.details.filter(detail=>detail.enabled).map(detail => detail.configured ? detail.label : `${detail.label}待配置`).join(" · ") || "未启用浏览器策略"}</span>
-      <div className="browser-policy-controls">
-        {browserPolicyOptions.map(option=>{
-          const detail = detailByKey.get(option.key);
-          const settingKey = `browser_policy.${option.key}`;
-          const checked = settings.browserPolicy[option.key] ?? detail?.enabled ?? true;
-          const configured = !checked || detail?.configured;
-          return <SettingToggle key={option.key} title={option.title} label={`${browser.name} ${option.title}`} note={checked ? configured ? "已配置" : "待应用" : "未启用"} checked={checked} disabled={isBusy(busyScope.setting(settingKey))} onChange={(value)=>onToggle(settingKey,value)}/>;
-        })}
-      </div>
     </div>
     <strong className={statusClass}>{statusText}</strong>
   </div>;
@@ -812,6 +830,10 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     setDiagnosing(true);
     setDiagnosticError("");
     try {
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+        else setTimeout(resolve, 0);
+      });
       setDiagnosticResult(await backend.diagnoseRuleMatch(sessionToken,diagnosticQuery));
     } catch (reason) {
       setDiagnosticResult(null);
@@ -903,21 +925,20 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     {tab==="diagnose"&&<><section className="toolbar"><div><h2>规则诊断</h2><p>输入域名、URL、IP 或网段，查看当前启用规则中最终会命中的规则。</p></div></section>
     <section className="table-card rule-diagnostic-panel">
       <form className="rule-diagnostic-form" onSubmit={(event)=>void diagnose(event)}>
-        <div className="log-search-wrap rule-diagnostic-input"><Search size={16}/><input className="log-search" aria-label="规则诊断目标" value={diagnosticQuery} onChange={event=>setDiagnosticQuery(event.target.value)} placeholder="example.com、https://example.com/path、8.8.8.8" /></div>
+        <div className="log-search-wrap rule-diagnostic-input"><Search size={16}/><input className="log-search" aria-label="规则诊断目标" value={diagnosticQuery} onChange={event=>setDiagnosticQuery(event.target.value)} placeholder="example.com、https://example.com/path、8.8.8.8" {...plainTextInputProps} /></div>
         <button className="primary" type="submit" disabled={!sessionToken||diagnosing||!diagnosticQuery.trim()}>{diagnosing?"诊断中…":"开始诊断"}</button>
       </form>
       {diagnosticError&&<div className="form-error">{diagnosticError}</div>}
       {!diagnosticResult&&!diagnosticError&&<div className="table-empty">输入目标后查看命中结果</div>}
       {diagnosticResult&&<div className="rule-diagnostic-result">
         <div className="diagnostic-summary">
-          <div><span>解析目标</span><b>{diagnosticResult.normalizedDomain??diagnosticResult.targetIp??diagnosticResult.query}</b></div>
-          <strong className={diagnosticResult.matched?`rule-action ${diagnosticResult.matched.action}`:"rule-action allow"}>{diagnosticResult.matched?ruleActionLabel(diagnosticResult.matched.action as backend.ParentRule["action"]):"未命中"}</strong>
+          <div><span>整体结果</span><b>{diagnosticResult.summaryLabel??(diagnosticResult.matched?ruleActionLabel(diagnosticResult.matched.action as backend.ParentRule["action"]):"未命中，按默认策略处理")}</b><small>{diagnosticResult.normalizedDomain??diagnosticResult.targetIp??diagnosticResult.query}</small></div>
+          <strong className={`rule-action ${diagnosticResult.summaryAction??diagnosticResult.matched?.action??"allow"}`}>{diagnosticResult.matched?ruleActionLabel(diagnosticResult.matched.action as backend.ParentRule["action"]):"未命中"}</strong>
         </div>
-        {diagnosticResult.matched?<DiagnosticRuleCard match={diagnosticResult.matched} primary matchKindLabel={matchKindLabel} ruleActionLabel={ruleActionLabel}/>:<div className="table-empty">当前启用规则没有命中该目标，将进入默认放行/路由逻辑。</div>}
-        {diagnosticResult.candidates.length>1&&<div className="diagnostic-candidates">
-          <h3>候选命中</h3>
-          {diagnosticResult.candidates.slice(1).map(match=><DiagnosticRuleCard match={match} key={match.id} matchKindLabel={matchKindLabel} ruleActionLabel={ruleActionLabel}/>)}
-        </div>}
+        {diagnosticResult.candidates.length>0?<div className="diagnostic-candidates">
+          <h3>条目结果</h3>
+          {diagnosticResult.candidates.map((match,index)=><DiagnosticRuleCard match={match} primary={index===0} key={match.id} matchKindLabel={matchKindLabel} ruleActionLabel={ruleActionLabel}/>)}
+        </div>:<div className="table-empty">当前启用规则没有命中该目标，将进入默认放行/路由逻辑。</div>}
       </div>}
     </section></>}
   </>;
@@ -926,14 +947,13 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
 function DiagnosticRuleCard({ match, primary=false, matchKindLabel, ruleActionLabel }: { match:backend.RuleDiagnosticMatch; primary?:boolean; matchKindLabel:(kind:string)=>string; ruleActionLabel:(action:backend.ParentRule["action"])=>string }) {
   return <div className={`diagnostic-rule-card${primary?" primary-match":""}`}>
     <div><b>{match.pattern}</b><small>{match.source} · {match.category} · {matchKindLabel(match.kind)} · 优先级 {match.priority}</small></div>
-    <span className={`rule-action ${match.action}`}>{ruleActionLabel(match.action as backend.ParentRule["action"])}</span>
+    <div className="diagnostic-rule-result"><span className="diagnostic-match-state">{match.matched===false?"未命中":"命中"}</span><span className={`rule-action ${match.action}`}>{ruleActionLabel(match.action as backend.ParentRule["action"])}</span></div>
   </div>;
 }
 
-function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, automatic, onAutomatic, onSelectNode, sessionToken }: { subscriptions:backend.Subscription[]; refreshingId:string|null; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: (mode: ProxyImportMode) => void; coreStatus:backend.CoreStatus|null; automatic:boolean;onAutomatic:()=>Promise<void>;onSelectNode:(name:string)=>Promise<void>;sessionToken:string|null }) {
+function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache, isBusy, onRefresh, onToggleSubscription, onDelete, onAdd, coreStatus, automatic, onAutomatic, onSelectNode, sessionToken }: { subscriptions:backend.Subscription[]; refreshingId:string|null; proxyInfoCache:Record<string,backend.SubscriptionProxyInfo>; setProxyInfoCache:React.Dispatch<React.SetStateAction<Record<string,backend.SubscriptionProxyInfo>>>; isBusy:(scope:string)=>boolean; onRefresh:(id:string)=>Promise<void>; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onAdd: (mode: ProxyImportMode) => void; coreStatus:backend.CoreStatus|null; automatic:boolean;onAutomatic:()=>Promise<void>;onSelectNode:(name:string)=>Promise<void>;sessionToken:string|null }) {
   const running = coreStatus?.running === true;
   const [expandedId, setExpandedId] = useState<string|null>(null);
-  const [subProxies, setSubProxies] = useState<Record<string, backend.SubscriptionProxyInfo>>({});
   const [selectedGroup, setSelectedGroup] = useState<string|null>(null);
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [testingSpeed, setTestingSpeed] = useState(false);
@@ -947,25 +967,18 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
   const [runtimeSelection,setRuntimeSelection]=useState<string>();
   const [selecting,setSelecting]=useState<string>();
   const selectingRef=useRef(false);
+  const runtimeSelectionRef=useRef<string|undefined>(undefined);
+  const onSelectNodeRef=useRef<(name:string)=>Promise<void>>(onSelectNode);
   const [importMenuOpen,setImportMenuOpen]=useState(false);
-  useEffect(() => { if (refreshingId) setSubProxies(prev => { const next = { ...prev }; delete next[refreshingId]; return next; }); }, [refreshingId]);
-  useEffect(() => { const ids = new Set(subscriptions.map(s => s.id)); setSubProxies(prev => { const next: Record<string, backend.SubscriptionProxyInfo> = {}; for (const [k, v] of Object.entries(prev)) if (ids.has(k)) next[k] = v; return next; }); }, [subscriptions]);
-  useEffect(() => {
-    if (!sessionToken) return;
-    const missing = subscriptions.filter(item => item.enabled && !subProxies[item.id]);
-    for (const item of missing) {
-      void backend.getSubscriptionProxies(sessionToken,item.id)
-        .then(info=>setSubProxies(previous=>({...previous,[item.id]:info})))
-        .catch(()=>{});
-    }
-  }, [sessionToken,subscriptions,subProxies]);
+  useEffect(()=>{runtimeSelectionRef.current=runtimeSelection;},[runtimeSelection]);
+  useEffect(()=>{onSelectNodeRef.current=onSelectNode;},[onSelectNode]);
   useEffect(()=>{if(!sessionToken)return;void backend.getSavedProxySelection(sessionToken).then(setSavedSelection);if(running)void backend.getProxies(sessionToken).then(groups=>setRuntimeSelection(groups.find(group=>group.name==="CleanWeb")?.now)).catch(()=>setRuntimeSelection(undefined));else setRuntimeSelection(undefined);},[sessionToken,running,subscriptions]);
   const toggleExpand = async (id: string) => {
     if (!sessionToken) return;
     if (expandedId === id) { setExpandedId(null); setSelectedGroup(null); return; }
     setExpandedId(id); setSelectedGroup(null);
-    if (!subProxies[id]) {
-      try { const info = await backend.getSubscriptionProxies(sessionToken,id); setSubProxies(prev => ({ ...prev, [id]: info })); } catch (reason) { console.error(reason); }
+    if (!proxyInfoCache[id]) {
+      try { const info = await backend.getSubscriptionProxies(sessionToken,id); setProxyInfoCache(prev => ({ ...prev, [id]: info })); } catch (reason) { console.error(reason); }
     }
   };
   const handleSpeedTest = async () => {
@@ -1030,16 +1043,16 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
     }
     return undefined;
   };
-  const selectableNodes=Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>subProxies[item.id]?.proxies??[]).map(node=>[node.name,node])).values());
+  const selectableNodes=useMemo(()=>Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>proxyInfoCache[item.id]?.proxies??[]).map(node=>[node.name,node])).values()),[subscriptions,proxyInfoCache]);
   const currentExitLabel = automatic ? "自动选择节点" : runtimeSelection ?? savedSelection ?? "尚未选择节点";
   const chooseNode=useCallback(async(name:string)=>{
     if(selectingRef.current)return;
     selectingRef.current=true;
-    const previousRuntime=runtimeSelection;
+    const previousRuntime=runtimeSelectionRef.current;
     setSelecting(name);
     setRuntimeSelection(name);
     try{
-      await onSelectNode(name);
+      await onSelectNodeRef.current(name);
       setSavedSelection(name);
     }catch(reason){
       setRuntimeSelection(previousRuntime);
@@ -1048,7 +1061,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
       selectingRef.current=false;
       setSelecting(undefined);
     }
-  },[onSelectNode,runtimeSelection]);
+  },[]);
   const openImport=(mode:ProxyImportMode)=>{setImportMenuOpen(false);onAdd(mode);};
   return <>
     <section className="toolbar"><div><h2>代理订阅</h2><p>{subscriptions.length>0?`当前出口：${currentExitLabel}`:"导入代理后，展开来源并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={automatic||Boolean(selecting)||subscriptions.length===0||isBusy(busyScope.setting("automatic_node_selection"))} onClick={()=>void onAutomatic()}>自动选择</button><div className="import-dropdown"><button className="primary import-main" disabled={isBusy(busyScope.importProxy)} onClick={()=>openImport("subscription")}><Plus size={16}/>导入代理</button><button className="primary import-menu-trigger" disabled={isBusy(busyScope.importProxy)} aria-label="选择代理导入方式" aria-expanded={importMenuOpen} onClick={()=>setImportMenuOpen(value=>!value)}><ChevronDown size={16}/></button>{importMenuOpen&&<div className="import-menu" role="menu"><button role="menuitem" onClick={()=>openImport("subscription")}>订阅链接</button><button role="menuitem" onClick={()=>openImport("node")}>单节点链接</button><button role="menuitem" onClick={()=>openImport("file")}>配置文件</button><button role="menuitem" onClick={()=>openImport("qr")}>二维码导入</button><button role="menuitem" onClick={()=>openImport("clipboard")}>从剪贴板导入</button></div>}</div></div></section>
@@ -1059,7 +1072,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
       </div>
       <div className="proxy-connectivity-body">
         <form className="proxy-connectivity-form" onSubmit={(event)=>void handleConnectivityTest(event)}>
-          <div className="log-search-wrap proxy-connectivity-input"><Search size={16}/><input className="log-search" aria-label="代理连通性检测地址" value={connectivityTarget} onChange={event=>setConnectivityTarget(event.target.value)} placeholder="google.com 或 https://www.gstatic.com/generate_204" /></div>
+          <div className="log-search-wrap proxy-connectivity-input"><Search size={16}/><input className="log-search" aria-label="代理连通性检测地址" value={connectivityTarget} onChange={event=>setConnectivityTarget(event.target.value)} placeholder="google.com 或 https://www.gstatic.com/generate_204" {...plainTextInputProps} /></div>
           <button className="primary" type="submit" disabled={!running||testingConnectivity||!connectivityTarget.trim()}>{testingConnectivity?"检测中…":"检测连通性"}</button>
         </form>
         {connectivityResult&&<div className="proxy-connectivity-result success"><div><b>连通</b><span>{connectivityResult.url} · {connectivityResult.group}</span></div><strong>{connectivityResult.delay} ms</strong></div>}
@@ -1071,7 +1084,7 @@ function Proxy({ subscriptions, refreshingId, isBusy, onRefresh, onToggleSubscri
     {subscriptions.length===0 ? <section className="proxy-card empty-proxy">尚未导入代理订阅</section> : subscriptions.map((item)=>{
       const expanded = expandedId === item.id;
       const manualSource = item.url.startsWith("manual://");
-      const info = subProxies[item.id];
+      const info = proxyInfoCache[item.id];
       const itemBusy = isBusy(busyScope.subscription(item.id));
       const currentGroup = selectedGroup != null ? info?.groups.find(g => g.name === selectedGroup) : null;
       const memberSet = currentGroup ? new Set(currentGroup.members) : null;
@@ -1161,7 +1174,7 @@ function SetupDialog({ onComplete }: { onComplete: () => void }) {
 function ParentRuleDialog({mode,onClose,onSubmit}:{mode:"block"|"route";onClose:()=>void;onSubmit:(input:backend.NewParentRule)=>Promise<void>}){
   const[error,setError]=useState("");
   const isRoute = mode === "route";
-  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="parent-rule-title"><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button><h2 id="parent-rule-title">{isRoute?"添加路由规则":"添加拦截规则"}</h2><p>{isRoute?"为匹配目标指定直连、走代理或按系统路由；高风险安全与手动拦截仍会优先生效。":"手动阻止指定目标；诈骗、钓鱼和恶意软件仍保持最高优先级。"}</p><form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{await onSubmit({action:String(data.get("action")) as backend.ParentRule["action"],kind:String(data.get("kind")),pattern:String(data.get("pattern")),category:String(data.get("category")||"custom")});}catch(reason){setError(String(reason));}}}><label htmlFor="parent-action">{isRoute?"出口":"动作"}</label>{isRoute?<select id="parent-action" name="action"><option value="allow">直连</option><option value="proxy">走代理</option><option value="system_route">系统路由</option></select>:<><input type="hidden" name="action" value="block"/><div className="readonly-field">拦截</div></>}<label htmlFor="parent-kind">匹配方式</label><select id="parent-kind" name="kind"><option value="suffix">域名及子域名</option><option value="exact">精确域名</option><option value="ip">IP地址</option><option value="cidr">IP网段</option><option value="contains">关键词包含</option><option value="wildcard">通配符</option><option value="regex">正则表达式</option></select><label htmlFor="parent-pattern">规则内容</label><input id="parent-pattern" name="pattern" placeholder="example.com 或 47.96.0.0/12" required autoComplete="off" spellCheck={false}/><input type="hidden" name="category" value={isRoute?"routing":"custom"}/>{error&&<span className="form-error">{error}</span>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并保存</button></div></form></section></div>;
+  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="parent-rule-title"><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button><h2 id="parent-rule-title">{isRoute?"添加路由规则":"添加拦截规则"}</h2><p>{isRoute?"为匹配目标指定直连、走代理或按系统路由；高风险安全与手动拦截仍会优先生效。":"手动阻止指定目标；诈骗、钓鱼和恶意软件仍保持最高优先级。"}</p><form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{await onSubmit({action:String(data.get("action")) as backend.ParentRule["action"],kind:String(data.get("kind")),pattern:String(data.get("pattern")),category:String(data.get("category")||"custom")});}catch(reason){setError(String(reason));}}}><label htmlFor="parent-action">{isRoute?"出口":"动作"}</label>{isRoute?<select id="parent-action" name="action"><option value="allow">直连</option><option value="proxy">走代理</option><option value="system_route">系统路由</option></select>:<><input type="hidden" name="action" value="block"/><div className="readonly-field">拦截</div></>}<label htmlFor="parent-kind">匹配方式</label><select id="parent-kind" name="kind"><option value="suffix">域名及子域名</option><option value="exact">精确域名</option><option value="ip">IP地址</option><option value="cidr">IP网段</option><option value="contains">关键词包含</option><option value="wildcard">通配符</option><option value="regex">正则表达式</option></select><label htmlFor="parent-pattern">规则内容</label><input id="parent-pattern" name="pattern" placeholder="example.com 或 47.96.0.0/12" required {...plainTextInputProps}/><input type="hidden" name="category" value={isRoute?"routing":"custom"}/>{error&&<span className="form-error">{error}</span>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">验证并保存</button></div></form></section></div>;
 }
 
 function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmit }: { mode: ProxyImportMode; onClose: () => void; onSubscriptionSubmit:(input:backend.NewSubscription)=>Promise<void>; onPayloadSubmit:(input:backend.ManualProxyImport)=>Promise<void> }) {
@@ -1184,10 +1197,10 @@ function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmi
       <p>{description}</p>
       <form onSubmit={async event=>{event.preventDefault();const data=new FormData(event.currentTarget);setError("");try{if(isSubscription)await onSubscriptionSubmit({kind:"proxy",name:String(data.get("name")),url:String(data.get("url")),format:"auto",updateIntervalHours:Number(data.get("interval")||24)});else{if(!content.trim())throw new Error(mode==="qr"?"请先拖入二维码图片":mode==="file"?"请先选择配置文件":"代理内容不能为空");await onPayloadSubmit({name:String(data.get("name")),content});}}catch(reason){setError(String(reason));}}}>
         <label htmlFor="proxy-import-name">名称</label>
-        <input id="proxy-import-name" name="name" value={importName} onChange={event=>setImportName(event.currentTarget.value)} placeholder={isSubscription?"我的代理订阅":mode==="file"?"配置文件名称":"我的代理节点"} required autoComplete="off" spellCheck={false}/>
+        <input id="proxy-import-name" name="name" value={importName} onChange={event=>setImportName(event.currentTarget.value)} placeholder={isSubscription?"我的代理订阅":mode==="file"?"配置文件名称":"我的代理节点"} required {...plainTextInputProps}/>
         {isSubscription ? <>
           <label htmlFor="proxy-import-url">订阅地址</label>
-          <input id="proxy-import-url" name="url" type="url" placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false}/>
+          <input id="proxy-import-url" name="url" type="url" placeholder="https://example.com/subscription" required {...plainTextInputProps}/>
           <label htmlFor="proxy-import-interval">更新周期</label>
           <select id="proxy-import-interval" name="interval"><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
         </> : mode==="qr" ? <>
@@ -1210,7 +1223,7 @@ function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmi
           {content&&<div className="qr-decoded-preview">{content.slice(0,800)}</div>}
         </> : <>
           <label htmlFor="proxy-import-content">代理内容</label>
-          <textarea id="proxy-import-content" value={content} onChange={event=>setContent(event.currentTarget.value)} placeholder="ss://... 或 vmess://..." required spellCheck={false}/>
+          <textarea id="proxy-import-content" value={content} onChange={event=>setContent(event.currentTarget.value)} placeholder="ss://... 或 vmess://..." required {...plainTextInputProps}/>
           {mode==="clipboard"&&<button type="button" className="secondary inline-form-action" onClick={()=>void navigator.clipboard?.readText().then(setContent).catch(()=>setError("无法读取剪贴板，请手动粘贴内容"))}>重新读取剪贴板</button>}
         </>}
         {error&&<span className="form-error">{error}</span>}
@@ -1232,8 +1245,8 @@ function SubscriptionDialog({ kind, subscription, onClose, onSubmit }: { kind: "
       <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR、Adblock 和 SafeSearch DNS 映射。" : "只会提取代理节点和代理组。"}</p>
       <form onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
         {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" defaultValue={defaultFormat}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">SafeSearch DNS 映射</option></select></>}
-        <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" defaultValue={subscription?.name??""} placeholder={`我的${kind}订阅`} required autoComplete="off" spellCheck={false} />
-        <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" defaultValue={subscription?.url??""} placeholder="https://example.com/subscription" required autoComplete="off" spellCheck={false} />
+        <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" defaultValue={subscription?.name??""} placeholder={`我的${kind}订阅`} required {...plainTextInputProps} />
+        <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" defaultValue={subscription?.url??""} placeholder="https://example.com/subscription" required {...plainTextInputProps} />
         {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" defaultValue={subscription?.category??"custom"}><option value="custom">自定义</option><option value="routing">代理路由</option><option value="direct">直连路由</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="entertainment">短视频与游戏</option><option value="ads">广告</option></select></>}
         <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval" defaultValue={defaultInterval}><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
         {error&&<span className="form-error">{error}</span>}

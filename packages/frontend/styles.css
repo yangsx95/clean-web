@@ -829,6 +829,21 @@ header h1 {
   margin-top: 12px;
 }
 
+.browser-policy-global {
+  border: 1px solid #eef0ed;
+  border-radius: 8px;
+  background: #fbfcfb;
+  padding: 12px;
+  margin: 14px 0;
+}
+
+.browser-policy-global h4 {
+  margin: 0;
+  color: var(--cw-ink);
+  font-size: 14px;
+  line-height: 20px;
+}
+
 .browser-policy-controls .setting-toggle {
   min-height: 48px;
   padding: 9px 10px;
@@ -975,6 +990,24 @@ header h1 {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { min-width: 0; min-height: 100vh; }
 button { font: inherit; cursor: pointer; }
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+  color: var(--color-text);
+  caret-color: var(--cw-accent);
+}
+
+input::selection,
+textarea::selection {
+  background: rgba(31, 138, 112, .22);
+}
 
 select {
   width: 100%;
@@ -1952,6 +1985,20 @@ h1 {
 .diagnostic-rule-card.primary-match {
   border-color: rgba(31, 138, 112, .28);
   background: var(--color-primary-light);
+}
+
+.diagnostic-rule-result {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: max-content;
+}
+
+.diagnostic-match-state {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .diagnostic-candidates {

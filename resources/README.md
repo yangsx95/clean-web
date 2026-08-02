@@ -10,4 +10,4 @@ resources/
   rules/          # CleanWeb rule supplements for publication
 ```
 
-Desktop-only runtime resources, such as bundled Mihomo binaries, remain under `apps/desktop/src-tauri/resources/` because Tauri packages them from that app-specific location. Desktop builds do not package or compile the rule source metadata and CleanWeb rule supplements under this top-level `resources/` directory.
+Desktop-only runtime resources, such as bundled Mihomo binaries, remain under `apps/desktop/src-tauri/resources/` because Tauri packages them from that app-specific location. Desktop builds compile the shared rule source metadata from this directory, but rule supplement bodies are still imported through their subscription URLs instead of being bundled into executable rules.

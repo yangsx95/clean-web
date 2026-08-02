@@ -15,3 +15,4 @@ apps/android/app/build/
 *.db-wal
 output
 build/local-cache/
+.codex-local-cache/

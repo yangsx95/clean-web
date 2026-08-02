@@ -11,6 +11,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use cleanweb_rule_sources::{parse_rule_source_defaults, DefaultRuleSource, RuleSourceDefaults};
 use ipnet::IpNet;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -22,12 +23,12 @@ use crate::dns_filter::DnsFilterHandle;
 use crate::proxy_crypto::encrypt_existing_proxy_payloads;
 #[cfg(debug_assertions)]
 use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
-pub use crate::rule_sources::RecommendedSource;
-use crate::rule_sources::{
-    builtin_source_display_names, default_rule_sources, recommended_rule_sources,
-};
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
+pub use cleanweb_rule_sources::RecommendedSource;
 
+const DEFAULT_RULE_SOURCES_YAML: &str =
+    include_str!("../../../../resources/rule-sources/defaults.yaml");
+const RULE_DIAGNOSTIC_CANDIDATE_LIMIT: usize = 50;
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
 
 pub struct AppState {
@@ -110,6 +111,19 @@ pub fn get_recommended_rule_sources() -> Vec<RecommendedSource> {
     recommended_rule_sources()
 }
 
+fn default_rule_sources() -> Vec<DefaultRuleSource> {
+    rule_source_defaults().bundled_rule_sources()
+}
+
+fn recommended_rule_sources() -> Vec<RecommendedSource> {
+    Vec::new()
+}
+
+fn rule_source_defaults() -> RuleSourceDefaults {
+    parse_rule_source_defaults(DEFAULT_RULE_SOURCES_YAML)
+        .expect("bundled rule source defaults are valid")
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParentRuleRecord {
@@ -127,6 +141,8 @@ pub struct RuleDiagnosticResult {
     pub query: String,
     pub normalized_domain: Option<String>,
     pub target_ip: Option<String>,
+    pub summary_action: String,
+    pub summary_label: String,
     pub matched: Option<RuleDiagnosticMatch>,
     pub candidates: Vec<RuleDiagnosticMatch>,
 }
@@ -141,6 +157,7 @@ pub struct RuleDiagnosticMatch {
     pub pattern: String,
     pub category: String,
     pub priority: u16,
+    pub matched: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +295,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
     }
     add_access_log_repeat_count(db)?;
     create_access_log_indexes(db)?;
+    create_imported_rule_indexes(db)?;
     let defaults = [
         ("protection_enabled", "false"),
         ("proxy_enabled", "false"),
@@ -323,6 +341,15 @@ fn create_access_log_indexes(db: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+fn create_imported_rule_indexes(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_imported_rules_kind_pattern
+           ON imported_rules(matcher_kind, pattern);
+         CREATE INDEX IF NOT EXISTS idx_imported_rules_subscription_line
+           ON imported_rules(subscription_id, source_line);",
+    )
+}
+
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
     for source in default_rule_sources() {
         db.execute(
@@ -356,10 +383,19 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
 }
 
 fn sync_builtin_subscription_names(db: &Connection) -> rusqlite::Result<()> {
-    for (id, name) in builtin_source_display_names() {
+    for source in default_rule_sources() {
         db.execute(
-            "UPDATE subscriptions SET name=?2 WHERE id=?1",
-            params![id, name],
+            "UPDATE subscriptions
+             SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=?6
+             WHERE id=?1",
+            params![
+                source.id,
+                source.name,
+                source.url,
+                source.format,
+                source.category,
+                source.update_interval_hours
+            ],
         )?;
     }
     Ok(())
@@ -1159,27 +1195,38 @@ pub fn diagnose_rule_match(
     let parsed = parse_diagnostic_query(&query)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     let settings = settings_map(&db).map_err(error)?;
-    let mut rules = load_diagnostic_rules(&db, &settings)?;
+    let mut rules = load_diagnostic_rules(&db, &settings, &parsed)?;
     rules.sort_by_key(|rule| rule.priority);
-    let candidates = rules
-        .into_iter()
-        .filter(|rule| {
-            CompiledRule::compile(RuleInput {
-                id: rule.id.clone(),
-                action: diagnostic_action(&rule.action),
-                priority: rule.priority,
-                kind: diagnostic_kind(&rule.kind),
-                pattern: rule.pattern.clone(),
-                category: rule.category.clone(),
-            })
-            .is_ok_and(|compiled| compiled.matches(parsed.domain.as_deref(), parsed.ip))
+    let mut candidates = Vec::new();
+    for mut rule in rules {
+        let matched = CompiledRule::compile(RuleInput {
+            id: rule.id.clone(),
+            action: diagnostic_action(&rule.action),
+            priority: rule.priority,
+            kind: diagnostic_kind(&rule.kind),
+            pattern: rule.pattern.clone(),
+            category: rule.category.clone(),
         })
-        .collect::<Vec<_>>();
+        .is_ok_and(|compiled| compiled.matches(parsed.domain.as_deref(), parsed.ip));
+        if matched {
+            rule.matched = true;
+            candidates.push(rule);
+        }
+    }
+    candidates.truncate(RULE_DIAGNOSTIC_CANDIDATE_LIMIT);
+    let matched = candidates.first().cloned();
+    let summary_action = matched
+        .as_ref()
+        .map(|rule| rule.action.clone())
+        .unwrap_or_else(|| "allow".into());
+    let summary_label = diagnostic_summary_label(matched.as_ref());
     Ok(RuleDiagnosticResult {
         query: query.trim().to_owned(),
         normalized_domain: parsed.domain,
         target_ip: parsed.ip.map(|value| value.to_string()),
-        matched: candidates.first().cloned(),
+        summary_action,
+        summary_label,
+        matched,
         candidates,
     })
 }
@@ -1263,10 +1310,11 @@ fn parse_diagnostic_query(query: &str) -> Result<ParsedDiagnosticQuery, String> 
 fn load_diagnostic_rules(
     db: &Connection,
     settings: &HashMap<String, String>,
+    parsed: &ParsedDiagnosticQuery,
 ) -> Result<Vec<RuleDiagnosticMatch>, String> {
     let mut rules = Vec::new();
     append_parent_diagnostic_rules(db, &mut rules)?;
-    append_imported_diagnostic_rules(db, settings, &mut rules)?;
+    append_imported_diagnostic_rules(db, settings, parsed, &mut rules)?;
     Ok(rules)
 }
 
@@ -1324,6 +1372,7 @@ fn append_parent_diagnostic_rules(
                 "system_route" => 81,
                 _ => 90,
             },
+            matched: false,
         });
     }
     Ok(())
@@ -1332,33 +1381,33 @@ fn append_parent_diagnostic_rules(
 fn append_imported_diagnostic_rules(
     db: &Connection,
     settings: &HashMap<String, String>,
+    parsed: &ParsedDiagnosticQuery,
     rules: &mut Vec<RuleDiagnosticMatch>,
 ) -> Result<(), String> {
     let mut statement = db
-        .prepare(
-            "SELECT r.rule_id,r.matcher_kind,r.pattern,r.action,r.category,s.name,s.id
-             FROM imported_rules r
-             JOIN subscriptions s ON s.id=r.subscription_id
-             WHERE s.enabled=1
-             ORDER BY s.created_at,r.source_line",
-        )
+        .prepare(&diagnostic_imported_rules_sql(parsed))
         .map_err(error)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-            ))
-        })
-        .map_err(error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(error)?;
-    for (rule_id, kind, pattern, action, category, source_name, subscription_id) in rows {
+    let mut rows = if let Some(domain) = parsed.domain.as_deref() {
+        let suffixes = diagnostic_domain_suffix_candidates(domain);
+        let mut values = Vec::with_capacity(suffixes.len() + 1);
+        values.push(rusqlite::types::Value::from(domain.to_owned()));
+        values.extend(suffixes.into_iter().map(rusqlite::types::Value::from));
+        statement.query(rusqlite::params_from_iter(values))
+    } else if let Some(ip) = parsed.ip {
+        statement.query(params![ip.to_string()])
+    } else {
+        statement.query([])
+    }
+    .map_err(error)?;
+
+    while let Some(row) = rows.next().map_err(error)? {
+        let rule_id = row.get::<_, String>(0).map_err(error)?;
+        let kind = row.get::<_, String>(1).map_err(error)?;
+        let pattern = row.get::<_, String>(2).map_err(error)?;
+        let action = row.get::<_, String>(3).map_err(error)?;
+        let category = row.get::<_, String>(4).map_err(error)?;
+        let source_name = row.get::<_, String>(5).map_err(error)?;
+        let subscription_id = row.get::<_, String>(6).map_err(error)?;
         if !diagnostic_category_enabled(settings, &category) {
             continue;
         }
@@ -1371,9 +1420,45 @@ fn append_imported_diagnostic_rules(
             pattern,
             category: category.clone(),
             priority: imported_rule_priority(&normalized_action, &category),
+            matched: false,
         });
     }
     Ok(())
+}
+
+fn diagnostic_imported_rules_sql(parsed: &ParsedDiagnosticQuery) -> String {
+    let matcher_filter = if let Some(domain) = parsed.domain.as_deref() {
+        let placeholders =
+            std::iter::repeat_n("?", diagnostic_domain_suffix_candidates(domain).len())
+                .collect::<Vec<_>>()
+                .join(",");
+        format!(
+            "((r.matcher_kind IN ('Exact','exact') AND r.pattern=?)
+              OR (r.matcher_kind IN ('Suffix','suffix') AND r.pattern IN ({placeholders}))
+              OR r.matcher_kind IN ('Contains','contains','Wildcard','wildcard','Regex','regex'))"
+        )
+    } else if parsed.ip.is_some() {
+        "(r.matcher_kind IN ('Ip','ip') AND r.pattern=?)
+         OR r.matcher_kind IN ('Cidr','cidr')"
+            .to_owned()
+    } else {
+        "0".to_owned()
+    };
+    format!(
+        "SELECT r.rule_id,r.matcher_kind,r.pattern,r.action,r.category,s.name,s.id
+             FROM imported_rules r
+             JOIN subscriptions s ON s.id=r.subscription_id
+             WHERE s.enabled=1
+               AND ({matcher_filter})
+             ORDER BY s.created_at,r.source_line",
+    )
+}
+
+fn diagnostic_domain_suffix_candidates(domain: &str) -> Vec<String> {
+    let labels = domain.split('.').collect::<Vec<_>>();
+    (0..labels.len())
+        .map(|index| labels[index..].join("."))
+        .collect()
 }
 
 fn diagnostic_category_enabled(settings: &HashMap<String, String>, category: &str) -> bool {
@@ -1445,6 +1530,17 @@ fn diagnostic_action(value: &str) -> Action {
         "proxy" => Action::Proxy,
         "system_route" => Action::SystemRoute,
         _ => Action::Block,
+    }
+}
+
+fn diagnostic_summary_label(matched: Option<&RuleDiagnosticMatch>) -> String {
+    match matched.map(|rule| rule.action.as_str()) {
+        Some("block") => "最终结果：拦截".into(),
+        Some("proxy") => "最终结果：走代理".into(),
+        Some("system_route") => "最终结果：系统路由".into(),
+        Some("allow") => "最终结果：直连".into(),
+        Some(value) => format!("最终结果：{value}"),
+        None => "最终结果：未命中，按默认策略处理".into(),
     }
 }
 
@@ -1596,29 +1692,47 @@ mod tests {
     }
 
     #[test]
-    fn seeds_only_safe_search_default_subscription_without_rule_body() {
+    fn seeds_builtin_rule_source_metadata_without_rule_body() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cleanweb.db");
         let state = AppState::open(&path).unwrap();
         let db = state.db.lock().unwrap();
-        let records: Vec<(String, String, String)> = {
+        let records: std::collections::HashMap<String, (String, String, Option<i64>)> = {
             let mut statement = db
-                .prepare("SELECT id,url,format FROM subscriptions WHERE id LIKE 'default:%'")
+                .prepare("SELECT id,url,format,update_interval_hours FROM subscriptions WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%'")
                 .unwrap();
             statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<i64>>(3)?,
+                        ),
+                    ))
+                })
                 .unwrap()
                 .collect::<rusqlite::Result<_>>()
                 .unwrap()
         };
         assert_eq!(
-            records,
-            vec![(
-                "default:cleanweb:safe-search".into(),
+            records.get("default:cleanweb:safe-search"),
+            Some(&(
                 "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml".into(),
-                "safe-search".into()
-            )],
-            "只应 seed SafeSearch 内置订阅元数据"
+                "safe-search".into(),
+                Some(24),
+            )),
+            "SafeSearch 内置订阅元数据必须恢复"
+        );
+        assert_eq!(
+            records.get("default:cleanweb:strict-supplement"),
+            Some(&(
+                "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash".into(),
+                "clash".into(),
+                Some(24),
+            )),
+            "严格模式补充规则必须自动刷新导入"
         );
         let imported_count: i64 = db
             .query_row(
@@ -1687,7 +1801,7 @@ mod tests {
 
         let parsed = parse_diagnostic_query("https://safe.example/path").unwrap();
         let settings = settings_map(&db).unwrap();
-        let mut candidates = load_diagnostic_rules(&db, &settings)
+        let mut candidates = load_diagnostic_rules(&db, &settings, &parsed)
             .unwrap()
             .into_iter()
             .filter(|rule| {
@@ -1731,10 +1845,49 @@ mod tests {
         )
         .unwrap();
 
+        let parsed = parse_diagnostic_query("game.example").unwrap();
         let settings = settings_map(&db).unwrap();
-        let rules = load_diagnostic_rules(&db, &settings).unwrap();
+        let rules = load_diagnostic_rules(&db, &settings, &parsed).unwrap();
 
         assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn diagnostic_rules_prefilter_imported_domain_candidates() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,enabled) VALUES('rules','rule','第三方规则','https://example.test/rules.txt',1)",
+            [],
+        )
+        .unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        for index in 0..2000 {
+            transaction
+                .execute(
+                    "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('rules',?1,'Suffix',?2,'Block','custom',?3)",
+                    params![
+                        format!("unrelated-{index}"),
+                        format!("unrelated-{index}.test"),
+                        index as i64,
+                    ],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('rules','hit','Suffix','example','Block','custom',3000)",
+                [],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let parsed = parse_diagnostic_query("bad.example").unwrap();
+        let settings = settings_map(&db).unwrap();
+        let rules = load_diagnostic_rules(&db, &settings, &parsed).unwrap();
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "rules:hit");
     }
 
     #[test]
@@ -1895,11 +2048,45 @@ mod tests {
         seed_default_rule_subscriptions(&db).unwrap();
         let exists: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id='default:cleanweb:safe-search'",
+                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-supplement')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(exists, 1, "SafeSearch 是产品内置能力，初始化时必须恢复");
+        assert_eq!(exists, 2, "内置能力订阅初始化时必须恢复");
+    }
+
+    #[test]
+    fn existing_default_sources_get_current_metadata() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE subscriptions
+             SET url='builtin://cleanweb/strict-supplement',
+                 format='clash',
+                 category='custom',
+                 update_interval_hours=NULL
+             WHERE id='default:cleanweb:strict-supplement'",
+            [],
+        )
+        .unwrap();
+
+        seed_default_rule_subscriptions(&db).unwrap();
+
+        let (url, category, interval): (String, String, Option<i64>) = db
+            .query_row(
+                "SELECT url,category,update_interval_hours
+                 FROM subscriptions
+                 WHERE id='default:cleanweb:strict-supplement'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash"
+        );
+        assert_eq!(category, "strict");
+        assert_eq!(interval, Some(24));
     }
 }

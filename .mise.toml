@@ -44,27 +44,11 @@ run = "cd apps/desktop/src-tauri && cargo fmt --check"
 
 [tasks.rust-test]
 description = "Run desktop Rust tests"
-run = """
-ROOT="$(git rev-parse --show-toplevel)"
-mkdir -p "$ROOT/build/local-cache/mise/tmp" "$ROOT/build/local-cache/mise/cargo-home" "$ROOT/build/local-cache/mise/cargo-target/desktop-test"
-cd "$ROOT/apps/desktop/src-tauri"
-TMPDIR="$ROOT/build/local-cache/mise/tmp" \
-CARGO_HOME="$ROOT/build/local-cache/mise/cargo-home" \
-CARGO_TARGET_DIR="$ROOT/build/local-cache/mise/cargo-target/desktop-test" \
-cargo test --lib
-"""
+run = "node scripts/mise/rust-task.mjs test"
 
 [tasks.rust-lint]
 description = "Run desktop Rust clippy"
-run = """
-ROOT="$(git rev-parse --show-toplevel)"
-mkdir -p "$ROOT/build/local-cache/mise/tmp" "$ROOT/build/local-cache/mise/cargo-home" "$ROOT/build/local-cache/mise/cargo-target/desktop-lint"
-cd "$ROOT/apps/desktop/src-tauri"
-TMPDIR="$ROOT/build/local-cache/mise/tmp" \
-CARGO_HOME="$ROOT/build/local-cache/mise/cargo-home" \
-CARGO_TARGET_DIR="$ROOT/build/local-cache/mise/cargo-target/desktop-lint" \
-cargo clippy --all-targets -- -D warnings
-"""
+run = "node scripts/mise/rust-task.mjs lint"
 
 [tasks.rust-targets-macos]
 description = "Install Rust targets for macOS universal desktop builds"

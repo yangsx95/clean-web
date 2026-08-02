@@ -1,42 +1,6 @@
 # CleanWeb strict-mode supplemental rules.
-# Keep this file high-confidence. Do not block broad TLDs such as vip, cc, fun, xyz, top, click.
-# Strict mode may use stronger adult/gambling keywords and explicit high-risk service suffixes.
-DOMAIN-SUFFIX,yandex.com,REJECT
-DOMAIN-SUFFIX,yandex.ru,REJECT
-DOMAIN-SUFFIX,yandex.net,REJECT
-DOMAIN-SUFFIX,yastatic.net,REJECT
-DOMAIN-SUFFIX,yandexadexchange.net,REJECT
-DOMAIN-SUFFIX,youtube-nocookie.com,REJECT
-DOMAIN-SUFFIX,youtubei.googleapis.com,REJECT
-DOMAIN-SUFFIX,youtube.googleapis.com,REJECT
-DOMAIN-SUFFIX,telegram.org,REJECT
-DOMAIN-SUFFIX,telegram.me,REJECT
-DOMAIN-SUFFIX,t.me,REJECT
-DOMAIN-SUFFIX,telegra.ph,REJECT
-DOMAIN-SUFFIX,tdesktop.com,REJECT
-DOMAIN-SUFFIX,instagram.com,REJECT
-DOMAIN-SUFFIX,instagr.am,REJECT
-DOMAIN-SUFFIX,cdninstagram.com,REJECT
-DOMAIN-SUFFIX,ig.me,REJECT
-DOMAIN-SUFFIX,threads.net,REJECT
-DOMAIN-SUFFIX,facebook.com,REJECT
-DOMAIN-SUFFIX,fbcdn.net,REJECT
-DOMAIN-SUFFIX,fb.com,REJECT
-DOMAIN-SUFFIX,x.com,REJECT
-DOMAIN-SUFFIX,twitter.com,REJECT
-DOMAIN-SUFFIX,twimg.com,REJECT
-DOMAIN-SUFFIX,t.co,REJECT
-DOMAIN-SUFFIX,reddit.com,REJECT
-DOMAIN-SUFFIX,redd.it,REJECT
-DOMAIN-SUFFIX,redditmedia.com,REJECT
-DOMAIN-SUFFIX,redditstatic.com,REJECT
-DOMAIN-SUFFIX,tumblr.com,REJECT
-DOMAIN-SUFFIX,tumblr.co,REJECT
-DOMAIN-SUFFIX,tmblr.co,REJECT
-DOMAIN-SUFFIX,discordapp.com,REJECT
-DOMAIN-SUFFIX,pinterest.com,REJECT
-DOMAIN-SUFFIX,pinimg.com,REJECT
-DOMAIN-SUFFIX,bet,REJECT
+# Keep this file keyword-only. Platform domains belong to entertainment rules.
+# Avoid broad random-domain heuristics or whole TLD blocks such as vip, cc, fun, xyz, top, click.
 DOMAIN-KEYWORD,porn,REJECT
 DOMAIN-KEYWORD,sex,REJECT
 DOMAIN-KEYWORD,xxx,REJECT
@@ -61,10 +25,3 @@ DOMAIN-KEYWORD,bingo,REJECT
 DOMAIN-KEYWORD,gambling,REJECT
 DOMAIN-KEYWORD,bookmaker,REJECT
 DOMAIN-KEYWORD,lottery,REJECT
-IP-CIDR,91.108.4.0/22,REJECT,no-resolve
-IP-CIDR,91.108.8.0/22,REJECT,no-resolve
-IP-CIDR,91.108.12.0/22,REJECT,no-resolve
-IP-CIDR,91.108.16.0/22,REJECT,no-resolve
-IP-CIDR,91.108.20.0/22,REJECT,no-resolve
-IP-CIDR,91.108.56.0/22,REJECT,no-resolve
-IP-CIDR,149.154.160.0/20,REJECT,no-resolve

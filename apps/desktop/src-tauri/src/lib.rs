@@ -4,7 +4,6 @@ pub mod dns_filter;
 pub mod mihomo;
 pub mod platform;
 pub mod proxy_crypto;
-pub mod rule_sources;
 pub mod rules;
 pub mod storage;
 pub mod subscription_download;
@@ -19,7 +18,6 @@ use tauri::{Emitter, Manager};
 const QUIT_REQUESTED_EVENT: &str = "cleanweb-quit-requested";
 const SHOW_WINDOW_MENU_ID: &str = "cleanweb-show-window";
 const CLOSE_WINDOW_MENU_ID: &str = "cleanweb-close-window";
-const CLOSE_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+W";
 const QUIT_MENU_ID: &str = "cleanweb-quit";
 #[cfg(target_os = "macos")]
 const TRAY_ID: &str = "cleanweb-tray";
@@ -114,8 +112,8 @@ fn take_pending_quit_request(lifecycle: tauri::State<'_, AppLifecycle>) -> bool 
 fn build_desktop_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-    let menu = Menu::new(app)?;
-    let app_menu = Submenu::new(app, "CleanWeb", true)?;
+    let menu = Menu::default(app)?;
+    let control_menu = Submenu::new(app, "控制", true)?;
     let show = MenuItem::with_id(
         app,
         SHOW_WINDOW_MENU_ID,
@@ -123,18 +121,11 @@ fn build_desktop_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
-    let close = MenuItem::with_id(
-        app,
-        CLOSE_WINDOW_MENU_ID,
-        "隐藏到后台",
-        true,
-        Some(CLOSE_WINDOW_ACCELERATOR),
-    )?;
+    let close = MenuItem::with_id(app, CLOSE_WINDOW_MENU_ID, "隐藏到后台", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "退出", true, Some("CmdOrCtrl+Q"))?;
-    app_menu.append_items(&[&show, &close, &separator, &quit])?;
-
-    menu.append(&app_menu)?;
+    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "退出", true, None::<&str>)?;
+    control_menu.append_items(&[&show, &close, &separator, &quit])?;
+    menu.append(&control_menu)?;
     Ok(menu)
 }
 
@@ -291,8 +282,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cmd_or_ctrl_w_menu_item_hides_main_window() {
-        assert_eq!(CLOSE_WINDOW_ACCELERATOR, "CmdOrCtrl+W");
+    fn close_menu_item_hides_main_window() {
         assert_eq!(
             menu_action_for_id(CLOSE_WINDOW_MENU_ID),
             Some(MenuAction::HideMainWindow)

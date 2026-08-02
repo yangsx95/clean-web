@@ -30,8 +30,8 @@ export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:stri
 export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
 export type ParentRule={id:string;action:"allow"|"block"|"proxy"|"system_route";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
-export type RuleDiagnosticMatch={id:string;source:string;action:"allow"|"block"|"proxy"|"system_route"|string;kind:string;pattern:string;category:string;priority:number};
-export type RuleDiagnosticResult={query:string;normalizedDomain?:string|null;targetIp?:string|null;matched?:RuleDiagnosticMatch|null;candidates:RuleDiagnosticMatch[]};
+export type RuleDiagnosticMatch={id:string;source:string;action:"allow"|"block"|"proxy"|"system_route"|string;kind:string;pattern:string;category:string;priority:number;matched?:boolean};
+export type RuleDiagnosticResult={query:string;normalizedDomain?:string|null;targetIp?:string|null;summaryAction?:string;summaryLabel?:string;matched?:RuleDiagnosticMatch|null;candidates:RuleDiagnosticMatch[]};
 export type BrowserPolicyDetail={key:string;label:string;enabled:boolean;configured:boolean;currentValue?:string|null;expectedValue:string};
 export type BrowserPolicyBrowserStatus={id:string;name:string;installed:boolean;configured:boolean;needsRestart:boolean;details:BrowserPolicyDetail[]};
 export type BrowserPolicyStatus={browsers:BrowserPolicyBrowserStatus[]};
@@ -328,9 +328,12 @@ export async function deleteParentRule(sessionToken:string,id:string):Promise<vo
 export async function diagnoseRuleMatch(sessionToken:string,query:string):Promise<RuleDiagnosticResult>{
   if(isTauri())return invoke("diagnose_rule_match",{sessionToken,query});
   const normalized=query.trim().replace(/^https?:\/\//,"").split(/[/:]/)[0].toLowerCase();
-  const candidates=previewParentRules.filter(rule=>rule.enabled&&previewRuleMatches(rule,normalized)).map(rule=>({id:rule.id,source:"手动规则",action:rule.action,kind:rule.kind,pattern:rule.pattern,category:rule.category,priority:rule.action==="block"?20:rule.action==="allow"?30:80}));
+  const candidates=previewParentRules.filter(rule=>rule.enabled&&previewRuleMatches(rule,normalized)).map(rule=>({id:rule.id,source:"手动规则",action:rule.action,kind:rule.kind,pattern:rule.pattern,category:rule.category,priority:rule.action==="block"?20:rule.action==="allow"?30:80,matched:true}));
   candidates.sort((a,b)=>a.priority-b.priority);
-  return{query,normalizedDomain:normalized,targetIp:undefined,matched:candidates[0]??null,candidates};
+  const matched=candidates[0]??null;
+  const summaryAction=matched?.action??"allow";
+  const summaryLabel=matched?`最终结果：${summaryAction==="block"?"拦截":summaryAction==="proxy"?"走代理":summaryAction==="system_route"?"系统路由":"直连"}`:"最终结果：未命中，按默认策略处理";
+  return{query,normalizedDomain:normalized,targetIp:undefined,summaryAction,summaryLabel,matched,candidates};
 }
 function previewRuleMatches(rule:ParentRule,target:string):boolean{
   const pattern=rule.pattern.toLowerCase();

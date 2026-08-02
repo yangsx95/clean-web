@@ -86,6 +86,7 @@ rule_packs:
       - builtin://cleanweb/strict-supplement
     format: clash
     category: strict
+    update_interval_hours: 24
 
 recommended_rule_sources:
   - name: 综合广告与恶意软件

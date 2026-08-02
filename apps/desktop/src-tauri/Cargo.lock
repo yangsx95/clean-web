@@ -622,6 +622,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "cleanweb-proxy-import",
+ "cleanweb-rule-sources",
  "cleanweb-rules",
  "cleanweb-subscriptions",
  "flate2",
@@ -650,6 +651,14 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "cleanweb-rule-sources"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "serde_yaml",
 ]
 

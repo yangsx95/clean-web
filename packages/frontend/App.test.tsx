@@ -64,6 +64,20 @@ describe("management actions", () => {
     expect(fireEvent.keyDown(input, { key: "a", code: "KeyA", keyCode: 229, metaKey: true })).toBe(true);
   });
 
+  it("keeps rule diagnostic text editing native and disables suggestions", async () => {
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(await screen.findByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: "规则诊断" }));
+    const input = screen.getByLabelText("规则诊断目标");
+
+    expect(input.getAttribute("autocomplete")).toBe("off");
+    expect(input.getAttribute("autocorrect")).toBe("off");
+    expect(input.getAttribute("autocapitalize")).toBe("none");
+    expect(input.getAttribute("spellcheck")).toBe("false");
+    expect(fireEvent.keyDown(input, { key: "a", code: "KeyA", keyCode: 229, metaKey: true })).toBe(true);
+  });
+
   it("navigates to rules and opens subscription form after unlocking", async () => {
     render(<App />);
     await unlockManagement();
@@ -126,8 +140,8 @@ describe("management actions", () => {
     expect(screen.queryByText("运行健康状态")).toBeNull();
     expect(screen.queryByRole("tab", { name: "管理会话" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "浏览器保护" }));
-    expect(screen.getByRole("switch", { name: "Chrome 关闭浏览器 DoH" })).toBeTruthy();
-    expect(screen.getByRole("switch", { name: "Chrome 使用系统 DNS 客户端" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "关闭浏览器 DoH" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "使用系统 DNS 客户端" })).toBeTruthy();
     await userEvent.click(await screen.findByRole("button", { name: "应用浏览器保护" }));
 
     expect(apply).toHaveBeenCalledWith("browser-preview");
@@ -143,7 +157,7 @@ describe("management actions", () => {
     await unlockManagement();
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
     await userEvent.click(screen.getByRole("tab", { name: "浏览器保护" }));
-    await userEvent.click(screen.getByRole("switch", { name: "Chrome 使用系统 DNS 客户端" }));
+    await userEvent.click(screen.getByRole("switch", { name: "使用系统 DNS 客户端" }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith("browser-preview", "browser_policy.use_system_dns_client", "false"));
     expect(apply).not.toHaveBeenCalled();
@@ -582,16 +596,67 @@ describe("management actions", () => {
       groups: [],
     });
     const select = vi.spyOn(backend, "selectProxy").mockResolvedValue({ requiresReload: false });
+    const settings = vi.spyOn(backend, "getSettings");
 
     render(<App />);
     await unlockManagement();
     await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
     await userEvent.click(await screen.findByText("我的代理"));
+    settings.mockClear();
     await userEvent.click(await screen.findByRole("button", { name: /node-a/ }));
 
     expect(select).toHaveBeenCalledWith("browser-preview", "CleanWeb", "node-a");
+    expect(settings).not.toHaveBeenCalled();
     proxies.mockRestore();
     select.mockRestore();
+    settings.mockRestore();
+  });
+
+  it("loads proxy nodes lazily only after expanding a subscription", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    const proxies = vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }],
+      groups: [],
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+
+    expect(await screen.findByText("我的代理")).toBeTruthy();
+    expect(proxies).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByText("我的代理"));
+    await screen.findByRole("button", { name: /node-a/ });
+
+    expect(proxies).toHaveBeenCalledWith("browser-preview", "proxy-source");
+    proxies.mockRestore();
+  });
+
+  it("keeps loaded proxy nodes cached after leaving and returning to the proxy page", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    const proxies = vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }],
+      groups: [],
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByText("我的代理"));
+    await screen.findByRole("button", { name: /node-a/ });
+
+    await userEvent.click(screen.getByRole("button", { name: "概览" }));
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByText("我的代理"));
+    await screen.findByRole("button", { name: /node-a/ });
+
+    expect(proxies).toHaveBeenCalledTimes(1);
+    proxies.mockRestore();
   });
 
   it("tests proxy node delays with the Mihomo group delay endpoint", async () => {
@@ -902,7 +967,7 @@ describe("management actions", () => {
     await userEvent.type(screen.getByLabelText("规则诊断目标"), "bad.example");
     await userEvent.click(screen.getByRole("button", { name: "开始诊断" }));
 
-    expect(diagnose).toHaveBeenCalledWith("browser-preview", "bad.example");
+    await waitFor(() => expect(diagnose).toHaveBeenCalledWith("browser-preview", "bad.example"));
     expect(await screen.findByText("bad.example")).toBeTruthy();
     expect(screen.getByText("手动规则 · custom · 域名及子域名 · 优先级 20")).toBeTruthy();
     diagnose.mockRestore();
