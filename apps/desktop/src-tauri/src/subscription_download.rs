@@ -266,7 +266,8 @@ fn subscription_record(state: &AppState, id: &str) -> Result<SubscriptionRecord,
            AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0)
            + COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id
              AND s.enabled=1
-             AND COALESCE((SELECT value FROM settings WHERE key='safe_search_enabled'),'true')='true'),0) AS active_rule_count
+             AND COALESCE((SELECT value FROM settings WHERE key='safe_search_enabled'),'true')='true'),0) AS active_rule_count,
+         s.ui_group, s.ui_order, s.toggleable, s.description
          FROM subscriptions s WHERE s.id=?1",
         params![id],
         |row| {
@@ -283,6 +284,10 @@ fn subscription_record(state: &AppState, id: &str) -> Result<SubscriptionRecord,
                 last_error: row.get(9)?,
                 imported_rule_count: row.get(10)?,
                 active_rule_count: row.get(11)?,
+                ui_group: row.get(12)?,
+                ui_order: row.get(13)?,
+                toggleable: row.get::<_, i64>(14)? != 0,
+                description: row.get(15)?,
             })
         },
     )

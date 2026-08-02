@@ -12,7 +12,7 @@ export type Settings = {
   categories: Record<string, boolean>;
   browserPolicy: Record<string, boolean>;
 };
-export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string; importedRuleCount?:number; activeRuleCount?:number };
+export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:string; format?:string; category?:string; updateIntervalHours?:number; enabled:boolean; lastUpdatedAt?:string; lastError?:string; importedRuleCount?:number; activeRuleCount?:number; uiGroup?:string; uiOrder?:number; toggleable?:boolean; description?:string };
 export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|"lastError"|"importedRuleCount">;
 export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
@@ -33,7 +33,7 @@ export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
 export type RuleDiagnosticMatch={id:string;source:string;action:"allow"|"block"|"proxy"|"system_route"|string;kind:string;pattern:string;category:string;priority:number;matched?:boolean};
 export type RuleDiagnosticResult={query:string;normalizedDomain?:string|null;targetIp?:string|null;summaryAction?:string;summaryLabel?:string;matched?:RuleDiagnosticMatch|null;candidates:RuleDiagnosticMatch[]};
 export type BrowserPolicyDetail={key:string;label:string;enabled:boolean;configured:boolean;currentValue?:string|null;expectedValue:string};
-export type BrowserPolicyBrowserStatus={id:string;name:string;installed:boolean;configured:boolean;needsRestart:boolean;details:BrowserPolicyDetail[]};
+export type BrowserPolicyBrowserStatus={id:string;name:string;engineId:string;engineName:string;installed:boolean;configured:boolean;needsRestart:boolean;details:BrowserPolicyDetail[]};
 export type BrowserPolicyStatus={browsers:BrowserPolicyBrowserStatus[]};
 const previewSettingsKey = "cleanweb.preview.settings";
 const previewCoreStatusKey = "cleanweb.preview.coreStatus";
@@ -41,7 +41,7 @@ const previewParentRulesKey = "cleanweb.preview.parentRules";
 const previewSubscriptionsKey = "cleanweb.preview.subscriptions";
 const sessionTokenKey = "cleanweb.sessionToken";
 let previewParentRules:ParentRule[] = loadPreviewParentRules();
-let previewSubscriptions: Subscription[] = loadPreviewSubscriptions();
+let previewSubscriptions: Subscription[] = [];
 
 const defaultSettings: Settings = {
   protectionEnabled: false,
@@ -66,6 +66,28 @@ const isBuiltinSubscription = (item: Pick<Subscription, "id" | "name" | "url">) 
   item.url.startsWith("builtin://") ||
   item.name.startsWith("内置规则") ||
   item.name.startsWith("内置路由");
+const previewBuiltinSubscriptions: Subscription[] = [
+  {id:"default:stevenblack:porn",kind:"rule",name:"StevenBlack · Porn-only Hosts",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128,activeRuleCount:128,uiGroup:"色情内容",uiOrder:10,description:"StevenBlack 成人内容基础 hosts 列表"},
+  {id:"default:blocklistproject:porn",kind:"rule",name:"The Block List Project · Porn (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:953393,activeRuleCount:953393,uiGroup:"色情内容",uiOrder:11,description:"Block List Project 成人内容域名列表"},
+  {id:"default:cleanweb:adult-supplement",kind:"rule",name:"CleanWeb · Adult Supplement",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-adult-supplement.clash",format:"clash",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:03:00",importedRuleCount:72,activeRuleCount:72,uiGroup:"色情内容",uiOrder:12,description:"CleanWeb 成人内容补充规则"},
+  {id:"default:cleanweb:strict-adult-keywords",kind:"rule",name:"CleanWeb · 严格成人关键词",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-adult-keywords.clash",format:"clash",category:"strict",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:13:00",importedRuleCount:18,activeRuleCount:0,uiGroup:"色情内容",uiOrder:13,toggleable:true,description:"严格模式成人内容关键词规则"},
+  {id:"default:stevenblack:gambling",kind:"rule",name:"StevenBlack · Gambling-only Hosts",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",format:"hosts",category:"gambling",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:04:00",importedRuleCount:24736,activeRuleCount:24736,uiGroup:"赌博内容",uiOrder:20,description:"StevenBlack 赌博站点基础 hosts 列表"},
+  {id:"default:cleanweb:strict-gambling-keywords",kind:"rule",name:"CleanWeb · 严格赌博关键词",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-gambling-keywords.clash",format:"clash",category:"strict",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:14:00",importedRuleCount:6,activeRuleCount:0,uiGroup:"赌博内容",uiOrder:21,toggleable:true,description:"严格模式赌博关键词规则"},
+  {id:"default:blocklistproject:drugs",kind:"rule",name:"The Block List Project · Drugs (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt",format:"domain-list",category:"drugs",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:05:00",importedRuleCount:6231,activeRuleCount:6231,uiGroup:"毒品内容",uiOrder:30,description:"Block List Project 毒品相关域名列表"},
+  {id:"default:blocklistproject:fraud",kind:"rule",name:"The Block List Project · Fraud (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt",format:"domain-list",category:"fraud",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:06:00",importedRuleCount:18341,activeRuleCount:18341,uiGroup:"安全风险",uiOrder:40,description:"Block List Project 诈骗域名列表"},
+  {id:"default:blocklistproject:phishing",kind:"rule",name:"The Block List Project · Phishing (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt",format:"domain-list",category:"phishing",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:07:00",importedRuleCount:98144,activeRuleCount:98144,uiGroup:"安全风险",uiOrder:41,description:"Block List Project 钓鱼域名列表"},
+  {id:"default:urlhaus:malware",kind:"rule",name:"URLhaus · Malware Hostfile",url:"https://urlhaus.abuse.ch/downloads/hostfile/",format:"hosts",category:"malware",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:08:00",importedRuleCount:1411,activeRuleCount:1411,uiGroup:"安全风险",uiOrder:42,description:"URLhaus 恶意软件分发域名列表"},
+  {id:"default:cleanweb:security-supplement",kind:"rule",name:"CleanWeb · Security Supplement",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-security-supplement.clash",format:"clash",category:"phishing",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:09:00",importedRuleCount:39,activeRuleCount:39,uiGroup:"安全风险",uiOrder:43,description:"CleanWeb 安全风险补充规则"},
+  {id:"default:cleanweb:safe-search",kind:"rule",name:"CleanWeb · SafeSearch DNS Mappings",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml",format:"safe-search",category:"custom",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:10:00",importedRuleCount:14,activeRuleCount:14,uiGroup:"安全搜索",uiOrder:50,toggleable:true,description:"搜索引擎安全模式 DNS 补强映射"},
+  {id:"local:cleanweb:entertainment-short-video",kind:"rule",name:"CleanWeb · 短视频与直播",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-short-video.clash",format:"clash",category:"entertainment",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:12:00",importedRuleCount:44,activeRuleCount:0,uiGroup:"短视频与直播",uiOrder:60,toggleable:true,description:"抖音、TikTok、快手、B 站、直播和视频平台"},
+  {id:"local:cleanweb:entertainment-social",kind:"rule",name:"CleanWeb · 社交社区",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-social.clash",format:"clash",category:"entertainment",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:12:00",importedRuleCount:29,activeRuleCount:0,uiGroup:"社交社区",uiOrder:61,toggleable:true,description:"Instagram、Telegram、X、Reddit 等社交社区平台"},
+  {id:"local:cleanweb:entertainment-games",kind:"rule",name:"CleanWeb · 游戏内容",url:"https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-games.clash",format:"clash",category:"entertainment",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:12:00",importedRuleCount:68,activeRuleCount:0,uiGroup:"游戏内容",uiOrder:62,toggleable:true,description:"国内外游戏平台、发行商和游戏社区"},
+  {id:"default:adaway:hosts",kind:"rule",name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:15:00",importedRuleCount:7124,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:70,toggleable:true,description:"AdAway 官方 hosts 广告拦截列表，体量较轻"},
+  {id:"default:easylist:ads",kind:"rule",name:"EasyList · Ads",url:"https://easylist.to/easylist/easylist.txt",format:"adblock",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:16:00",importedRuleCount:68342,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:71,toggleable:true,description:"EasyList 官方英文广告过滤规则"},
+  {id:"default:easylist:privacy",kind:"rule",name:"EasyPrivacy · Tracking",url:"https://easylist.to/easylist/easyprivacy.txt",format:"adblock",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:17:00",importedRuleCount:42118,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:72,toggleable:true,description:"EasyPrivacy 官方跟踪器拦截规则"},
+  {id:"default:adguard:dns-filter",kind:"rule",name:"AdGuard · DNS Filter",url:"https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",format:"adblock",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:18:00",importedRuleCount:60121,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:73,toggleable:true,description:"AdGuard 官方 DNS 级广告与跟踪过滤规则"},
+  {id:"default:loyalsoldier:cncidr",kind:"rule",name:"Loyalsoldier · China CIDR Routes",url:"https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",format:"clash",category:"direct",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:11:00",importedRuleCount:9512,activeRuleCount:9512,uiGroup:"网络基础",uiOrder:1,description:"中国大陆 IP 段直连路由基础规则"},
+];
 function loadPreviewSettings(): Settings {
   try {
     const raw = window.localStorage.getItem(previewSettingsKey);
@@ -104,9 +126,16 @@ function savePreviewParentRules() {
 function loadPreviewSubscriptions(): Subscription[] {
   try {
     const raw = window.localStorage.getItem(previewSubscriptionsKey);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return structuredClone(previewBuiltinSubscriptions);
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return structuredClone(previewBuiltinSubscriptions);
+    const records = new Map<string, Subscription>(parsed.map((item: Subscription) => [item.id, item]));
+    for (const builtin of previewBuiltinSubscriptions) {
+      if (!records.has(builtin.id)) records.set(builtin.id, structuredClone(builtin));
+    }
+    return Array.from(records.values());
   } catch {
-    return [];
+    return structuredClone(previewBuiltinSubscriptions);
   }
 }
 function savePreviewSubscriptions() {
@@ -206,7 +235,7 @@ export async function importProxyPayload(sessionToken: string, input: ManualProx
 export async function setSubscriptionEnabled(sessionToken:string,id:string,enabled:boolean) {
   if (isTauri()) return invoke("set_subscription_enabled", { sessionToken,id,enabled });
   const item=previewSubscriptions.find((value)=>value.id===id);
-  if(item&&isBuiltinSubscription(item)&&!enabled)throw new Error("内置规则必须保持启用");
+  if(item&&isBuiltinSubscription(item)&&!enabled&&!item.toggleable)throw new Error("内置规则必须保持启用");
   if(item){item.enabled=enabled;savePreviewSubscriptions();}
 }
 export async function deleteSubscription(sessionToken:string,id:string) {
@@ -216,7 +245,14 @@ export async function deleteSubscription(sessionToken:string,id:string) {
   const index=previewSubscriptions.findIndex((value)=>value.id===id); if(index>=0){previewSubscriptions.splice(index,1);savePreviewSubscriptions();}
 }
 export type RecommendedSource={name:string;url:string;format:string;category:string;description:string};
-const previewRecommendedSources:RecommendedSource[]=[];
+const previewRecommendedSources:RecommendedSource[]=[
+  {name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",description:"AdAway 官方 hosts 列表，适合作为轻量广告拦截源"},
+  {name:"EasyList · Ads",url:"https://easylist.to/easylist/easylist.txt",format:"adblock",category:"ads",description:"EasyList 官方英文广告过滤列表，覆盖主流网页广告"},
+  {name:"EasyPrivacy · Tracking",url:"https://easylist.to/easylist/easyprivacy.txt",format:"adblock",category:"ads",description:"EasyPrivacy 官方跟踪器过滤列表，补充隐私保护"},
+  {name:"AdGuard · DNS Filter",url:"https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",format:"adblock",category:"ads",description:"AdGuard 官方 DNS 过滤规则，适合网络层广告与跟踪拦截"},
+  {name:"AdGuard · Base Filter",url:"https://filters.adtidy.org/extension/chromium/filters/2.txt",format:"adblock",category:"ads",description:"AdGuard 官方基础过滤规则，覆盖网页广告和常见跟踪"},
+  {name:"AdGuard · Chinese Filter",url:"https://filters.adtidy.org/extension/chromium/filters/224.txt",format:"adblock",category:"ads",description:"AdGuard 官方中文过滤规则，适合补充国内网页广告"},
+];
 export async function getRecommendedSources():Promise<RecommendedSource[]>{return isTauri()?invoke<RecommendedSource[]>("get_recommended_sources"):previewRecommendedSources;}
 export async function refreshSubscription(sessionToken:string,id:string):Promise<RefreshReport>{
   if(isTauri())return invoke("refresh_subscription",{sessionToken,id});
@@ -351,11 +387,11 @@ function previewBrowserPolicyDetails():BrowserPolicyDetail[]{return [
     {key:"browser_policy.use_system_dns_client",label:"使用系统 DNS 客户端",enabled:true,configured:false,expectedValue:"false"},
   ];}
 const previewBrowserPolicyStatus:BrowserPolicyStatus={browsers:[
-  {id:"chrome",name:"Chrome",installed:true,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
-  {id:"edge",name:"Edge",installed:true,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
-  {id:"brave",name:"Brave",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
-  {id:"vivaldi",name:"Vivaldi",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
-  {id:"chromium",name:"Chromium",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"chrome",name:"Chrome",engineId:"chromium",engineName:"Chromium 内核",installed:true,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"edge",name:"Edge",engineId:"chromium",engineName:"Chromium 内核",installed:true,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"brave",name:"Brave",engineId:"chromium",engineName:"Chromium 内核",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"vivaldi",name:"Vivaldi",engineId:"chromium",engineName:"Chromium 内核",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
+  {id:"chromium",name:"Chromium",engineId:"chromium",engineName:"Chromium 内核",installed:false,configured:false,needsRestart:false,details:previewBrowserPolicyDetails()},
 ]};
 export async function getBrowserPolicyStatus():Promise<BrowserPolicyStatus>{return isTauri()?invoke("get_browser_policy_status"):structuredClone(previewBrowserPolicyStatus);}
 export async function applyBrowserPolicies(sessionToken:string):Promise<BrowserPolicyStatus>{

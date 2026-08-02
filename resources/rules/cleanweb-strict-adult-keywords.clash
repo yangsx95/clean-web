@@ -1,6 +1,5 @@
-# CleanWeb strict-mode supplemental rules.
-# Keep this file keyword-only. Platform domains belong to entertainment rules.
-# Avoid broad random-domain heuristics or whole TLD blocks such as vip, cc, fun, xyz, top, click.
+# CleanWeb strict-mode adult keyword supplement.
+# Keep this file keyword-only; platform domains belong to category-specific rules.
 DOMAIN-KEYWORD,porn,REJECT
 DOMAIN-KEYWORD,sex,REJECT
 DOMAIN-KEYWORD,xxx,REJECT
@@ -19,9 +18,4 @@ DOMAIN-KEYWORD,avgle,REJECT
 DOMAIN-KEYWORD,xvideo,REJECT
 DOMAIN-KEYWORD,xnxx,REJECT
 DOMAIN-KEYWORD,xhamster,REJECT
-DOMAIN-KEYWORD,casino,REJECT
-DOMAIN-KEYWORD,poker,REJECT
-DOMAIN-KEYWORD,bingo,REJECT
-DOMAIN-KEYWORD,gambling,REJECT
-DOMAIN-KEYWORD,bookmaker,REJECT
-DOMAIN-KEYWORD,lottery,REJECT
+DOMAIN-KEYWORD,zukong,REJECT

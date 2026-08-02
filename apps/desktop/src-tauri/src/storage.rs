@@ -83,6 +83,10 @@ pub struct SubscriptionRecord {
     pub last_error: Option<String>,
     pub imported_rule_count: i64,
     pub active_rule_count: i64,
+    pub ui_group: Option<String>,
+    pub ui_order: Option<i64>,
+    pub toggleable: bool,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,7 +120,7 @@ fn default_rule_sources() -> Vec<DefaultRuleSource> {
 }
 
 fn recommended_rule_sources() -> Vec<RecommendedSource> {
-    Vec::new()
+    rule_source_defaults().recommended_rule_sources
 }
 
 fn rule_source_defaults() -> RuleSourceDefaults {
@@ -223,6 +227,10 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
            enabled INTEGER NOT NULL DEFAULT 1,
            last_updated_at TEXT,
            last_error TEXT,
+           ui_group TEXT,
+           ui_order INTEGER,
+           toggleable INTEGER NOT NULL DEFAULT 0,
+           description TEXT,
            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
          );
          CREATE TABLE IF NOT EXISTS imported_rules (
@@ -289,6 +297,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
          );",
     )?;
     migrate_parent_rules_action_constraint(db)?;
+    add_subscription_metadata_columns(db)?;
     migrate_access_log_string_storage(db)?;
     if migrate_compact_access_logs(db)? {
         db.execute_batch("VACUUM")?;
@@ -353,21 +362,29 @@ fn create_imported_rule_indexes(db: &Connection) -> rusqlite::Result<()> {
 fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
     for source in default_rule_sources() {
         db.execute(
-            "INSERT OR IGNORE INTO subscriptions(id,kind,name,url,format,category,update_interval_hours,enabled)
-             VALUES(?1,'rule',?2,?3,?4,?5,?6,1)",
+            "INSERT OR IGNORE INTO subscriptions(id,kind,name,url,format,category,update_interval_hours,enabled,ui_group,ui_order,toggleable,description)
+             VALUES(?1,'rule',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 source.id,
                 source.name,
                 source.url,
                 source.format,
                 source.category,
-                source.update_interval_hours
+                source.update_interval_hours,
+                source.enabled_by_default.unwrap_or(true),
+                source.ui_group,
+                source.ui_order,
+                source.toggleable,
+                source.description
             ],
         )?;
     }
     sync_builtin_subscription_names(db)?;
     db.execute(
-        "UPDATE subscriptions SET enabled=1 WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%' OR url LIKE 'builtin://%'",
+        "UPDATE subscriptions
+            SET enabled=1
+          WHERE (id LIKE 'default:%' OR id LIKE 'local:cleanweb:%' OR url LIKE 'builtin://%')
+            AND toggleable=0",
         [],
     )?;
     db.execute(
@@ -376,7 +393,11 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
     )?;
     // Remove the short-lived v1 entries whose upstream paths no longer exist.
     db.execute(
-        "DELETE FROM subscriptions WHERE id LIKE 'builtin:blackmatrix7:%' OR id='default:blocklistproject:malware'",
+        "DELETE FROM subscriptions
+          WHERE id LIKE 'builtin:blackmatrix7:%'
+             OR id='default:blocklistproject:malware'
+             OR id='local:cleanweb:entertainment-cdn'
+             OR id='default:cleanweb:strict-supplement'",
         [],
     )?;
     Ok(())
@@ -386,7 +407,7 @@ fn sync_builtin_subscription_names(db: &Connection) -> rusqlite::Result<()> {
     for source in default_rule_sources() {
         db.execute(
             "UPDATE subscriptions
-             SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=?6
+             SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=?6,ui_group=?7,ui_order=?8,toggleable=?9,description=?10
              WHERE id=?1",
             params![
                 source.id,
@@ -394,7 +415,11 @@ fn sync_builtin_subscription_names(db: &Connection) -> rusqlite::Result<()> {
                 source.url,
                 source.format,
                 source.category,
-                source.update_interval_hours
+                source.update_interval_hours,
+                source.ui_group,
+                source.ui_order,
+                source.toggleable,
+                source.description
             ],
         )?;
     }
@@ -488,6 +513,24 @@ fn add_access_log_string_column(db: &Connection, column: &str) -> rusqlite::Resu
             &format!("ALTER TABLE access_logs ADD COLUMN {column} INTEGER REFERENCES access_log_strings(id)"),
             [],
         )?;
+    }
+    Ok(())
+}
+
+fn add_subscription_metadata_columns(db: &Connection) -> rusqlite::Result<()> {
+    let columns = [
+        ("ui_group", "TEXT"),
+        ("ui_order", "INTEGER"),
+        ("toggleable", "INTEGER NOT NULL DEFAULT 0"),
+        ("description", "TEXT"),
+    ];
+    for (column, column_type) in columns {
+        if !table_has_column(db, "subscriptions", column)? {
+            db.execute(
+                &format!("ALTER TABLE subscriptions ADD COLUMN {column} {column_type}"),
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -820,8 +863,9 @@ fn list_subscriptions_inner(
                  AND COALESCE((SELECT value FROM settings WHERE key='category.' || r.category),'true')!='false'),0)
                  + COALESCE((SELECT COUNT(*) FROM safe_search_mappings m WHERE m.subscription_id=s.id
                    AND s.enabled=1
-                   AND COALESCE((SELECT value FROM settings WHERE key='safe_search_enabled'),'true')='true'),0) AS active_rule_count
-               FROM subscriptions s WHERE (?1 IS NULL OR s.kind=?1) ORDER BY s.created_at DESC";
+                   AND COALESCE((SELECT value FROM settings WHERE key='safe_search_enabled'),'true')='true'),0) AS active_rule_count,
+               s.ui_group, s.ui_order, s.toggleable, s.description
+               FROM subscriptions s WHERE (?1 IS NULL OR s.kind=?1) ORDER BY COALESCE(s.ui_order,999999), s.created_at DESC";
     let mut statement = db.prepare(sql).map_err(error)?;
     let records = statement
         .query_map(params![kind], |row| {
@@ -838,6 +882,10 @@ fn list_subscriptions_inner(
                 last_error: row.get(9)?,
                 imported_rule_count: row.get(10)?,
                 active_rule_count: row.get(11)?,
+                ui_group: row.get(12)?,
+                ui_order: row.get(13)?,
+                toggleable: row.get::<_, i64>(14)? != 0,
+                description: row.get(15)?,
             })
         })
         .map_err(error)?
@@ -992,19 +1040,22 @@ pub fn set_subscription_enabled(
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     if !enabled {
-        if id.starts_with("default:") {
-            return Err("内置规则必须保持启用".into());
-        }
         let record = db
             .query_row(
-                "SELECT name,url FROM subscriptions WHERE id=?1",
+                "SELECT name,url,toggleable FROM subscriptions WHERE id=?1",
                 params![id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                    ))
+                },
             )
             .optional()
             .map_err(error)?
             .ok_or_else(|| "订阅不存在".to_string())?;
-        if is_builtin_subscription_record(&id, &record.0, &record.1) {
+        if is_builtin_subscription_record(&id, &record.0, &record.1) && !record.2 {
             return Err("内置规则必须保持启用".into());
         }
     }
@@ -1686,9 +1737,28 @@ mod tests {
     }
 
     #[test]
-    fn recommended_sources_are_not_bundled() {
+    fn recommended_sources_are_metadata_only() {
         let sources = get_recommended_rule_sources();
-        assert!(sources.is_empty(), "推荐源地址不应随 app 打包");
+        assert!(
+            sources.iter().any(|source| source.name == "EasyList · Ads"
+                && source.format == "adblock"
+                && source.category == "ads"),
+            "推荐源应开放给添加订阅入口"
+        );
+
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        let recommended_subscription_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM subscriptions WHERE name='AdGuard · Base Filter'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            recommended_subscription_count, 0,
+            "仅推荐的规则源不应自动写入订阅表"
+        );
     }
 
     #[test]
@@ -1697,9 +1767,9 @@ mod tests {
         let path = directory.path().join("cleanweb.db");
         let state = AppState::open(&path).unwrap();
         let db = state.db.lock().unwrap();
-        let records: std::collections::HashMap<String, (String, String, Option<i64>)> = {
+        let records: std::collections::HashMap<String, (String, String, Option<i64>, bool, bool)> = {
             let mut statement = db
-                .prepare("SELECT id,url,format,update_interval_hours FROM subscriptions WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%'")
+                .prepare("SELECT id,url,format,update_interval_hours,enabled,toggleable FROM subscriptions WHERE id LIKE 'default:%' OR id LIKE 'local:cleanweb:%'")
                 .unwrap();
             statement
                 .query_map([], |row| {
@@ -1709,6 +1779,8 @@ mod tests {
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
                             row.get::<_, Option<i64>>(3)?,
+                            row.get::<_, i64>(4)? != 0,
+                            row.get::<_, i64>(5)? != 0,
                         ),
                     ))
                 })
@@ -1722,21 +1794,47 @@ mod tests {
                 "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml".into(),
                 "safe-search".into(),
                 Some(24),
+                true,
+                true,
             )),
             "SafeSearch 内置订阅元数据必须恢复"
         );
         assert_eq!(
-            records.get("default:cleanweb:strict-supplement"),
+            records.get("default:cleanweb:strict-adult-keywords"),
             Some(&(
-                "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash".into(),
+                "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-adult-keywords.clash".into(),
                 "clash".into(),
                 Some(24),
+                false,
+                true,
             )),
-            "严格模式补充规则必须自动刷新导入"
+            "严格模式成人关键词规则必须自动刷新导入"
+        );
+        assert_eq!(
+            records.get("local:cleanweb:entertainment-short-video"),
+            Some(&(
+                "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-short-video.clash".into(),
+                "clash".into(),
+                Some(24),
+                false,
+                true,
+            )),
+            "娱乐内容具体分类规则必须自动刷新导入"
+        );
+        assert_eq!(
+            records.get("default:easylist:ads"),
+            Some(&(
+                "https://easylist.to/easylist/easylist.txt".into(),
+                "adblock".into(),
+                Some(24),
+                false,
+                true,
+            )),
+            "广告规则应作为默认关闭的可选内置订阅"
         );
         let imported_count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%' OR subscription_id='local:cleanweb:entertainment-cdn'",
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id LIKE 'default:cleanweb:%' OR subscription_id LIKE 'local:cleanweb:entertainment-%'",
                 [],
                 |row| row.get(0),
             )
@@ -1926,9 +2024,9 @@ mod tests {
         .unwrap();
         db.execute(
             "UPDATE subscriptions
-             SET name='内置规则 · CleanWeb entertainment-cdn',
+             SET name='内置规则 · CleanWeb short-video',
                  url='https://example.test/entertainment.txt'
-             WHERE id='local:cleanweb:entertainment-cdn'",
+             WHERE id='local:cleanweb:entertainment-short-video'",
             [],
         )
         .unwrap();
@@ -1944,13 +2042,13 @@ mod tests {
             .unwrap();
         let cleanweb_name: String = db
             .query_row(
-                "SELECT name FROM subscriptions WHERE id='local:cleanweb:entertainment-cdn'",
+                "SELECT name FROM subscriptions WHERE id='local:cleanweb:entertainment-short-video'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(blocklist_name, "The Block List Project · Porn (NL)");
-        assert_eq!(cleanweb_name, "CleanWeb · Entertainment CDN Supplement");
+        assert_eq!(cleanweb_name, "CleanWeb · 短视频与直播");
     }
 
     #[test]
@@ -2054,12 +2152,12 @@ mod tests {
         seed_default_rule_subscriptions(&db).unwrap();
         let exists: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-supplement')",
+                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-adult-keywords','default:cleanweb:strict-gambling-keywords')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(exists, 2, "内置能力订阅初始化时必须恢复");
+        assert_eq!(exists, 3, "内置能力订阅初始化时必须恢复");
     }
 
     #[test]
@@ -2068,11 +2166,11 @@ mod tests {
         let db = state.db.lock().unwrap();
         db.execute(
             "UPDATE subscriptions
-             SET url='builtin://cleanweb/strict-supplement',
+             SET url='https://example.test/old-strict.txt',
                  format='clash',
                  category='custom',
                  update_interval_hours=NULL
-             WHERE id='default:cleanweb:strict-supplement'",
+             WHERE id='default:cleanweb:strict-adult-keywords'",
             [],
         )
         .unwrap();
@@ -2083,14 +2181,14 @@ mod tests {
             .query_row(
                 "SELECT url,category,update_interval_hours
                  FROM subscriptions
-                 WHERE id='default:cleanweb:strict-supplement'",
+                 WHERE id='default:cleanweb:strict-adult-keywords'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(
             url,
-            "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash"
+            "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-adult-keywords.clash"
         );
         assert_eq!(category, "strict");
         assert_eq!(interval, Some(24));

@@ -17,6 +17,8 @@ pub struct BrowserPolicyStatus {
 pub struct BrowserPolicyBrowserStatus {
     id: &'static str,
     name: &'static str,
+    engine_id: &'static str,
+    engine_name: &'static str,
     installed: bool,
     configured: bool,
     needs_restart: bool,
@@ -38,6 +40,8 @@ pub struct BrowserPolicyDetail {
 struct BrowserPolicy {
     id: &'static str,
     name: &'static str,
+    engine_id: &'static str,
+    engine_name: &'static str,
     app_path: &'static str,
     managed_domains: &'static [&'static str],
 }
@@ -62,30 +66,40 @@ const BROWSERS: &[BrowserPolicy] = &[
     BrowserPolicy {
         id: "chrome",
         name: "Chrome",
+        engine_id: "chromium",
+        engine_name: "Chromium 内核",
         app_path: "/Applications/Google Chrome.app",
         managed_domains: &["com.google.Chrome"],
     },
     BrowserPolicy {
         id: "edge",
         name: "Edge",
+        engine_id: "chromium",
+        engine_name: "Chromium 内核",
         app_path: "/Applications/Microsoft Edge.app",
         managed_domains: &["com.microsoft.Edge"],
     },
     BrowserPolicy {
         id: "brave",
         name: "Brave",
+        engine_id: "chromium",
+        engine_name: "Chromium 内核",
         app_path: "/Applications/Brave Browser.app",
         managed_domains: &["com.brave.Browser"],
     },
     BrowserPolicy {
         id: "vivaldi",
         name: "Vivaldi",
+        engine_id: "chromium",
+        engine_name: "Chromium 内核",
         app_path: "/Applications/Vivaldi.app",
         managed_domains: &["com.vivaldi.Vivaldi"],
     },
     BrowserPolicy {
         id: "chromium",
         name: "Chromium",
+        engine_id: "chromium",
+        engine_name: "Chromium 内核",
         app_path: "/Applications/Chromium.app",
         managed_domains: &["org.chromium.Chromium"],
     },
@@ -173,6 +187,8 @@ fn browser_status(
     BrowserPolicyBrowserStatus {
         id: browser.id,
         name: browser.name,
+        engine_id: browser.engine_id,
+        engine_name: browser.engine_name,
         installed,
         configured,
         needs_restart: installed && configured,

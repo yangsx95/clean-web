@@ -1,7 +1,7 @@
 import React, { memo, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import jsQR from "jsqr";
-import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Search, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
+import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Download, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Search, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
 
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
@@ -141,10 +141,14 @@ function compactCount(value: number) {
     { threshold: 1_000_000, suffix: "m" },
     { threshold: 1_000, suffix: "k" },
   ];
-  const unit = units.find(item => abs >= item.threshold);
+  let unit = units.find(item => abs >= item.threshold);
   if (!unit) return String(value);
-  const scaled = value / unit.threshold;
+  let scaled = value / unit.threshold;
   const digits = Math.abs(scaled) >= 10 ? 0 : 1;
+  if (unit.suffix === "k" && Number(scaled.toFixed(digits)) >= 1000) {
+    unit = units[0];
+    scaled = value / unit.threshold;
+  }
   return `${scaled.toFixed(digits).replace(/\.0$/, "")}${unit.suffix}`;
 }
 
@@ -417,7 +421,7 @@ export function App() {
       <header><div><span className="eyebrow">{page === "overview" ? "网络保护" : page === "logs" ? "本地隐私日志" : page === "proxy" ? "受控代理层" : page === "settings" ? "管理员设置" : "策略规则模型"}</span><h1>{page === "overview" && coreStatus?.running !== true ? settings.protectionEnabled ? "保护需要恢复" : "保护未接管" : titles[page]}</h1></div></header>
       {runtimeError&&<ErrorNoticeView notice={runtimeError} onClose={()=>setRuntimeError(null)}/>}
       {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} onClose={dismissPolicyStatus}/>}
-      {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
+      {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onOpenRules={() => setPage("rules")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
       {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={refreshSubscription} onRefreshDue={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
@@ -518,13 +522,14 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
   </div>;
 }
 
-function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOpenLogs, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onAddRule:()=>void }) {
+function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOpenLogs, onOpenRules, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onOpenRules:()=>void; onAddRule:()=>void }) {
   const running=coreStatus?.running===true;
   const recentLogs = logs.slice(0,5);
   const enabledControls = [
-    true,
+    settings.safeSearchEnabled,
     settings.strictModeEnabled,
     settings.proxyEnabled,
+    settings.accessLoggingEnabled,
     settings.categories.entertainment,
   ].filter(Boolean).length;
   const protectionLabel = running ? "保护运行中" : "保护未运行";
@@ -550,12 +555,15 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
         <article><span>今日请求</span><strong>{compactCount(logStats.todayTotal)}</strong><small>累计 {compactCount(logStats.total)} 条</small></article>
       </section>
       <section className="cw-dashboard-grid">
-        <article className="cw-panel">
-          <div className="cw-panel-head"><h3>策略开关</h3><span>{enabledControls} 项启用</span></div>
-          <SettingLine title="本地拦截规则" active />
-          <SettingLine title="严格模式" active={settings.strictModeEnabled}><Switch checked={settings.strictModeEnabled} label="严格模式" disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value) => onToggle("strict_mode_enabled", value)} /></SettingLine>
-          <SettingLine title="短视频与游戏" active={Boolean(settings.categories.entertainment)}><Switch checked={Boolean(settings.categories.entertainment)} label="短视频与游戏" disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value) => onToggle("category.entertainment", value)} /></SettingLine>
-          <SettingLine title="代理订阅路由" active={settings.proxyEnabled}><Switch checked={settings.proxyEnabled} label="代理" disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value) => onToggle("proxy_enabled", value)} /></SettingLine>
+        <article className="cw-panel quick-policy-panel">
+          <div className="cw-panel-head"><h3>快捷开关</h3><span>{enabledControls} 项启用</span></div>
+          <SettingLine title="基础内容拦截" note="色情、赌博、毒品和安全风险规则强制启用" active />
+          <SettingLine title="安全搜索" note="搜索引擎安全模式和 DNS 补强" active={settings.safeSearchEnabled}><Switch checked={settings.safeSearchEnabled} label="安全搜索" disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value) => onToggle("safe_search_enabled", value)} /></SettingLine>
+          <SettingLine title="严格模式" note="启用严格关键词订阅，误杀风险更高" active={settings.strictModeEnabled}><Switch checked={settings.strictModeEnabled} label="严格模式" disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value) => onToggle("strict_mode_enabled", value)} /></SettingLine>
+          <SettingLine title="娱乐内容总闸" note="短视频、社交社区和游戏规则的分类总开关" active={Boolean(settings.categories.entertainment)}><Switch checked={Boolean(settings.categories.entertainment)} label="娱乐内容总闸" disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value) => onToggle("category.entertainment", value)} /></SettingLine>
+          <SettingLine title="网络代理" note="允许流量走当前代理节点策略" active={settings.proxyEnabled}><Switch checked={settings.proxyEnabled} label="网络代理" disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value) => onToggle("proxy_enabled", value)} /></SettingLine>
+          <SettingLine title="访问日志" note="记录本机最终网络决策" active={settings.accessLoggingEnabled}><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value) => onToggle("access_logging_enabled", value)} /></SettingLine>
+          <div className="quick-policy-footer"><span>具体内置策略在规则管理中按分类和条目控制。</span><button type="button" className="row-link" onClick={onOpenRules}>管理内置规则</button></div>
         </article>
         <article className="cw-panel">
           <div className="cw-panel-head"><h3>最近访问日志</h3><span>Live</span></div>
@@ -565,8 +573,8 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
   </>;
 }
 
-function SettingLine({ title, active, children }: { title:string; active:boolean; children?:React.ReactNode }) {
-  return <div className="setting-line"><span className={active ? "dot on" : "dot warn"} /><b>{title}</b>{children ?? <span className="fixed-state">{active ? "开启" : "关闭"}</span>}</div>;
+function SettingLine({ title, note, active, children }: { title:string; note?:string; active:boolean; children?:React.ReactNode }) {
+  return <div className="setting-line"><span className={active ? "dot on" : "dot warn"} /><div className="setting-line-main"><b>{title}</b>{note&&<small>{note}</small>}</div>{children ?? <span className="fixed-state">{active ? "开启" : "关闭"}</span>}</div>;
 }
 
 function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
@@ -668,24 +676,52 @@ const browserPolicyOptions = [
 function BrowserPolicyPanel({ settings, status, busy, isBusy, onToggle, onApply }: { settings:backend.Settings; status:backend.BrowserPolicyStatus|null; busy:boolean; isBusy:(scope:string)=>boolean; onToggle:(key:string,enabled:boolean)=>Promise<void>; onApply:()=>Promise<void> }) {
   const browsers = status?.browsers ?? [];
   const installedCount = browsers.filter(browser => browser.installed).length;
+  const engineGroups = Array.from(browsers.reduce((groups,browser)=>{
+    const key = browser.engineId || "unknown";
+    const group = groups.get(key) ?? { id:key, name:browser.engineName || "未知内核", browsers:[] as backend.BrowserPolicyBrowserStatus[] };
+    group.browsers.push(browser);
+    groups.set(key,group);
+    return groups;
+  },new Map<string,{id:string;name:string;browsers:backend.BrowserPolicyBrowserStatus[]}>()).values());
   return <article className="cw-panel browser-policy-panel">
     <div className="cw-panel-head"><h3>浏览器增强保护</h3></div>
-    <p>Chromium 内核浏览器共用同一组策略开关；下方按浏览器显示安装和配置状态。</p>
+    <p>同一浏览器内核共用一组通用策略；具体浏览器仍需要写入各自的托管策略文件，所以 Chrome 和 Edge 会分别显示配置状态。</p>
+    <div className="browser-engine-list">
+      {engineGroups.length === 0 ? <div className="table-empty">正在读取浏览器状态</div> : engineGroups.map(group=><BrowserEngineGroup group={group} settings={settings} isBusy={isBusy} onToggle={onToggle} key={group.id}/>)}
+    </div>
+    <button className="primary full" disabled={busy || installedCount === 0} onClick={()=>void onApply()}><MonitorCheck size={16}/>{busy ? "配置中…" : "应用浏览器保护"}</button>
+  </article>;
+}
+
+function BrowserEngineGroup({ group, settings, isBusy, onToggle }: { group:{id:string;name:string;browsers:backend.BrowserPolicyBrowserStatus[]}; settings:backend.Settings; isBusy:(scope:string)=>boolean; onToggle:(key:string,enabled:boolean)=>Promise<void> }) {
+  const installed = group.browsers.filter(browser=>browser.installed);
+  const configured = installed.filter(browser=>browser.configured);
+  const missing = group.browsers.length - installed.length;
+  return <section className="browser-engine-card">
+    <div className="browser-engine-head">
+      <div>
+        <b>{group.name}</b>
+        <span>{installed.length > 0 ? `${configured.length}/${installed.length} 个已安装浏览器完成配置` : "未检测到已安装浏览器"}{missing > 0 ? ` · ${missing} 个未安装` : ""}</span>
+      </div>
+      <strong className={installed.length === 0 ? "missing" : configured.length === installed.length ? "configured" : "pending"}>{installed.length === 0 ? "未安装" : configured.length === installed.length ? "已配置" : "需配置"}</strong>
+    </div>
     <div className="browser-policy-global">
-      <h4>Chromium 统一策略</h4>
+      <div className="browser-policy-global-title">
+        <b>通用规则</b>
+        <span>保存后应用到该内核下所有已安装浏览器</span>
+      </div>
       <div className="browser-policy-controls">
         {browserPolicyOptions.map(option=>{
           const settingKey = `browser_policy.${option.key}`;
           const checked = settings.browserPolicy[option.key] ?? true;
-          return <SettingToggle key={option.key} title={option.title} label={option.title} note={checked ? "启用后会应用到已安装的 Chromium 浏览器" : "未启用"} checked={checked} disabled={isBusy(busyScope.setting(settingKey))} onChange={(value)=>onToggle(settingKey,value)}/>;
+          return <SettingToggle key={option.key} title={option.title} label={option.title} note={checked ? "已启用" : "未启用"} checked={checked} disabled={isBusy(busyScope.setting(settingKey))} onChange={(value)=>onToggle(settingKey,value)}/>;
         })}
       </div>
     </div>
     <div className="browser-policy-list">
-      {browsers.length === 0 ? <div className="table-empty">正在读取浏览器状态</div> : browsers.map(browser => <BrowserPolicyRow browser={browser} key={browser.id}/>)}
+      {group.browsers.map(browser => <BrowserPolicyRow browser={browser} key={browser.id}/>)}
     </div>
-    <button className="primary full" disabled={busy || installedCount === 0} onClick={()=>void onApply()}><MonitorCheck size={16}/>{busy ? "配置中…" : "应用浏览器保护"}</button>
-  </article>;
+  </section>;
 }
 
 function BrowserPolicyRow({ browser }: { browser:backend.BrowserPolicyBrowserStatus }) {
@@ -693,14 +729,16 @@ function BrowserPolicyRow({ browser }: { browser:backend.BrowserPolicyBrowserSta
   const statusClass = !browser.installed ? "missing" : browser.configured ? "configured" : "pending";
   if (!browser.installed) {
     return <div className="browser-policy-row is-missing">
-      <div className="browser-policy-main"><b>{browser.name}</b></div>
+      <div className="browser-policy-main"><b>{browser.name}</b><span>未检测到应用安装</span></div>
       <strong className={statusClass}>{statusText}</strong>
     </div>;
   }
   return <div className="browser-policy-row">
     <div className="browser-policy-main">
       <b>{browser.name}</b>
-      <span>{browser.details.filter(detail=>detail.enabled).map(detail => detail.configured ? detail.label : `${detail.label}待配置`).join(" · ") || "未启用浏览器策略"}</span>
+      <div className="browser-policy-detail-list">
+        {browser.details.map(detail=><span className={!detail.enabled ? "disabled" : detail.configured ? "configured" : "pending"} key={detail.key}>{detail.label}{!detail.enabled ? "关闭" : detail.configured ? "已配置" : "待配置"}</span>)}
+      </div>
     </div>
     <strong className={statusClass}>{statusText}</strong>
   </div>;
@@ -736,7 +774,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
 
 function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, sessionToken, onRefresh, onRefreshDue, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; sessionToken:string|null; onRefresh:(id:string)=>Promise<void>;onRefreshDue:()=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external"|"diagnose">("block");
-  const [expandedBuiltinSources,setExpandedBuiltinSources]=useState<Record<string,boolean>>({});
+  const [expandedBuiltinGroups,setExpandedBuiltinGroups]=useState<Record<string,boolean>>({});
   const [diagnosticQuery,setDiagnosticQuery]=useState("");
   const [diagnosticResult,setDiagnosticResult]=useState<backend.RuleDiagnosticResult|null>(null);
   const [diagnosticError,setDiagnosticError]=useState("");
@@ -753,74 +791,45 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     if (Number.isNaN(date.getTime())) return value;
     return new Intl.DateTimeFormat("zh-CN", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }).format(date);
   };
-  const builtinCategoryName = (category: string) => ({
-    pornography:"色情内容",
-    gambling:"赌博网站",
-    drugs:"毒品网站",
-    fraud:"诈骗网站",
-    phishing:"钓鱼与 DNS 防绕过",
-    malware:"恶意软件",
-    entertainment:"娱乐内容",
-    direct:"中国 IP 直连",
-    strict:"严格模式",
-  }[category] ?? "自定义");
   const builtinDisplayName = (value: string) => value.replace(/^内置规则\s*·\s*/,"").replace(/^内置路由\s*·\s*/,"");
-  const builtinCategoryOrder = ["pornography","gambling","drugs","fraud","phishing","malware","entertainment","direct","strict"];
-  const builtinGroups = Array.from(builtinSubscriptions.reduce((groups,item)=>{
-    const category = item.category ?? item.id;
-    const existing = groups.get(category) ?? { id:`builtin:${category}`, category, name:builtinCategoryName(category), sources:[] as backend.Subscription[] };
-    existing.sources.push(item);
-    groups.set(category,existing);
+  const builtinRows = [...builtinSubscriptions].sort((a,b)=>(a.uiOrder??999999)-(b.uiOrder??999999)||builtinDisplayName(a.name).localeCompare(builtinDisplayName(b.name),"zh-CN"));
+  const builtinGroups = Array.from(builtinRows.reduce((groups,source)=>{
+    const name = source.uiGroup ?? "未分类";
+    const existing = groups.get(name) ?? { name, order: source.uiOrder ?? 999999, sources:[] as backend.Subscription[] };
+    existing.order = Math.min(existing.order, source.uiOrder ?? 999999);
+    existing.sources.push(source);
+    groups.set(name,existing);
     return groups;
-  },new Map<string,{id:string;category:string;name:string;sources:backend.Subscription[]}>()).values()).sort((a,b)=>{
-    const ai = builtinCategoryOrder.indexOf(a.category);
-    const bi = builtinCategoryOrder.indexOf(b.category);
-    return (ai<0?999:ai)-(bi<0?999:bi)||a.name.localeCompare(b.name,"zh-CN");
-  });
-  const groupUpdateInterval = (sources: backend.Subscription[]) => {
-    const intervals = Array.from(new Set(sources.map(updateInterval)));
-    return intervals.length === 1 ? intervals[0] : "多周期更新";
-  };
-  const groupLastUpdatedAt = (sources: backend.Subscription[]) => {
-    const values = sources.map(source=>source.lastUpdatedAt).filter(Boolean).sort();
-    return values[values.length-1];
-  };
+  },new Map<string,{name:string;order:number;sources:backend.Subscription[]}>()).values()).sort((a,b)=>a.order-b.order||a.name.localeCompare(b.name,"zh-CN"));
   const ruleCount = (source: backend.Subscription) => source.importedRuleCount ?? 0;
   const activeRuleCount = (source: backend.Subscription) => source.activeRuleCount ?? (source.enabled ? ruleCount(source) : 0);
-  const groupRuleCount = (sources: backend.Subscription[]) => sources.reduce((sum,source)=>sum+ruleCount(source),0);
-  const groupActiveRuleCount = (sources: backend.Subscription[]) => sources.reduce((sum,source)=>sum+activeRuleCount(source),0);
+  const needsInitialDownload = (source: backend.Subscription) => ruleCount(source) === 0 && !source.lastUpdatedAt;
   const ruleCountText = (active: number, total: number) => total > 0 ? `${compactCount(active)}/${compactCount(total)}` : "0";
-  const groupActiveProgress = (sources: backend.Subscription[]) => sources.map(source=>refreshProgress[source.id]).find(progress=>progress&&progress.phase!=="complete");
-  const builtinStatus = (group: {sources:backend.Subscription[]}) => {
-    const progress = groupActiveProgress(group.sources);
-    if (progress?.phase === "failed") return { label:"更新失败", className:"failed", detail:progress.message };
-    const failed = group.sources.filter(source=>source.lastError);
-    if (progress && progress.phase !== "complete") return { label:progress.phase === "applying" ? "应用中" : "更新中", className:"updating", detail:progress.message };
-    const activeCount = groupActiveRuleCount(group.sources);
-    const importedCount = groupRuleCount(group.sources);
-    if (activeCount > 0 && failed.length > 0) return { label:"部分生效", className:"partial", detail:`${failed.length} 个来源更新失败` };
-    if (activeCount > 0) return { label:"已生效", className:"ready", detail:"" };
-    if (failed.length > 0) return { label:"更新失败", className:"failed", detail:failed.length === 1 ? failed[0].lastError! : `${failed.length} 个来源更新失败` };
-    if (group.sources.every(source=>!source.enabled)) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
-    if (importedCount > 0) return { label:"未生效", className:"disabled", detail:"当前开关未启用" };
-    const updatedAt = groupLastUpdatedAt(group.sources);
-    if (updatedAt) return { label:"已同步", className:"ready", detail:"" };
-    return { label:"待同步", className:"pending", detail:"点击刷新后下载并应用" };
+  const subscriptionErrorSummary = (message?: string) => {
+    if (!message) return "";
+    if (/error sending request|request timed out|connection|dns|network|请求|下载失败/i.test(message)) return "下载失败，网络不可达";
+    if (/服务器返回|status/i.test(message)) return "服务器返回异常";
+    if (/超过.*限制|too large/i.test(message)) return "订阅文件过大";
+    return "更新失败";
   };
-  const activeProgress = (group: {sources:backend.Subscription[]}) => {
-    const progress = groupActiveProgress(group.sources);
-    return progress && progress.phase !== "failed" ? progress : undefined;
-  };
-  const sourceStatus = (source: backend.Subscription) => {
-    const importedCount = ruleCount(source);
+  const builtinStatus = (source: backend.Subscription) => {
+    const progress = refreshProgress[source.id];
+    if (progress?.phase === "failed") return { label:"更新失败", className:"failed", detail:subscriptionErrorSummary(progress.message), fullDetail:progress.message };
+    if (progress && progress.phase !== "complete") return { label:progress.phase === "applying" ? "应用中" : needsInitialDownload(source) ? "下载中" : "更新中", className:"updating", detail:progress.message };
     const activeCount = activeRuleCount(source);
-    if (activeCount > 0 && source.lastError) return { label:"部分生效", className:"partial", detail:source.lastError };
+    const importedCount = ruleCount(source);
+    if (activeCount > 0 && source.lastError) return { label:"部分生效", className:"partial", detail:subscriptionErrorSummary(source.lastError), fullDetail:source.lastError };
     if (activeCount > 0) return { label:"已生效", className:"ready", detail:"" };
-    if (source.lastError) return { label:"失败", className:"failed", detail:source.lastError };
-    if (!source.enabled) return { label:"停用", className:"disabled", detail:"当前不会参与保护配置" };
+    if (source.lastError) return { label:"更新失败", className:"failed", detail:subscriptionErrorSummary(source.lastError), fullDetail:source.lastError };
+    if (needsInitialDownload(source)) return { label:"未下载", className:"pending", detail:"点击下载后获取规则" };
+    if (!source.enabled) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
     if (importedCount > 0) return { label:"未生效", className:"disabled", detail:"当前开关未启用" };
-    if (source.lastUpdatedAt) return { label:"已同步", className:"ready", detail:`${formatUpdatedAt(source.lastUpdatedAt)} 更新` };
-    return { label:"待同步", className:"pending", detail:"等待首次下载" };
+    if (source.lastUpdatedAt) return { label:"已同步", className:"ready", detail:"" };
+    return { label:"待同步", className:"pending", detail:"点击下载后获取规则" };
+  };
+  const activeProgress = (source: backend.Subscription) => {
+    const progress = refreshProgress[source.id];
+    return progress && progress.phase !== "failed" ? progress : undefined;
   };
   const matchKindLabel = (kind: string) => ({exact:"精确域名",suffix:"域名及子域名",contains:"关键词",wildcard:"通配符",regex:"正则",ip:"IP地址",cidr:"IP网段"}[kind] ?? kind);
   const ruleActionLabel = (action: backend.ParentRule["action"]) => action === "block" ? "拦截" : action === "proxy" ? "走代理" : action === "system_route" ? "系统路由" : "直连";
@@ -846,11 +855,57 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     const rowBusy = isBusy(busyScope.rule(item.id));
     return <div className="table-row" key={item.id}><div><b>{item.pattern}</b><small>{matchKindLabel(item.kind)} · {item.category}</small></div><span className={`rule-action ${item.action}`}>{ruleActionLabel(item.action)}</span><Switch checked={item.enabled} label={`${item.pattern}规则`} disabled={rowBusy} onChange={value=>onToggleParentRule(item.id,value)}/><button className="row-action" aria-label={`删除${item.pattern}`} disabled={rowBusy} onClick={()=>void onDeleteParentRule(item.id)}><Trash2 size={15}/></button></div>;
   };
+  const renderBuiltinRow = (source: backend.Subscription) => {
+    const status = builtinStatus(source);
+    const progress = activeProgress(source);
+    const sourceBusy = isBusy(busyScope.subscription(source.id))||refreshingId===source.id;
+    const sourceActiveCount = activeRuleCount(source);
+    const sourceImportedCount = ruleCount(source);
+    const initialDownload = needsInitialDownload(source);
+    const refreshLabel = `${initialDownload ? "下载" : "更新"}${builtinDisplayName(source.name)}`;
+    return <div className="builtin-category-row" key={source.id}>
+      <div className="builtin-category-summary">
+        <div className="builtin-category-main">
+          <b>{builtinDisplayName(source.name)}</b>
+          <small className={source.lastError ? "error-text" : ""}>{source.lastError ? subscriptionErrorSummary(source.lastError) : `${source.description??subscriptionFormat(source)} · ${updateInterval(source)}`}</small>
+        </div>
+        <div className="builtin-rule-count"><b>{ruleCountText(sourceActiveCount,sourceImportedCount)}</b><span>规则生效</span></div>
+        <div className="builtin-rule-state">
+          <strong className={status.className}>{status.label}</strong>
+          {status.detail&&!progress&&<small title={status.fullDetail}>{status.detail}</small>}
+          {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${builtinDisplayName(source.name)}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
+            <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
+            <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
+          </div>}
+        </div>
+        <span className="builtin-rule-format">{subscriptionFormat(source)}</span>
+        <span className="builtin-rule-updated">{formatUpdatedAt(source.lastUpdatedAt)}</span>
+        <div className="builtin-rule-control">
+          {source.toggleable ? <Switch checked={source.enabled} label={`${builtinDisplayName(source.name)}规则`} disabled={sourceBusy} onChange={value=>onToggleSubscription(source.id,value)}/> : <span>强制启用</span>}
+        </div>
+        <div className="row-actions"><button className={`row-action builtin-rule-refresh${initialDownload?" download":""}`} aria-label={refreshLabel} disabled={sourceBusy} onClick={()=>void onRefresh(source.id)}>{initialDownload ? <Download size={14}/> : <RefreshCw size={14}/>}<span>{initialDownload ? "下载" : "更新"}</span></button></div>
+      </div>
+    </div>;
+  };
+  const renderBuiltinGroup = (group: {name:string;sources:backend.Subscription[]}) => {
+    const total = group.sources.reduce((sum,source)=>sum+ruleCount(source),0);
+    const active = group.sources.reduce((sum,source)=>sum+activeRuleCount(source),0);
+    const toggleable = group.sources.filter(source=>source.toggleable).length;
+    const expanded = expandedBuiltinGroups[group.name] ?? false;
+    return <section className="builtin-rule-group" key={group.name}>
+      <button type="button" className="builtin-rule-group-head" aria-expanded={expanded} aria-label={`${expanded ? "收起" : "展开"}${group.name}分类`} onClick={()=>setExpandedBuiltinGroups(previous=>({...previous,[group.name]:!expanded}))}>
+        <span className="builtin-rule-group-chevron">{expanded ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}</span>
+        <div><b>{group.name}</b><span className="builtin-rule-group-meta">{group.sources.length} 个内置来源{toggleable>0 ? ` · ${toggleable} 个可单独关闭` : " · 强制启用"}</span></div>
+        <strong>{ruleCountText(active,total)}</strong>
+      </button>
+      {expanded&&<div className="builtin-rule-group-body">{group.sources.map(renderBuiltinRow)}</div>}
+    </section>;
+  };
   return <>
     <section className="rules-tabs" role="tablist" aria-label="规则管理分类">
       <button role="tab" aria-selected={tab==="block"} className={tab==="block"?"active":""} onClick={()=>setTab("block")}>访问拦截 <span>{blockRules.length}</span></button>
       <button role="tab" aria-selected={tab==="route"} className={tab==="route"?"active":""} onClick={()=>setTab("route")}>路由设置 <span>{routeRules.length}</span></button>
-      <button role="tab" aria-selected={tab==="builtin"} className={tab==="builtin"?"active":""} onClick={()=>setTab("builtin")}>内置规则 <span>{builtinGroups.length}</span></button>
+      <button role="tab" aria-selected={tab==="builtin"} className={tab==="builtin"?"active":""} onClick={()=>setTab("builtin")}>内置规则 <span>{builtinRows.length}</span></button>
       <button role="tab" aria-selected={tab==="external"} className={tab==="external"?"active":""} onClick={()=>setTab("external")}>外部订阅 <span>{externalSubscriptions.length}</span></button>
       <button role="tab" aria-selected={tab==="diagnose"} className={tab==="diagnose"?"active":""} onClick={()=>setTab("diagnose")}>规则诊断</button>
     </section>
@@ -858,55 +913,10 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>动作</span><span>状态</span><span>操作</span></div>{blockRules.length===0&&<div className="table-empty">尚未添加拦截规则</div>}{blockRules.map(renderParentRule)}</section></>}
     {tab==="route"&&<><section className="toolbar"><div><h2>路由设置</h2><p>为指定目标选择直连、走代理或按系统路由；安全和拦截规则仍然拥有更高优先级。</p></div><button className="primary" disabled={isBusy(busyScope.createRule)} onClick={()=>onAddParentRule("route")}><Plus size={16}/>添加路由</button></section>
     <section className="table-card parent-rules"><div className="table-head"><span>规则</span><span>出口</span><span>状态</span><span>操作</span></div>{routeRules.length===0&&<div className="table-empty">尚未添加路由规则</div>}{routeRules.map(renderParentRule)}</section></>}
-    {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>CleanWeb 维护的基础规则包，安装后默认启用并每天更新。</p></div><button className="primary" disabled={isBusy(busyScope.refreshDueSubscriptions)} onClick={()=>void onRefreshDue()}><RefreshCw size={16}/>检查更新</button></section>
+    {tab==="builtin"&&<><section className="toolbar"><div><h2>内置规则</h2><p>强制规则保持启用；可选和增强规则可单独关闭。</p></div><button className="primary" disabled={isBusy(busyScope.refreshDueSubscriptions)} onClick={()=>void onRefreshDue()}><RefreshCw size={16}/>检查更新</button></section>
     <section className="table-card builtin-rules-table">
       {builtinGroups.length === 0 && <div className="table-empty">内置规则暂不可用</div>}
-      {builtinGroups.map((group) => {
-        const status = builtinStatus(group);
-        const progress = activeProgress(group);
-        return <div className="builtin-category-row" key={group.id}>
-          <div className="builtin-category-summary">
-            <button type="button" className="builtin-category-toggle" aria-label={`${expandedBuiltinSources[group.id]?"收起":"展开"}来源 ${group.sources.length}`} aria-expanded={Boolean(expandedBuiltinSources[group.id])} onClick={()=>setExpandedBuiltinSources(previous=>({...previous,[group.id]:!previous[group.id]}))}>{expandedBuiltinSources[group.id]?<ChevronDown size={16}/>:<ChevronRight size={16}/>}</button>
-            <div className="builtin-category-main">
-              <b>{group.name}</b>
-              <small className={group.sources.some(source=>source.lastError) ? "error-text" : ""}>{group.sources.some(source=>source.lastError) ? `${group.sources.filter(source=>source.lastError).length} 个来源更新失败` : `CleanWeb 维护 · ${group.sources.length} 个来源 · ${groupUpdateInterval(group.sources)}`}</small>
-            </div>
-            <div className="builtin-rule-count"><b>{ruleCountText(groupActiveRuleCount(group.sources),groupRuleCount(group.sources))}</b><span>规则生效</span></div>
-            <div className="builtin-rule-state">
-              <strong className={status.className}>{status.label}</strong>
-              {status.detail&&!progress&&<small>{status.detail}</small>}
-              {progress&&<div className={`builtin-rule-progress ${progress.phase}${progress.indeterminate?" indeterminate":""}`} aria-label={`${group.name}下载应用进度`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.indeterminate?undefined:progress.percent}>
-                <div><span style={progress.indeterminate?undefined:{width:`${progress.percent}%`}}/></div>
-                <small>{progress.message}{progress.percent!=null&&!progress.indeterminate?` ${progress.percent}%`:""}</small>
-              </div>}
-            </div>
-          </div>
-          {expandedBuiltinSources[group.id]&&<div className="builtin-source-list">
-            <div className="builtin-source-head"><span>名称</span><span>格式</span><span>状态</span><span>规则数</span><span>上次更新</span><span>操作</span></div>
-            <div className="builtin-source-rows">
-              {group.sources.map(source=>{
-                const itemStatus = sourceStatus(source);
-                const sourceBusy = isBusy(busyScope.subscription(source.id))||refreshingId===source.id;
-                const sourceActiveCount = activeRuleCount(source);
-                const sourceImportedCount = ruleCount(source);
-                return <div className="builtin-source-row" key={source.id}>
-                  <div className="builtin-source-item-main">
-                    <b title={builtinDisplayName(source.name)}>{builtinDisplayName(source.name)}</b>
-                  </div>
-                  <span>{subscriptionFormat(source)}</span>
-                  <div className="builtin-source-status">
-                    <strong className={itemStatus.className}>{itemStatus.label}</strong>
-                    {itemStatus.detail&&<small className={itemStatus.className==="failed"?"error-text":undefined}>{itemStatus.detail}</small>}
-                  </div>
-                  <span className="builtin-source-count" title={`${sourceActiveCount}/${sourceImportedCount} 条规则生效`}>{ruleCountText(sourceActiveCount,sourceImportedCount)}</span>
-                  <span>{formatUpdatedAt(source.lastUpdatedAt)}</span>
-                  <div className="row-actions"><button className="row-action" aria-label={`更新${builtinDisplayName(source.name)}`} disabled={sourceBusy} onClick={()=>void onRefresh(source.id)}><RefreshCw size={15}/></button></div>
-                </div>;
-              })}
-            </div>
-          </div>}
-        </div>;
-      })}
+      {builtinGroups.map(renderBuiltinGroup)}
     </section></>}
     {tab==="external"&&<><section className="toolbar"><div><h2>外部订阅</h2><p>用户导入的第三方规则来源，更新失败时保留最后一次有效规则。</p></div><button className="primary" disabled={isBusy(busyScope.createSubscription)} onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
     <section className="table-card">
@@ -1235,20 +1245,32 @@ function ProxyImportDialog({ mode, onClose, onSubscriptionSubmit, onPayloadSubmi
 
 function SubscriptionDialog({ kind, subscription, onClose, onSubmit }: { kind: "规则" | "代理"; subscription?: backend.Subscription; onClose: () => void; onSubmit:(input:backend.NewSubscription)=>Promise<void> }) {
   const [error,setError]=useState("");
+  const [recommendedSources,setRecommendedSources]=useState<backend.RecommendedSource[]>([]);
+  const [name,setName]=useState(subscription?.name??"");
+  const [url,setUrl]=useState(subscription?.url??"");
+  const [format,setFormat]=useState(subscription?.format??"auto");
+  const [category,setCategory]=useState(subscription?.category??"custom");
+  const [interval,setInterval]=useState(String(subscription?.updateIntervalHours??24));
   const editing=Boolean(subscription);
-  const defaultInterval=String(subscription?.updateIntervalHours??24);
-  const defaultFormat=subscription?.format??"auto";
+  useEffect(()=>{let cancelled=false;if(kind==="规则"&&!editing)backend.getRecommendedSources().then(sources=>{if(!cancelled)setRecommendedSources(sources.filter(source=>source.category==="ads"));}).catch(()=>{if(!cancelled)setRecommendedSources([]);});return()=>{cancelled=true};},[kind,editing]);
+  const applyRecommendedSource = (source: backend.RecommendedSource) => {
+    setName(source.name);
+    setUrl(source.url);
+    setFormat(source.format);
+    setCategory(source.category);
+  };
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="subscription-title">
       <button className="icon-button" aria-label="关闭" onClick={onClose}><X size={18}/></button>
       <h2 id="subscription-title">{editing?"修改":"添加"}{kind}订阅</h2>
       <p>{kind === "规则" ? "支持 Clash、hosts、域名、IP/CIDR、Adblock 和 SafeSearch DNS 映射。" : "只会提取代理节点和代理组。"}</p>
-      <form onSubmit={async(event) => { event.preventDefault(); const data=new FormData(event.currentTarget); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name:String(data.get("name")),url:String(data.get("url")),format:String(data.get("format")||"auto"),category:kind==="规则"?String(data.get("category")||"custom"):undefined,updateIntervalHours:Number(data.get("interval")||24)});}catch(reason){setError(String(reason));} }}>
-        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" defaultValue={defaultFormat}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">SafeSearch DNS 映射</option></select></>}
-        <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" defaultValue={subscription?.name??""} placeholder={`我的${kind}订阅`} required {...plainTextInputProps} />
-        <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" defaultValue={subscription?.url??""} placeholder="https://example.com/subscription" required {...plainTextInputProps} />
-        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" defaultValue={subscription?.category??"custom"}><option value="custom">自定义</option><option value="routing">代理路由</option><option value="direct">直连路由</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="entertainment">短视频与游戏</option><option value="ads">广告</option></select></>}
-        <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval" defaultValue={defaultInterval}><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
+      <form onSubmit={async(event) => { event.preventDefault(); setError(""); try{await onSubmit({kind:kind==="规则"?"rule":"proxy",name,url,format,category:kind==="规则"?category:undefined,updateIntervalHours:Number(interval)});}catch(reason){setError(String(reason));} }}>
+        {kind==="规则"&&!editing&&recommendedSources.length>0&&<section className="recommended-sources"><span className="recommended-sources-title">推荐广告规则</span><div className="recommended-sources-grid">{recommendedSources.map(source=><button type="button" className="recommended-source-card" key={`${source.name}:${source.url}`} onClick={()=>applyRecommendedSource(source)}><span className="recommended-source-head"><span className="recommended-source-name">{source.name}</span><span className="recommended-source-badge">{source.format}</span></span><p className="recommended-source-desc">{source.description}</p></button>)}</div></section>}
+        {kind==="规则"&&<><label htmlFor="subscription-format">格式</label><select id="subscription-format" name="format" value={format} onChange={event=>setFormat(event.currentTarget.value)}><option value="auto">自动检测</option><option value="clash">Clash/Mihomo</option><option value="adblock">Adblock</option><option value="hosts">Hosts</option><option value="domain-list">域名列表</option><option value="ip-list">IP/CIDR</option><option value="safe-search">SafeSearch DNS 映射</option></select></>}
+        <label htmlFor="subscription-name">订阅名称</label><input id="subscription-name" name="name" value={name} onChange={event=>setName(event.currentTarget.value)} placeholder={`我的${kind}订阅`} required {...plainTextInputProps} />
+        <label htmlFor="subscription-url">订阅地址</label><input id="subscription-url" name="url" type="url" value={url} onChange={event=>setUrl(event.currentTarget.value)} placeholder="https://example.com/subscription" required {...plainTextInputProps} />
+        {kind==="规则"&&<><label htmlFor="subscription-category">分类</label><select id="subscription-category" name="category" value={category} onChange={event=>setCategory(event.currentTarget.value)}><option value="custom">自定义</option><option value="routing">代理路由</option><option value="direct">直连路由</option><option value="pornography">色情与擦边</option><option value="gambling">赌博</option><option value="malware">恶意软件</option><option value="entertainment">短视频与游戏</option><option value="ads">广告与跟踪</option></select></>}
+        <label htmlFor="subscription-interval">更新周期</label><select id="subscription-interval" name="interval" value={interval} onChange={event=>setInterval(event.currentTarget.value)}><option value="6">每6小时</option><option value="12">每12小时</option><option value="24">每天</option><option value="168">每7天</option></select>
         {error&&<span className="form-error">{error}</span>}
         <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" type="submit">{editing?"保存修改":"验证并添加"}</button></div>
       </form>

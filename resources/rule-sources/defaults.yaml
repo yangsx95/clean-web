@@ -5,42 +5,63 @@ default_rule_sources:
     format: hosts
     category: pornography
     update_interval_hours: 24
+    ui_group: 色情内容
+    ui_order: 10
+    description: StevenBlack 成人内容基础 hosts 列表
   - id: default:blocklistproject:porn
     name: The Block List Project · Porn (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
     format: domain-list
     category: pornography
     update_interval_hours: 24
+    ui_group: 色情内容
+    ui_order: 11
+    description: Block List Project 成人内容域名列表
   - id: default:stevenblack:gambling
     name: StevenBlack · Gambling-only Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
     format: hosts
     category: gambling
     update_interval_hours: 24
+    ui_group: 赌博内容
+    ui_order: 20
+    description: StevenBlack 赌博站点基础 hosts 列表
   - id: default:blocklistproject:drugs
     name: The Block List Project · Drugs (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/drugs-nl.txt
     format: domain-list
     category: drugs
     update_interval_hours: 24
+    ui_group: 毒品内容
+    ui_order: 30
+    description: Block List Project 毒品相关域名列表
   - id: default:blocklistproject:fraud
     name: The Block List Project · Fraud (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/fraud-nl.txt
     format: domain-list
     category: fraud
     update_interval_hours: 24
+    ui_group: 安全风险
+    ui_order: 40
+    description: Block List Project 诈骗域名列表
   - id: default:blocklistproject:phishing
     name: The Block List Project · Phishing (NL)
     url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/phishing-nl.txt
     format: domain-list
     category: phishing
     update_interval_hours: 24
+    ui_group: 安全风险
+    ui_order: 41
+    description: Block List Project 钓鱼域名列表
   - id: default:urlhaus:malware
     name: URLhaus · Malware Hostfile
     url: https://urlhaus.abuse.ch/downloads/hostfile/
     format: hosts
     category: malware
     update_interval_hours: 24
+    ui_group: 安全风险
+    ui_order: 42
+    description: URLhaus 恶意软件分发域名列表
   - id: default:cleanweb:adult-supplement
     name: CleanWeb · Adult Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-adult-supplement.clash
@@ -49,6 +70,9 @@ default_rule_sources:
     format: clash
     category: pornography
     update_interval_hours: 24
+    ui_group: 色情内容
+    ui_order: 12
+    description: CleanWeb 成人内容补充规则
   - id: default:cleanweb:security-supplement
     name: CleanWeb · Security Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-security-supplement.clash
@@ -57,49 +81,167 @@ default_rule_sources:
     format: clash
     category: phishing
     update_interval_hours: 24
+    ui_group: 安全风险
+    ui_order: 43
+    description: CleanWeb 安全风险补充规则
   - id: default:cleanweb:safe-search
     name: CleanWeb · SafeSearch DNS Mappings
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml
     format: safe-search
     category: custom
     update_interval_hours: 24
-  - id: local:cleanweb:entertainment-cdn
-    name: CleanWeb · Entertainment CDN Supplement
-    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-cdn-supplement.clash
-    legacy_urls:
-      - builtin://cleanweb/entertainment-cdn
+    ui_group: 安全搜索
+    ui_order: 50
+    toggleable: true
+    description: 搜索引擎安全模式 DNS 补强映射
+  - id: local:cleanweb:entertainment-short-video
+    name: CleanWeb · 短视频与直播
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-short-video.clash
     format: clash
     category: entertainment
     update_interval_hours: 24
+    ui_group: 短视频与直播
+    ui_order: 60
+    toggleable: true
+    enabled_by_default: false
+    description: 抖音、TikTok、快手、B 站、直播和视频平台
+  - id: local:cleanweb:entertainment-social
+    name: CleanWeb · 社交社区
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-social.clash
+    format: clash
+    category: entertainment
+    update_interval_hours: 24
+    ui_group: 社交社区
+    ui_order: 61
+    toggleable: true
+    enabled_by_default: false
+    description: Instagram、Telegram、X、Reddit 等社交社区平台
+  - id: local:cleanweb:entertainment-games
+    name: CleanWeb · 游戏内容
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-games.clash
+    format: clash
+    category: entertainment
+    update_interval_hours: 24
+    ui_group: 游戏内容
+    ui_order: 62
+    toggleable: true
+    enabled_by_default: false
+    description: 国内外游戏平台、发行商和游戏社区
+  - id: default:adaway:hosts
+    name: AdAway · Hosts
+    url: https://adaway.org/hosts.txt
+    format: hosts
+    category: ads
+    update_interval_hours: 24
+    ui_group: 广告与跟踪
+    ui_order: 70
+    toggleable: true
+    enabled_by_default: false
+    description: AdAway 官方 hosts 广告拦截列表，体量较轻
+  - id: default:easylist:ads
+    name: EasyList · Ads
+    url: https://easylist.to/easylist/easylist.txt
+    format: adblock
+    category: ads
+    update_interval_hours: 24
+    ui_group: 广告与跟踪
+    ui_order: 71
+    toggleable: true
+    enabled_by_default: false
+    description: EasyList 官方英文广告过滤规则
+  - id: default:easylist:privacy
+    name: EasyPrivacy · Tracking
+    url: https://easylist.to/easylist/easyprivacy.txt
+    format: adblock
+    category: ads
+    update_interval_hours: 24
+    ui_group: 广告与跟踪
+    ui_order: 72
+    toggleable: true
+    enabled_by_default: false
+    description: EasyPrivacy 官方跟踪器拦截规则
+  - id: default:adguard:dns-filter
+    name: AdGuard · DNS Filter
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    format: adblock
+    category: ads
+    update_interval_hours: 24
+    ui_group: 广告与跟踪
+    ui_order: 73
+    toggleable: true
+    enabled_by_default: false
+    description: AdGuard 官方 DNS 级广告与跟踪过滤规则
   - id: default:loyalsoldier:cncidr
     name: Loyalsoldier · China CIDR Routes
     url: https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt
     format: clash
     category: direct
     update_interval_hours: 24
+    ui_group: 网络基础
+    ui_order: 1
+    description: 中国大陆 IP 段直连路由基础规则
 
 rule_packs:
-  - id: default:cleanweb:strict-supplement
-    name: CleanWeb · Strict Mode Supplement
-    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-supplement.clash
-    legacy_urls:
-      - builtin://cleanweb/strict-supplement
+  - id: default:cleanweb:strict-adult-keywords
+    name: CleanWeb · 严格成人关键词
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-adult-keywords.clash
     format: clash
     category: strict
     update_interval_hours: 24
+    ui_group: 色情内容
+    ui_order: 13
+    toggleable: true
+    enabled_by_default: false
+    description: 严格模式成人内容关键词规则
+  - id: default:cleanweb:strict-gambling-keywords
+    name: CleanWeb · 严格赌博关键词
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-gambling-keywords.clash
+    format: clash
+    category: strict
+    update_interval_hours: 24
+    ui_group: 赌博内容
+    ui_order: 21
+    toggleable: true
+    enabled_by_default: false
+    description: 严格模式赌博关键词规则
 
 recommended_rule_sources:
-  - name: 综合广告与恶意软件
+  - name: AdAway · Hosts
+    url: https://adaway.org/hosts.txt
+    format: hosts
+    category: ads
+    description: AdAway 官方 hosts 列表，适合作为轻量广告拦截源
+  - name: EasyList · Ads
+    url: https://easylist.to/easylist/easylist.txt
+    format: adblock
+    category: ads
+    description: EasyList 官方英文广告过滤列表，覆盖主流网页广告
+  - name: EasyPrivacy · Tracking
+    url: https://easylist.to/easylist/easyprivacy.txt
+    format: adblock
+    category: ads
+    description: EasyPrivacy 官方跟踪器过滤列表，补充隐私保护
+  - name: AdGuard · DNS Filter
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    format: adblock
+    category: ads
+    description: AdGuard 官方 DNS 过滤规则，适合网络层广告与跟踪拦截
+  - name: AdGuard · Base Filter
+    url: https://filters.adtidy.org/extension/chromium/filters/2.txt
+    format: adblock
+    category: ads
+    description: AdGuard 官方基础过滤规则，覆盖网页广告和常见跟踪
+  - name: AdGuard · Chinese Filter
+    url: https://filters.adtidy.org/extension/chromium/filters/224.txt
+    format: adblock
+    category: ads
+    description: AdGuard 官方中文过滤规则，适合补充国内网页广告
+  - name: StevenBlack · Unified Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
     format: hosts
     category: ads
     description: Steven Black 维护的合并去重 hosts 列表，覆盖广告、恶意软件与跟踪域名
-  - name: AdAway 广告拦截
-    url: https://adaway.org/hosts.txt
-    format: hosts
-    category: ads
-    description: AdAway 官方 hosts 列表，专注移动广告拦截
-  - name: Dan Pollock hosts
+  - name: Dan Pollock · Hosts
     url: https://someonewhocares.org/hosts/zero/hosts
     format: hosts
     category: ads
@@ -124,21 +266,11 @@ recommended_rule_sources:
     format: hosts
     category: malware
     description: URLhaus 实时恶意软件分发域名列表
-  - name: EasyList 广告过滤
-    url: https://easylist.to/easylist/easylist.txt
-    format: adblock
-    category: ads
-    description: Adblock 生态中最广泛使用的英文广告过滤列表
   - name: EasyList China
     url: https://easylist-downloads.adblockplus.org/easylistchina.txt
     format: adblock
     category: ads
     description: EasyList 中文补充规则，覆盖国内网站广告
-  - name: AdGuard 中文过滤
-    url: https://filters.adtidy.org/extension/chromium/filters/224.txt
-    format: adblock
-    category: ads
-    description: AdGuard 维护的中文广告过滤规则
   - name: uBlock 隐私保护
     url: https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt
     format: adblock

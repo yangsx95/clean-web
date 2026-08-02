@@ -10,6 +10,16 @@ pub struct DefaultRuleSource {
     pub format: String,
     pub category: String,
     pub update_interval_hours: Option<i64>,
+    #[serde(default)]
+    pub ui_group: Option<String>,
+    #[serde(default)]
+    pub ui_order: Option<i64>,
+    #[serde(default)]
+    pub toggleable: bool,
+    #[serde(default)]
+    pub enabled_by_default: Option<bool>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -61,6 +71,11 @@ default_rule_sources:
     format: hosts
     category: ads
     update_interval_hours: 24
+    ui_group: 隐私与广告
+    ui_order: 10
+    toggleable: true
+    enabled_by_default: false
+    description: Optional ads source
 rule_packs:
   - id: default:test:pack
     name: Test Pack
@@ -82,6 +97,11 @@ recommended_rule_sources:
         let bundled = parsed.bundled_rule_sources();
         assert_eq!(bundled.len(), 2);
         assert_eq!(bundled[0].id, "default:test:source");
+        assert_eq!(bundled[0].ui_group.as_deref(), Some("隐私与广告"));
+        assert_eq!(bundled[0].ui_order, Some(10));
+        assert!(bundled[0].toggleable);
+        assert_eq!(bundled[0].enabled_by_default, Some(false));
+        assert_eq!(bundled[0].description.as_deref(), Some("Optional ads source"));
         assert_eq!(bundled[1].id, "default:test:pack");
         assert_eq!(parsed.recommended_rule_sources.len(), 1);
     }

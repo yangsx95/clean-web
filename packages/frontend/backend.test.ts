@@ -62,6 +62,25 @@ describe("browser preview persistence", () => {
     });
   });
 
+  it("exposes recommended ad rule sources in browser preview", async () => {
+    const backend = await import("./backend");
+
+    await expect(backend.getRecommendedSources()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "EasyList · Ads",
+          format: "adblock",
+          category: "ads",
+        }),
+        expect.objectContaining({
+          name: "AdGuard · DNS Filter",
+          format: "adblock",
+          category: "ads",
+        }),
+      ]),
+    );
+  });
+
   it("keeps the unlocked backend session across a page reload", async () => {
     let backend = await import("./backend");
     await backend.unlock("parent123");
@@ -116,9 +135,11 @@ describe("browser preview persistence", () => {
     vi.resetModules();
     backend = await import("./backend");
 
-    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
-      { kind: "rule", name: "Test rules", url: "https://example.com/rules.txt", enabled: true },
-    ]);
+    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "rule", name: "Test rules", url: "https://example.com/rules.txt", enabled: true }),
+      ]),
+    );
   });
 
   it("updates preview subscriptions", async () => {
@@ -139,39 +160,46 @@ describe("browser preview persistence", () => {
       updateIntervalHours: 12,
     });
 
-    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
-      { id: item.id, name: "New rules", url: "https://example.com/new.txt", format: "adblock", category: "ads", updateIntervalHours: 12 },
-    ]);
+    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: item.id, name: "New rules", url: "https://example.com/new.txt", format: "adblock", category: "ads", updateIntervalHours: 12 }),
+      ]),
+    );
   });
 
-  it("blocks preview edits, disables, and deletes for builtin URL subscriptions", async () => {
+  it("blocks preview edits and deletes for builtin URL subscriptions while allowing optional builtin toggles", async () => {
     const backend = await import("./backend");
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {
-        id: "local:cleanweb:entertainment-cdn",
+        id: "local:cleanweb:entertainment-short-video",
         kind: "rule",
-        name: "内置规则 · 娱乐内容补充",
-        url: "https://example.test/cleanweb-entertainment-cdn.txt",
+        name: "CleanWeb · 短视频与直播",
+        url: "https://example.test/cleanweb-entertainment-short-video.txt",
         format: "clash",
         category: "entertainment",
         enabled: true,
+        uiGroup: "短视频与直播",
+        uiOrder: 60,
+        toggleable: true,
       },
     ]));
 
     await backend.listSubscriptions("browser-preview", "rule");
 
-    await expect(backend.updateSubscription("browser-preview", "local:cleanweb:entertainment-cdn", {
+    await expect(backend.updateSubscription("browser-preview", "local:cleanweb:entertainment-short-video", {
       name: "Changed",
       url: "https://example.com/changed.txt",
       format: "hosts",
       category: "custom",
       updateIntervalHours: 24,
     })).rejects.toThrow("内置规则不能修改");
-    await expect(backend.setSubscriptionEnabled("browser-preview", "local:cleanweb:entertainment-cdn", false)).rejects.toThrow("内置规则必须保持启用");
-    await expect(backend.deleteSubscription("browser-preview", "local:cleanweb:entertainment-cdn")).rejects.toThrow("内置规则不能删除");
+    await expect(backend.setSubscriptionEnabled("browser-preview", "local:cleanweb:entertainment-short-video", false)).resolves.toBeUndefined();
+    await expect(backend.deleteSubscription("browser-preview", "local:cleanweb:entertainment-short-video")).rejects.toThrow("内置规则不能删除");
 
-    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toMatchObject([
-      { id: "local:cleanweb:entertainment-cdn", name: "内置规则 · 娱乐内容补充", enabled: true },
-    ]);
+    await expect(backend.listSubscriptions("browser-preview", "rule")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "local:cleanweb:entertainment-short-video", name: "CleanWeb · 短视频与直播", enabled: false }),
+      ]),
+    );
   });
 });

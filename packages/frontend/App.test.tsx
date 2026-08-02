@@ -114,8 +114,8 @@ describe("management actions", () => {
     render(<App />);
     await unlockManagement();
 
-    expect(screen.getByText("短视频与游戏")).toBeTruthy();
-    expect(screen.getByRole("switch", { name: "短视频与游戏" })).toBeTruthy();
+    expect(screen.getByText("娱乐内容总闸")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "娱乐内容总闸" })).toBeTruthy();
   });
 
   it("applies browser enhancement policies from settings", async () => {
@@ -124,6 +124,8 @@ describe("management actions", () => {
         {
           id: "edge",
           name: "Edge",
+          engineId: "chromium",
+          engineName: "Chromium 内核",
           installed: true,
           configured: true,
           needsRestart: true,
@@ -790,9 +792,11 @@ describe("management actions", () => {
 
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
-      {id:"default:stevenblack:porn",kind:"rule",name:"StevenBlack · Porn-only Hosts",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128},
-      {id:"default:blocklistproject:porn",kind:"rule",name:"The Block List Project · Porn (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:953393},
-      {id:"local:cleanweb:entertainment-cdn",kind:"rule",name:"CleanWeb · Entertainment CDN Supplement",url:"https://example.test/cleanweb-entertainment-cdn.txt",format:"clash",category:"entertainment",enabled:true},
+      {id:"default:stevenblack:porn",kind:"rule",name:"StevenBlack · Porn-only Hosts",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128,uiGroup:"色情内容",uiOrder:10},
+      {id:"default:blocklistproject:porn",kind:"rule",name:"The Block List Project · Porn (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:999950,uiGroup:"色情内容",uiOrder:11},
+      {id:"local:cleanweb:entertainment-short-video",kind:"rule",name:"CleanWeb · 短视频与直播",url:"https://example.test/cleanweb-entertainment-short-video.txt",format:"clash",category:"entertainment",enabled:true,uiGroup:"短视频与直播",uiOrder:60,toggleable:true,description:"短视频和直播平台"},
+      {id:"default:adaway:hosts",kind:"rule",name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",enabled:false,importedRuleCount:7124,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:70,toggleable:true,description:"AdAway 官方 hosts 广告拦截列表，体量较轻"},
+      {id:"default:adguard:dns-filter",kind:"rule",name:"AdGuard · DNS Filter",url:"https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",format:"adblock",category:"ads",enabled:false,importedRuleCount:0,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:73,toggleable:true,description:"AdGuard 官方 DNS 级广告与跟踪过滤规则"},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
     ]));
     render(<App />);
@@ -801,19 +805,22 @@ describe("management actions", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
-    expect(screen.queryByText("上次更新")).toBeNull();
-    expect(screen.getByText("已生效")).toBeTruthy();
-    expect(screen.getByText("954k/954k")).toBeTruthy();
-    expect(screen.getAllByText("规则生效").length).toBeGreaterThan(0);
-    expect(screen.getByText("待同步")).toBeTruthy();
+    expect(screen.getAllByText("1m/1m").length).toBeGreaterThan(0);
     expect(screen.queryByRole("progressbar", { name: /下载应用进度/ })).toBeNull();
-    expect(screen.getByText("娱乐内容")).toBeTruthy();
-    expect(screen.queryByText("StevenBlack · Porn-only Hosts")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "强制保护" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "可选保护" })).toBeNull();
+    expect(screen.queryByText("CleanWeb · 短视频与直播")).toBeNull();
     expect(screen.queryByText("The Block List Project · Porn (NL)")).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: /来源 2/ }));
-    expect(await screen.findByText("上次更新")).toBeTruthy();
-    expect(screen.getByText("规则数")).toBeTruthy();
-    expect(screen.getByText("953k/953k")).toBeTruthy();
+    expect(screen.queryByText("StevenBlack · Porn-only Hosts")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "展开色情内容分类" }));
+    expect(screen.getAllByText("已生效").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("规则生效").length).toBeGreaterThan(0);
+    expect(screen.getByText("The Block List Project · Porn (NL)")).toBeTruthy();
+    expect(screen.getByText("StevenBlack · Porn-only Hosts")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "收起色情内容分类" }));
+    expect(screen.queryByText("The Block List Project · Porn (NL)")).toBeNull();
+    expect(screen.queryByText("StevenBlack · Porn-only Hosts")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "展开色情内容分类" }));
     expect(screen.getByText("The Block List Project · Porn (NL)")).toBeTruthy();
     expect(screen.getByText("StevenBlack · Porn-only Hosts")).toBeTruthy();
     expect(screen.queryByText("https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt")).toBeNull();
@@ -821,11 +828,21 @@ describe("management actions", () => {
     expect(screen.getByRole("button", { name: "更新The Block List Project · Porn (NL)" })).toBeTruthy();
     expect(screen.queryByRole("switch", { name: "StevenBlack · Porn-only Hosts订阅" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除StevenBlack · Porn-only Hosts" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "编辑CleanWeb · Entertainment CDN Supplement" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "删除CleanWeb · Entertainment CDN Supplement" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "展开短视频与直播分类" }));
+    expect(screen.getByText("CleanWeb · 短视频与直播")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "CleanWeb · 短视频与直播规则" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "编辑CleanWeb · 短视频与直播" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除CleanWeb · 短视频与直播" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "展开广告与跟踪分类" }));
+    expect(screen.getByText("AdAway · Hosts")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "AdAway · Hosts规则" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更新AdAway · Hosts" })).toBeTruthy();
+    expect(screen.getByText("AdGuard · DNS Filter")).toBeTruthy();
+    expect(screen.getAllByText("未下载").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "下载AdGuard · DNS Filter" })).toBeTruthy();
     await userEvent.click(screen.getByRole("tab", { name: /外部订阅/ }));
     expect(screen.getByRole("heading", { name: "外部订阅" })).toBeTruthy();
-    expect(screen.queryByText("CleanWeb · Entertainment CDN Supplement")).toBeNull();
+    expect(screen.queryByText("CleanWeb · 短视频与直播")).toBeNull();
     expect(screen.getByRole("switch", { name: "我的规则订阅" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });

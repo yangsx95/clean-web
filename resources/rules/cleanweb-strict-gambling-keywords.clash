@@ -1,0 +1,8 @@
+# CleanWeb strict-mode gambling keyword supplement.
+# Keep this file keyword-only; broad platform domains belong to category-specific rules.
+DOMAIN-KEYWORD,casino,REJECT
+DOMAIN-KEYWORD,poker,REJECT
+DOMAIN-KEYWORD,bingo,REJECT
+DOMAIN-KEYWORD,gambling,REJECT
+DOMAIN-KEYWORD,bookmaker,REJECT
+DOMAIN-KEYWORD,lottery,REJECT
