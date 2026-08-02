@@ -1,7 +1,11 @@
 use ipnet::IpNet;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::{
+    fs::File,
+    net::IpAddr,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +60,8 @@ pub enum RuleError {
     InvalidRegex(#[from] regex::Error),
     #[error("invalid IP or CIDR: {0}")]
     InvalidNetwork(String),
+    #[error("domain index I/O failed: {0}")]
+    IndexIo(#[from] std::io::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -96,8 +102,23 @@ pub struct DomainRuleIndex {
 
 #[derive(Debug, Default)]
 struct DomainMatcher {
-    exact: Option<fst::Set<Vec<u8>>>,
-    suffix: Option<fst::Set<Vec<u8>>>,
+    exact: Option<fst::Set<DomainFstData>>,
+    suffix: Option<fst::Set<DomainFstData>>,
+}
+
+#[derive(Debug)]
+enum DomainFstData {
+    Owned(Vec<u8>),
+    Mmap(MappedFile),
+}
+
+impl AsRef<[u8]> for DomainFstData {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Mmap(mmap) => mmap.as_ref(),
+        }
+    }
 }
 
 impl CompiledRule {
@@ -212,6 +233,24 @@ impl DomainRuleIndex {
             && self.manual_allow.is_empty()
             && self.block.is_empty()
     }
+
+    pub fn load_mmap(paths: &DomainRuleIndexPaths) -> Result<Self, RuleError> {
+        Ok(Self {
+            security_block: DomainMatcher::load_mmap(
+                &paths.security_block_exact,
+                &paths.security_block_suffix,
+            )?,
+            manual_block: DomainMatcher::load_mmap(
+                &paths.manual_block_exact,
+                &paths.manual_block_suffix,
+            )?,
+            manual_allow: DomainMatcher::load_mmap(
+                &paths.manual_allow_exact,
+                &paths.manual_allow_suffix,
+            )?,
+            block: DomainMatcher::load_mmap(&paths.block_exact, &paths.block_suffix)?,
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -248,6 +287,18 @@ impl DomainRuleIndexBuilder {
             block: self.block.build()?,
         })
     }
+
+    pub fn build_to_files(self, paths: &DomainRuleIndexPaths) -> Result<(), RuleError> {
+        self.security_block
+            .write_to_files(&paths.security_block_exact, &paths.security_block_suffix)?;
+        self.manual_block
+            .write_to_files(&paths.manual_block_exact, &paths.manual_block_suffix)?;
+        self.manual_allow
+            .write_to_files(&paths.manual_allow_exact, &paths.manual_allow_suffix)?;
+        self.block
+            .write_to_files(&paths.block_exact, &paths.block_suffix)?;
+        Ok(())
+    }
 }
 
 impl DomainMatcherBuilder {
@@ -269,6 +320,12 @@ impl DomainMatcherBuilder {
             suffix: build_fst_set(self.suffix)?,
         })
     }
+
+    fn write_to_files(self, exact_path: &Path, suffix_path: &Path) -> Result<(), RuleError> {
+        write_fst_set(self.exact, exact_path)?;
+        write_fst_set(self.suffix, suffix_path)?;
+        Ok(())
+    }
 }
 
 impl DomainMatcher {
@@ -283,20 +340,166 @@ impl DomainMatcher {
     fn is_empty(&self) -> bool {
         self.exact.is_none() && self.suffix.is_none()
     }
+
+    fn load_mmap(exact_path: &Path, suffix_path: &Path) -> Result<Self, RuleError> {
+        Ok(Self {
+            exact: load_fst_set_mmap(exact_path)?,
+            suffix: load_fst_set_mmap(suffix_path)?,
+        })
+    }
 }
 
-fn build_fst_set(mut values: Vec<String>) -> Result<Option<fst::Set<Vec<u8>>>, RuleError> {
+#[derive(Debug, Clone)]
+pub struct DomainRuleIndexPaths {
+    pub security_block_exact: PathBuf,
+    pub security_block_suffix: PathBuf,
+    pub manual_block_exact: PathBuf,
+    pub manual_block_suffix: PathBuf,
+    pub manual_allow_exact: PathBuf,
+    pub manual_allow_suffix: PathBuf,
+    pub block_exact: PathBuf,
+    pub block_suffix: PathBuf,
+}
+
+fn build_fst_set(mut values: Vec<String>) -> Result<Option<fst::Set<DomainFstData>>, RuleError> {
     if values.is_empty() {
         return Ok(None);
     }
     values.sort_unstable();
     values.dedup();
-    fst::Set::from_iter(values)
+    let mut builder = fst::SetBuilder::memory();
+    builder
+        .extend_iter(values)
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))?;
+    let bytes = builder
+        .into_inner()
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))?;
+    fst::Set::new(DomainFstData::Owned(bytes))
         .map(Some)
         .map_err(|_| RuleError::InvalidDomain("domain index".into()))
 }
 
-fn suffix_set_matches(set: &fst::Set<Vec<u8>>, domain: &str) -> bool {
+fn write_fst_set(mut values: Vec<String>, path: &Path) -> Result<(), RuleError> {
+    values.sort_unstable();
+    values.dedup();
+    let file = File::create(path)?;
+    let mut builder = fst::SetBuilder::new(file)
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))?;
+    builder
+        .extend_iter(values)
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))?;
+    builder
+        .finish()
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))
+}
+
+fn load_fst_set_mmap(path: &Path) -> Result<Option<fst::Set<DomainFstData>>, RuleError> {
+    let data = MappedFile::open(path)?;
+    if data.as_ref().is_empty() {
+        return Ok(None);
+    }
+    fst::Set::new(DomainFstData::Mmap(data))
+        .map(Some)
+        .map_err(|_| RuleError::InvalidDomain("domain index".into()))
+}
+
+#[derive(Debug)]
+enum MappedFile {
+    #[cfg(unix)]
+    Unix(UnixMappedFile),
+    #[cfg(not(unix))]
+    Owned(Vec<u8>),
+}
+
+impl MappedFile {
+    fn open(path: &Path) -> Result<Self, std::io::Error> {
+        #[cfg(unix)]
+        {
+            return UnixMappedFile::open(path).map(Self::Unix);
+        }
+        #[cfg(not(unix))]
+        {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut File::open(path)?, &mut bytes)?;
+            Ok(Self::Owned(bytes))
+        }
+    }
+}
+
+impl AsRef<[u8]> for MappedFile {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(file) => file.as_ref(),
+            #[cfg(not(unix))]
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct UnixMappedFile {
+    ptr: std::ptr::NonNull<libc::c_void>,
+    len: usize,
+}
+
+#[cfg(unix)]
+impl UnixMappedFile {
+    fn open(path: &Path) -> Result<Self, std::io::Error> {
+        use std::os::fd::AsRawFd;
+
+        let file = File::open(path)?;
+        let len = file.metadata()?.len() as usize;
+        if len == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "cannot mmap an empty file",
+            ));
+        }
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            ptr: std::ptr::NonNull::new(ptr).expect("mmap returned a non-null pointer"),
+            len,
+        })
+    }
+}
+
+#[cfg(unix)]
+impl AsRef<[u8]> for UnixMappedFile {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().cast(), self.len) }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for UnixMappedFile {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.as_ptr(), self.len);
+        }
+    }
+}
+
+#[cfg(unix)]
+unsafe impl Send for UnixMappedFile {}
+
+#[cfg(unix)]
+unsafe impl Sync for UnixMappedFile {}
+
+fn suffix_set_matches<D: AsRef<[u8]>>(set: &fst::Set<D>, domain: &str) -> bool {
     let labels: Vec<&str> = domain.split('.').collect();
     (0..labels.len()).any(|index| set.contains(reverse_labels(&labels[index..])))
 }

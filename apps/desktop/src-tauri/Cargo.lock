@@ -669,6 +669,7 @@ dependencies = [
  "fst",
  "idna",
  "ipnet",
+ "libc",
  "regex",
  "serde",
  "thiserror 2.0.18",

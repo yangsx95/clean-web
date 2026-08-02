@@ -7,6 +7,7 @@ edition = "2021"
 fst = "0.4"
 idna = "1"
 ipnet = { version = "2", features = ["serde"] }
+libc = "0.2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

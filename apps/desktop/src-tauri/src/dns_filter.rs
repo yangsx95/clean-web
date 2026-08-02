@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
+    fs,
     net::{IpAddr, SocketAddr, UdpSocket},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -13,15 +14,16 @@ use std::{
 use std::{ffi::CString, os::fd::AsRawFd};
 
 use cleanweb_rules::{
-    DomainDecision, DomainRuleIndex, DomainRuleIndexBuilder, DomainRuleInput, DomainRuleTier,
-    MatcherKind,
+    DomainDecision, DomainRuleIndex, DomainRuleIndexBuilder, DomainRuleIndexPaths, DomainRuleInput,
+    DomainRuleTier, MatcherKind,
 };
 use hickory_proto::op::{Message, Metadata, ResponseCode};
 use hickory_proto::rr::{
     rdata::{A, AAAA, CNAME},
     Name, RData, Record, RecordType,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "macos")]
@@ -31,6 +33,7 @@ use crate::storage::AppState;
 pub(crate) const CLEANWEB_DNS_LISTEN: &str = "127.0.0.1:19053";
 const UDP_PACKET_SIZE: usize = 4096;
 const SAFE_SEARCH_CNAME_TTL: u32 = 300;
+const DOMAIN_INDEX_CACHE_VERSION: u32 = 1;
 
 struct DnsFilterConfig {
     domain_index: DomainRuleIndex,
@@ -59,7 +62,7 @@ pub(crate) fn start_dns_filter(state: &AppState) -> Result<(), String> {
     stop_dns_filter(state)?;
     let config = {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
-        build_dns_filter_config(&db)?
+        build_dns_filter_config(&db, &state.data_dir)?
     };
     let stop = Arc::new(AtomicBool::new(false));
     let socket = UdpSocket::bind(CLEANWEB_DNS_LISTEN)
@@ -249,19 +252,177 @@ fn bind_upstream_socket_to_default_interface(_socket: &UdpSocket) -> Result<(), 
     Ok(())
 }
 
-fn build_dns_filter_config(db: &Connection) -> Result<DnsFilterConfig, String> {
+fn build_dns_filter_config(db: &Connection, data_dir: &Path) -> Result<DnsFilterConfig, String> {
     let settings = settings_map(db)?;
-    let mut builder = DomainRuleIndexBuilder::default();
-    append_parent_domain_rules(db, &mut builder)?;
-    append_imported_domain_blocks(db, &settings, &mut builder)?;
+    let domain_index = load_or_build_domain_index(db, &settings, data_dir)?;
     Ok(DnsFilterConfig {
-        domain_index: builder.build().map_err(|value| value.to_string())?,
+        domain_index,
         upstreams: configured_dns_upstreams(&settings),
         safe_search_enabled: settings
             .get("safe_search_enabled")
             .is_none_or(|value| value == "true"),
         safe_search_mappings: load_safe_search_mappings(db)?,
     })
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DomainIndexCacheManifest {
+    version: u32,
+    fingerprint: String,
+}
+
+fn load_or_build_domain_index(
+    db: &Connection,
+    settings: &HashMap<String, String>,
+    data_dir: &Path,
+) -> Result<DomainRuleIndex, String> {
+    if !data_dir.is_absolute() {
+        return build_domain_index_in_memory(db, settings);
+    }
+    let cache_dir = data_dir.join("domain-index-cache");
+    let paths = domain_index_paths(&cache_dir);
+    let fingerprint = domain_index_fingerprint(db, settings)?;
+    if domain_index_cache_valid(&cache_dir, &fingerprint)? {
+        match DomainRuleIndex::load_mmap(&paths) {
+            Ok(index) => return Ok(index),
+            Err(_) => {
+                let _ = fs::remove_dir_all(&cache_dir);
+            }
+        }
+    }
+    rebuild_domain_index_cache(db, settings, data_dir, &cache_dir, &paths, &fingerprint)?;
+    DomainRuleIndex::load_mmap(&paths).map_err(|value| value.to_string())
+}
+
+fn build_domain_index_in_memory(
+    db: &Connection,
+    settings: &HashMap<String, String>,
+) -> Result<DomainRuleIndex, String> {
+    let mut builder = DomainRuleIndexBuilder::default();
+    append_parent_domain_rules(db, &mut builder)?;
+    append_imported_domain_blocks(db, settings, &mut builder)?;
+    builder.build().map_err(|value| value.to_string())
+}
+
+fn domain_index_cache_valid(cache_dir: &Path, fingerprint: &str) -> Result<bool, String> {
+    let manifest_path = cache_dir.join("manifest.json");
+    let Ok(manifest) = fs::read_to_string(manifest_path) else {
+        return Ok(false);
+    };
+    let manifest: DomainIndexCacheManifest = serde_json::from_str(&manifest).map_err(error)?;
+    Ok(manifest.version == DOMAIN_INDEX_CACHE_VERSION && manifest.fingerprint == fingerprint)
+}
+
+fn rebuild_domain_index_cache(
+    db: &Connection,
+    settings: &HashMap<String, String>,
+    data_dir: &Path,
+    cache_dir: &Path,
+    paths: &DomainRuleIndexPaths,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let temp_dir = data_dir.join(format!("domain-index-cache.tmp-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir).map_err(error)?;
+    let temp_paths = domain_index_paths(&temp_dir);
+    let result = (|| {
+        let mut builder = DomainRuleIndexBuilder::default();
+        append_parent_domain_rules(db, &mut builder)?;
+        append_imported_domain_blocks(db, settings, &mut builder)?;
+        builder
+            .build_to_files(&temp_paths)
+            .map_err(|value| value.to_string())?;
+        let manifest = DomainIndexCacheManifest {
+            version: DOMAIN_INDEX_CACHE_VERSION,
+            fingerprint: fingerprint.to_owned(),
+        };
+        fs::write(
+            temp_dir.join("manifest.json"),
+            serde_json::to_vec(&manifest).map_err(error)?,
+        )
+        .map_err(error)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp_dir);
+        return result;
+    }
+    let _ = fs::remove_dir_all(cache_dir);
+    fs::rename(&temp_dir, cache_dir).map_err(error)?;
+    debug_assert_eq!(paths.block_suffix, cache_dir.join("block-suffix.fst"));
+    Ok(())
+}
+
+fn domain_index_paths(dir: &Path) -> DomainRuleIndexPaths {
+    DomainRuleIndexPaths {
+        security_block_exact: dir.join("security-block-exact.fst"),
+        security_block_suffix: dir.join("security-block-suffix.fst"),
+        manual_block_exact: dir.join("manual-block-exact.fst"),
+        manual_block_suffix: dir.join("manual-block-suffix.fst"),
+        manual_allow_exact: dir.join("manual-allow-exact.fst"),
+        manual_allow_suffix: dir.join("manual-allow-suffix.fst"),
+        block_exact: dir.join("block-exact.fst"),
+        block_suffix: dir.join("block-suffix.fst"),
+    }
+}
+
+fn domain_index_fingerprint(
+    db: &Connection,
+    settings: &HashMap<String, String>,
+) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_INDEX_CACHE_VERSION.to_be_bytes());
+    hash_domain_index_settings(&mut hasher, settings);
+    hash_query_rows(
+        db,
+        &mut hasher,
+        "SELECT id,enabled,category,last_updated_at,last_error FROM subscriptions
+         WHERE kind='rule'
+         ORDER BY id",
+    )?;
+    hash_query_rows(
+        db,
+        &mut hasher,
+        "SELECT id,action,kind,pattern,category,enabled,created_at FROM parent_rules
+         WHERE lower(kind) IN ('exact','suffix')
+         ORDER BY id",
+    )?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn hash_domain_index_settings(hasher: &mut Sha256, settings: &HashMap<String, String>) {
+    let mut keys = settings
+        .keys()
+        .filter(|key| key.as_str() == "strict_mode_enabled" || key.starts_with("category."))
+        .collect::<Vec<_>>();
+    keys.sort();
+    for key in keys {
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+        if let Some(value) = settings.get(key) {
+            hasher.update(value.as_bytes());
+        }
+        hasher.update([0xff]);
+    }
+}
+
+fn hash_query_rows(db: &Connection, hasher: &mut Sha256, sql: &str) -> Result<(), String> {
+    let mut statement = db.prepare(sql).map_err(error)?;
+    let column_count = statement.column_count();
+    let mut rows = statement.query([]).map_err(error)?;
+    while let Some(row) = rows.next().map_err(error)? {
+        for index in 0..column_count {
+            match row.get_ref(index).map_err(error)? {
+                ValueRef::Null => hasher.update(b"<null>"),
+                ValueRef::Integer(value) => hasher.update(value.to_be_bytes()),
+                ValueRef::Real(value) => hasher.update(value.to_be_bytes()),
+                ValueRef::Text(value) => hasher.update(value),
+                ValueRef::Blob(value) => hasher.update(value),
+            }
+            hasher.update([0]);
+        }
+        hasher.update([0xff]);
+    }
+    Ok(())
 }
 
 fn configured_dns_upstreams(settings: &HashMap<String, String>) -> Vec<String> {
@@ -282,7 +443,7 @@ fn append_parent_domain_rules(
     let mut statement = db
         .prepare(
             "SELECT kind,pattern,action FROM parent_rules
-             WHERE enabled=1 AND kind IN ('exact','suffix') AND action IN ('block','allow')
+             WHERE enabled=1 AND lower(kind) IN ('exact','suffix') AND action IN ('block','allow')
              ORDER BY CASE action WHEN 'block' THEN 0 ELSE 1 END,created_at",
         )
         .map_err(error)?;
@@ -422,7 +583,7 @@ fn settings_map(db: &Connection) -> Result<HashMap<String, String>, String> {
 }
 
 fn domain_kind(value: &str) -> Option<MatcherKind> {
-    match value {
+    match value.to_ascii_lowercase().as_str() {
         "exact" => Some(MatcherKind::Exact),
         "suffix" => Some(MatcherKind::Suffix),
         _ => None,
@@ -668,7 +829,7 @@ mod tests {
 
         {
             let db = state.db.lock().unwrap();
-            let config = build_dns_filter_config(&db).unwrap();
+            let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
             assert!(config.domain_index.decide("www.strict.example").is_none());
         }
 
@@ -679,7 +840,7 @@ mod tests {
                 [],
             )
             .unwrap();
-            let config = build_dns_filter_config(&db).unwrap();
+            let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
             assert!(config
                 .domain_index
                 .decide("www.strict.example")
@@ -708,7 +869,7 @@ mod tests {
 
         {
             let db = state.db.lock().unwrap();
-            let config = build_dns_filter_config(&db).unwrap();
+            let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
             assert!(config.domain_index.decide("www.game.example").is_none());
         }
 
@@ -719,11 +880,55 @@ mod tests {
                 [],
             )
             .unwrap();
-            let config = build_dns_filter_config(&db).unwrap();
+            let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
             assert!(config
                 .domain_index
                 .decide("www.game.example")
                 .is_some_and(|decision| decision.blocked));
+        }
+    }
+
+    #[test]
+    fn domain_index_cache_reloads_rules_from_mmap() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("cleanweb.db");
+        let state = AppState::open(&db_path).unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled,last_updated_at)
+                 VALUES('adult','rule','adult','https://x/adult.txt','clash','pornography',1,'2026-08-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+                 VALUES('adult','1','Suffix','blocked.example','Block','pornography',1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
+            assert!(config
+                .domain_index
+                .decide("www.blocked.example")
+                .is_some_and(|decision| decision.blocked));
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
+            assert!(config
+                .domain_index
+                .decide("www.blocked.example")
+                .is_some_and(|decision| decision.blocked));
+            assert!(state
+                .data_dir
+                .join("domain-index-cache/manifest.json")
+                .exists());
         }
     }
 }
