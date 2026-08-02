@@ -76,6 +76,17 @@ const mobilePrepareVpn = async () => invoke<MobileVpnStatus>("mobile_prepare_vpn
 const mobileStartVpn = async () => invoke<MobileVpnStatus>("mobile_start_vpn");
 const mobileStopVpn = async () => invoke<MobileVpnStatus>("mobile_stop_vpn");
 const mobileUpdatePolicy = async (policyJson: string) => invoke<MobileVpnStatus>("mobile_update_policy", { payload:{ policyJson } });
+async function mobilePolicyPayload(){
+  defaults=loadPreviewSettings();
+  previewParentRules=loadPreviewParentRules();
+  previewSubscriptions=loadPreviewSubscriptions();
+  return {
+    settings: defaults,
+    parentRules: previewParentRules,
+    subscriptions: previewSubscriptions.filter(item=>item.kind==="rule").map(item=>({id:item.id,category:item.category,enabled:item.enabled})),
+    updatedAt: new Date().toISOString(),
+  };
+}
 const isBuiltinSubscription = (item: Pick<Subscription, "id" | "name" | "url">) =>
   item.id.startsWith("default:") ||
   item.id.startsWith("local:cleanweb:") ||
@@ -284,10 +295,10 @@ export async function refreshSubscription(sessionToken:string,id:string):Promise
 }
 export async function refreshDueSubscriptions():Promise<number>{return usesDesktopBackend()?invoke("refresh_due_subscriptions"):0;}
 export async function getCoreStatus():Promise<CoreStatus>{if(usesDesktopBackend())return invoke("get_core_status");if(isMobileTauri())return mobileCoreStatus(await mobileVpnStatus());previewCoreStatus=loadPreviewCoreStatus();return structuredClone(previewCoreStatus);}
-export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify({settings:defaults,updatedAt:new Date().toISOString()}));await mobilePrepareVpn();return mobileCoreStatus(await mobileStartVpn());}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview"};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
+export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();return mobileCoreStatus(await mobileStartVpn());}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview"};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function autoStartProtection():Promise<CoreStatus>{return usesDesktopBackend()?invoke("auto_start_protection"):getCoreStatus();}
 export async function stopProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("stop_protection",{sessionToken});if(isMobileTauri())return mobileCoreStatus(await mobileStopVpn());previewCoreStatus={running:false,controller:"127.0.0.1:19090",configPath:"preview"};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
-export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("reload_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify({settings:defaults,updatedAt:new Date().toISOString()}));return mobileCoreStatus(await mobileVpnStatus());}return getCoreStatus();}
+export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("reload_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));return mobileCoreStatus(await mobileVpnStatus());}return getCoreStatus();}
 export async function testProxyGroup(sessionToken:string,group="CleanWeb"):Promise<number>{if(!usesDesktopBackend())return 0;const value=await invoke<{delay:number}>("test_proxy_group",{sessionToken,group});return value.delay;}
 export type ProxyNode={name:string;nodeType:string;delay?:number|null};
 export type ProxyGroup={name:string;groupType:string;now:string;nodes:ProxyNode[]};

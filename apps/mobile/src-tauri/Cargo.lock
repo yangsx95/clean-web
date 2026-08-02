@@ -325,10 +325,35 @@ dependencies = [
 name = "cleanweb-mobile"
 version = "0.1.0"
 dependencies = [
+ "cleanweb-rules",
+ "cleanweb-subscriptions",
+ "jni",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+]
+
+[[package]]
+name = "cleanweb-rules"
+version = "0.1.0"
+dependencies = [
+ "fst",
+ "idna",
+ "ipnet",
+ "libc",
+ "regex",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "cleanweb-subscriptions"
+version = "0.1.0"
+dependencies = [
+ "cleanweb-rules",
+ "ipnet",
+ "serde",
 ]
 
 [[package]]
@@ -816,6 +841,12 @@ checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
 ]
+
+[[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
 
 [[package]]
 name = "futures-channel"
@@ -1481,6 +1512,9 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "itoa"

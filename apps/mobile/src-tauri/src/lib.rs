@@ -1,3 +1,4 @@
+mod mobile_dns;
 mod mobile_vpn;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

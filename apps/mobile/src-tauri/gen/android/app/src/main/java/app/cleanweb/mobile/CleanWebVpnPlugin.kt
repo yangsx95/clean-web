@@ -77,8 +77,12 @@ class CleanWebVpnPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun updatePolicy(invoke: Invoke) {
-    val args = invoke.parseArgs(UpdatePolicyArgs::class.java)
-    CleanWebVpnState.updatePolicy(activity, args.policyJson)
-    invoke.resolve(CleanWebVpnState.status(activity))
+    try {
+      val args = invoke.parseArgs(UpdatePolicyArgs::class.java)
+      CleanWebVpnState.updatePolicy(activity, args.policyJson)
+      invoke.resolve(CleanWebVpnState.status(activity))
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: error.javaClass.simpleName)
+    }
   }
 }

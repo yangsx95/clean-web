@@ -8,6 +8,9 @@ name = "cleanweb_mobile_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+cleanweb-rules = { path = "../../../crates/cleanweb-rules" }
+cleanweb-subscriptions = { path = "../../../crates/cleanweb-subscriptions" }
+jni = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

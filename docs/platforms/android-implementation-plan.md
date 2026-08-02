@@ -50,6 +50,8 @@ Validation:
 
 ## Milestone 2: policy and rule payload
 
+Status: partially implemented for DNS-only filtering. The mobile frontend now sends a policy snapshot with settings, manual parent rules, and rule subscription enabled states. Android persists and applies this policy through the native VPN plugin.
+
 Deliverables:
 
 - Serialize CleanWeb rule categories, settings, and selected proxy state into a mobile policy payload.
@@ -63,6 +65,8 @@ Validation:
 - Invalid policy is rejected and old policy remains active.
 
 ## Milestone 3: DNS filtering data path
+
+Status: partially implemented. Android `VpnService` now routes system DNS to the VPN interface, reads IPv4 UDP DNS packets from TUN, asks the Rust DNS engine for block decisions, returns NXDOMAIN for blocked domains, and forwards allowed DNS through a protected upstream socket. This first pass covers manual domain rules and bundled CleanWeb rule files; third-party subscription storage/refresh and safe-search answer synthesis are still pending.
 
 Deliverables:
 

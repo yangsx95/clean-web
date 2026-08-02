@@ -17,9 +17,18 @@ object CleanWebVpnState {
   @Volatile
   var lastError: String? = null
 
+  @Volatile
+  var dataPlaneReady: Boolean = false
+
   fun prepared(context: Context): Boolean = VpnService.prepare(context) == null
 
   fun updatePolicy(context: Context, policyJson: String) {
+    val error = CleanWebDnsEngine.updatePolicy(policyJson)
+    if (error != null) {
+      stage = "policy_failed"
+      lastError = error
+      throw IllegalArgumentException(error)
+    }
     context
       .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
       .edit()
@@ -33,8 +42,20 @@ object CleanWebVpnState {
       put("prepared", prepared(context))
       put("running", running)
       put("stage", stage)
-      put("dataPlaneReady", false)
+      put("dataPlaneReady", dataPlaneReady)
       put("lastError", lastError)
+    }
+  }
+
+  fun loadPolicy(context: Context) {
+    val policyJson = context
+      .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+      .getString(POLICY_JSON, "{}") ?: "{}"
+    val error = CleanWebDnsEngine.updatePolicy(policyJson)
+    if (error != null) {
+      stage = "policy_failed"
+      lastError = error
+      throw IllegalArgumentException(error)
     }
   }
 }
