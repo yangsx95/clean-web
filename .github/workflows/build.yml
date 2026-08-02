@@ -130,7 +130,10 @@ jobs:
 
             while IFS= read -r file; do
               case "$file" in
-                .github/workflows/build.yml|.mise.toml|package.json|package-lock.json|packages/frontend/**)
+                .github/workflows/build.yml|.mise.toml)
+                  desktop=true
+                  ;;
+                package.json|package-lock.json|packages/frontend/**)
                   desktop=true
                   mobile=true
                   ;;
@@ -159,12 +162,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
 
       - name: Check patch whitespace
         run: git diff --check
@@ -212,12 +209,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -228,9 +219,6 @@ jobs:
           key: rust-checks-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml', 'crates/**/Cargo.toml') }}
           restore-keys: |
             rust-checks-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: npm ci
 
       - name: Install Linux Tauri dependencies
         run: |
@@ -260,7 +248,6 @@ jobs:
     needs:
       - detect-changes
       - static-validation
-      - frontend-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_windows == 'true')
 
     steps:
@@ -304,7 +291,6 @@ jobs:
     needs:
       - detect-changes
       - static-validation
-      - frontend-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == 'true')
 
     steps:
@@ -351,7 +337,6 @@ jobs:
     needs:
       - detect-changes
       - static-validation
-      - frontend-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.mobile == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == 'true')
 
     steps:
@@ -408,7 +393,6 @@ jobs:
     needs:
       - detect-changes
       - static-validation
-      - frontend-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.mobile == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_ios == 'true')
 
     steps:
