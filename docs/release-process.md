@@ -64,6 +64,23 @@ mise run rust-lint
 
 如果本次修改涉及 UI 布局，还需启动应用并在相关视口做视觉验证。
 
+## 桌面安装包矩阵
+
+GitHub Actions 的 `Build` workflow 默认保持快速发布路径：
+
+- macOS 默认构建 `cleanweb-macos-universal-unsigned`，作为官网主下载包，兼容 Apple Silicon 和 Intel。
+- Windows 默认构建 `cleanweb-windows-x64-unsigned`，作为官网主下载包。
+
+手动触发 workflow 时可以选择更多 CPU 包：
+
+- `macos_packages=arm64`：只构建 Apple Silicon DMG。
+- `macos_packages=x64`：只构建 Intel DMG。
+- `macos_packages=all`：同时构建 Universal、Apple Silicon 和 Intel DMG。
+- `windows_packages=arm64`：只构建 Windows ARM64 NSIS 安装器。
+- `windows_packages=all`：同时构建 Windows x64 和 ARM64 NSIS 安装器。
+
+推送 `v*` 标签时，桌面端会自动构建全量矩阵。发布页面应把 macOS Universal 和 Windows x64 放在默认下载位置，其余 CPU 专用包放在“其他版本”或“高级下载”区域。
+
 ## 人工发布检查
 
 发布前逐项确认：

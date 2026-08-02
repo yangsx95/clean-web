@@ -276,7 +276,7 @@ export function App() {
   };
   const updateSubscription=async(id:string,input:backend.UpdateSubscription)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.subscription(id),async()=>{setRuntimeError(null);showPolicyStatus({state:"applying",message:"正在保存并更新订阅…"});await backend.updateSubscription(sessionToken,id,input);let refreshFailed:unknown;try{await backend.refreshSubscription(sessionToken,id);}catch(reason){refreshFailed=reason;}setSubscriptions(await backend.listSubscriptions(sessionToken));try{await reloadRuntime(sessionToken,{applyingMessage:"正在应用订阅修改…"});}catch(reason){const notice=toErrorNotice(reason,"订阅已修改，但保护配置重载失败");setRuntimeError({message:"订阅已修改，但保护配置重载失败",detail:notice.detail??notice.message});}setDialog(null);setEditingSubscription(null);if(refreshFailed){const notice=toErrorNotice(refreshFailed,"订阅已修改，但刷新失败，继续使用最后一次有效规则");setRuntimeError({message:"订阅已修改，但刷新失败，继续使用最后一次有效规则",detail:notice.detail??notice.message});}});};
   const importProxyPayload=async(input:backend.ManualProxyImport)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.importProxy, async()=>{showPolicyStatus({state:"applying",message:"正在导入并应用代理配置…"});await backend.importProxyPayload(sessionToken,input);setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);setDialog(null);});};
-  const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await runScopedOperation(busyScope.subscription(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新订阅状态…"});await backend.setSubscriptionEnabled(sessionToken,id,enabled); setSubscriptions(await backend.listSubscriptions(sessionToken));await reloadRuntime(sessionToken);}); };
+  const toggleSubscription = async (id: string, enabled: boolean) => { if (!sessionToken) { setDialog("unlock"); return; } await runScopedOperation(busyScope.subscription(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新订阅状态…"});await backend.setSubscriptionEnabled(sessionToken,id,enabled); const [saved,currentSettings]=await Promise.all([backend.listSubscriptions(sessionToken),backend.getSettings()]);setSubscriptions(saved);setSettings(currentSettings);await reloadRuntime(sessionToken);}); };
   const removeSubscription = async (id: string) => {
     if (!sessionToken) { setDialog("unlock"); return; }
     setRuntimeError(null);
@@ -422,7 +422,7 @@ export function App() {
       {runtimeError&&<ErrorNoticeView notice={runtimeError} onClose={()=>setRuntimeError(null)}/>}
       {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} onClose={dismissPolicyStatus}/>}
       {page === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={toggle} onOpenLogs={() => setPage("logs")} onOpenRules={() => setPage("rules")} onAddRule={() => { setParentRuleMode("block"); setDialog("custom"); }} />}
-      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={refreshSubscription} onRefreshDue={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
+      {page === "rules" && <Rules parentRules={parentRules} subscriptions={subscriptions.filter((item)=>item.kind==="rule")} settings={settings} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={refreshSubscription} onRefreshDue={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onEdit={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAdd={() => requestAction("rules")} />}
       {page === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClear={clearLogs} onExport={exportLogs} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} />}
       {page === "proxy" && <Proxy subscriptions={subscriptions.filter((item)=>item.kind==="proxy")} refreshingId={refreshingId} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} isBusy={isBusy} onRefresh={refreshSubscription} onToggleSubscription={toggleSubscription} onDelete={removeSubscription} onAdd={(mode) => requestAction("proxy", mode)} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={()=>setValue("automatic_node_selection","true")} onSelectNode={selectProxyNode} sessionToken={sessionToken} />}
       {page === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={toggle} onRetention={(value) => setValue("log_retention", value)} onApplyBrowserPolicies={applyBrowserPolicies} />}
@@ -772,7 +772,7 @@ const SubProxyNodeButton = memo(function SubProxyNodeButton({ name, nodeType, is
   </button>;
 });
 
-function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBusy, sessionToken, onRefresh, onRefreshDue, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; sessionToken:string|null; onRefresh:(id:string)=>Promise<void>;onRefreshDue:()=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
+function Rules({ parentRules, subscriptions, settings, refreshingId, refreshProgress, isBusy, sessionToken, onRefresh, onRefreshDue, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDelete, onEdit, onAdd }: { parentRules:backend.ParentRule[]; subscriptions: backend.Subscription[]; settings:backend.Settings; refreshingId:string|null; refreshProgress:Record<string,SubscriptionProgress>; isBusy:(scope:string)=>boolean; sessionToken:string|null; onRefresh:(id:string)=>Promise<void>;onRefreshDue:()=>Promise<void>;onToggleParentRule:(id:string,enabled:boolean)=>Promise<void>;onDeleteParentRule:(id:string)=>Promise<void>;onAddParentRule:(mode:"block"|"route")=>void; onToggleSubscription:(id:string,enabled:boolean)=>Promise<void>; onDelete:(id:string)=>Promise<void>; onEdit:(subscription:backend.Subscription)=>void; onAdd: () => void }) {
   const [tab,setTab]=useState<"block"|"route"|"builtin"|"external"|"diagnose">("block");
   const [expandedBuiltinGroups,setExpandedBuiltinGroups]=useState<Record<string,boolean>>({});
   const [diagnosticQuery,setDiagnosticQuery]=useState("");
@@ -802,7 +802,20 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     return groups;
   },new Map<string,{name:string;order:number;sources:backend.Subscription[]}>()).values()).sort((a,b)=>a.order-b.order||a.name.localeCompare(b.name,"zh-CN"));
   const ruleCount = (source: backend.Subscription) => source.importedRuleCount ?? 0;
-  const activeRuleCount = (source: backend.Subscription) => source.activeRuleCount ?? (source.enabled ? ruleCount(source) : 0);
+  const sourceGate = (source: backend.Subscription) => {
+    if (!source.enabled) return { enabled:false, label:"当前规则源未启用" };
+    if (source.category === "strict" && !settings.strictModeEnabled) return { enabled:false, label:"严格模式未启用" };
+    if (source.id === "default:cleanweb:safe-search" && !settings.safeSearchEnabled) return { enabled:false, label:"安全搜索未启用" };
+    if (source.category && settings.categories[source.category] === false) return { enabled:false, label:"分类总闸未启用" };
+    return { enabled:true, label:"" };
+  };
+  const activeRuleCount = (source: backend.Subscription) => {
+    if (!sourceGate(source).enabled) return 0;
+    const importedCount = ruleCount(source);
+    const reported = source.activeRuleCount;
+    if (reported != null && reported > 0) return reported;
+    return source.enabled ? importedCount : 0;
+  };
   const needsInitialDownload = (source: backend.Subscription) => ruleCount(source) === 0 && !source.lastUpdatedAt;
   const ruleCountText = (active: number, total: number) => total > 0 ? `${compactCount(active)}/${compactCount(total)}` : "0";
   const subscriptionErrorSummary = (message?: string) => {
@@ -823,7 +836,9 @@ function Rules({ parentRules, subscriptions, refreshingId, refreshProgress, isBu
     if (source.lastError) return { label:"更新失败", className:"failed", detail:subscriptionErrorSummary(source.lastError), fullDetail:source.lastError };
     if (needsInitialDownload(source)) return { label:"未下载", className:"pending", detail:"点击下载后获取规则" };
     if (!source.enabled) return { label:"已停用", className:"disabled", detail:"当前不会参与保护配置" };
-    if (importedCount > 0) return { label:"未生效", className:"disabled", detail:"当前开关未启用" };
+    const gate = sourceGate(source);
+    if (!gate.enabled && importedCount > 0) return { label:"未生效", className:"disabled", detail:gate.label };
+    if (importedCount > 0) return { label:"未生效", className:"disabled", detail:"等待运行时应用" };
     if (source.lastUpdatedAt) return { label:"已同步", className:"ready", detail:"" };
     return { label:"待同步", className:"pending", detail:"点击下载后获取规则" };
   };

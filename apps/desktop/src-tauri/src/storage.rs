@@ -1075,6 +1075,15 @@ pub fn set_subscription_enabled(
 ) -> Result<(), String> {
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let category = db
+        .query_row(
+            "SELECT category FROM subscriptions WHERE id=?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| "订阅不存在".to_string())?;
     if !enabled {
         let record = db
             .query_row(
@@ -1105,7 +1114,29 @@ pub fn set_subscription_enabled(
     {
         return Err("订阅不存在".into());
     }
+    if enabled {
+        enable_category_for_subscription(&db, &category)?;
+    }
     drop(db);
+    Ok(())
+}
+
+fn enable_category_for_subscription(db: &Connection, category: &str) -> Result<(), String> {
+    let setting_key = match category {
+        "ads" => Some("category.ads"),
+        "tracking" => Some("category.tracking"),
+        "entertainment" => Some("category.entertainment"),
+        "strict" => Some("strict_mode_enabled"),
+        _ => None,
+    };
+    if let Some(key) = setting_key {
+        db.execute(
+            "INSERT INTO settings(key,value) VALUES(?1,'true')
+             ON CONFLICT(key) DO UPDATE SET value='true'",
+            params![key],
+        )
+        .map_err(error)?;
+    }
     Ok(())
 }
 
@@ -1908,6 +1939,28 @@ mod tests {
         let records = list_subscriptions_inner(Some("rule".into()), &state).unwrap();
         let record = records.iter().find(|item| item.id == "rules").unwrap();
         assert_eq!(record.imported_rule_count, 1);
+    }
+
+    #[test]
+    fn enabling_optional_subscription_enables_its_category_gate() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE settings SET value='false' WHERE key='category.ads'",
+            [],
+        )
+        .unwrap();
+
+        enable_category_for_subscription(&db, "ads").unwrap();
+
+        let ads_enabled: String = db
+            .query_row(
+                "SELECT value FROM settings WHERE key='category.ads'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ads_enabled, "true");
     }
 
     #[test]

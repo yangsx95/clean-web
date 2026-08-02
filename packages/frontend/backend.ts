@@ -236,7 +236,17 @@ export async function setSubscriptionEnabled(sessionToken:string,id:string,enabl
   if (isTauri()) return invoke("set_subscription_enabled", { sessionToken,id,enabled });
   const item=previewSubscriptions.find((value)=>value.id===id);
   if(item&&isBuiltinSubscription(item)&&!enabled&&!item.toggleable)throw new Error("内置规则必须保持启用");
-  if(item){item.enabled=enabled;savePreviewSubscriptions();}
+  if(item){
+    item.enabled=enabled;
+    if(enabled){
+      if(item.category==="ads")defaults.categories.ads=true;
+      if(item.category==="tracking")defaults.categories.tracking=true;
+      if(item.category==="entertainment")defaults.categories.entertainment=true;
+      if(item.category==="strict")defaults.strictModeEnabled=true;
+      savePreviewSettings();
+    }
+    savePreviewSubscriptions();
+  }
 }
 export async function deleteSubscription(sessionToken:string,id:string) {
   if (isTauri()) return invoke("delete_subscription", { sessionToken,id });

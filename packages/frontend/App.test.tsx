@@ -864,6 +864,23 @@ describe("management actions", () => {
     reload.mockRestore();
   });
 
+  it("enables the ads category gate when an ads builtin source is enabled", async () => {
+    window.localStorage.setItem("cleanweb.preview.settings", JSON.stringify({ categories:{ ads:false } }));
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"default:adaway:hosts",kind:"rule",name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",enabled:false,importedRuleCount:7124,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:70,toggleable:true,description:"AdAway 官方 hosts 广告拦截列表，体量较轻"},
+    ]));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
+    await userEvent.click(screen.getByRole("button", { name: "展开广告与跟踪分类" }));
+    await userEvent.click(screen.getByRole("switch", { name: "AdAway · Hosts规则" }));
+
+    await waitFor(() => expect(screen.getAllByText("已生效").length).toBeGreaterThan(0));
+    expect(JSON.parse(window.localStorage.getItem("cleanweb.preview.settings") ?? "{}").categories.ads).toBe(true);
+  });
+
   it("keeps external subscriptions in rule management focused on external rule sources", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"default:stevenblack:porn",kind:"rule",name:"内置规则 · 色情内容",url:"https://example.test/default",format:"hosts",category:"pornography",enabled:true},

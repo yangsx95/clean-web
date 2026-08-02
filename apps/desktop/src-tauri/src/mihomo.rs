@@ -41,9 +41,15 @@ const ARM_BINARY_SHA256: &str = "55b7286331cb30a54b2564013b02b84a0c280e8b690bd1e
 const X64_BINARY_SHA256: &str = "35db993895dc2dc7f039cc8e6367c2ef6078d8bc887da2cff12e8cec5307e9d3";
 
 #[cfg(target_os = "windows")]
+const ARM_GZ: &str = "mihomo-windows-arm64-v1.19.28.gz";
+#[cfg(target_os = "windows")]
 const X64_GZ: &str = "mihomo-windows-amd64-v1.19.28.gz";
 #[cfg(target_os = "windows")]
+const ARM_SHA256: &str = "be4669b85eaae8c9620123001e1b10c5ef0253ffcc2042c873f97cf77b9fc0a1";
+#[cfg(target_os = "windows")]
 const X64_SHA256: &str = "16c476b5b80f3b6b120d2bb49f8b79626a5ad7f79c2898dac848f2730bc24944";
+#[cfg(target_os = "windows")]
+const ARM_BINARY_SHA256: &str = "8e77504f9eabb64b03852e056eef69c4a6928f9178d485ad61c14d2b0b8b98b9";
 #[cfg(target_os = "windows")]
 const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52dd965ef207ae4f0eeb";
 const CONTROLLER: &str = "127.0.0.1:19090";
@@ -319,12 +325,18 @@ pub async fn reload_protection(
     {
         return Ok(status);
     }
-    let result = reload_protection_inner(&app, &state, status).await;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        reload_protection_inner(&app, &state, status)
+    })
+    .await
+    .map_err(error)
+    .and_then(|value| value);
     state.reload_in_progress.store(false, Ordering::Release);
     result
 }
 
-async fn reload_protection_inner(
+fn reload_protection_inner(
     app: &AppHandle,
     state: &AppState,
     _status: CoreStatus,
@@ -1361,13 +1373,18 @@ fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
 
 #[cfg(target_os = "windows")]
 fn selected_mihomo_asset() -> Result<MihomoAsset, String> {
-    if cfg!(target_arch = "aarch64") {
-        return Err("Windows ARM64 is not supported".into());
-    }
-    Ok(MihomoAsset {
-        archive: X64_GZ,
-        archive_sha256: X64_SHA256,
-        binary_sha256: X64_BINARY_SHA256,
+    Ok(if cfg!(target_arch = "aarch64") {
+        MihomoAsset {
+            archive: ARM_GZ,
+            archive_sha256: ARM_SHA256,
+            binary_sha256: ARM_BINARY_SHA256,
+        }
+    } else {
+        MihomoAsset {
+            archive: X64_GZ,
+            archive_sha256: X64_SHA256,
+            binary_sha256: X64_BINARY_SHA256,
+        }
     })
 }
 
