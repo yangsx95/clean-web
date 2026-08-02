@@ -1333,7 +1333,7 @@ fn ensure_binary(app: &AppHandle, runtime: &Path) -> Result<PathBuf, String> {
     file.sync_all().map_err(error)?;
     drop(file);
     let output_bytes = fs::read(&output).map_err(error)?;
-    if format!("{:x}", Sha256::digest(&output_bytes)) != binary_expected {
+    if format!("{:x}", Sha256::digest(&output_bytes)) != asset.binary_sha256 {
         let _ = fs::remove_file(&output);
         return Err("Mihomo 内核解压校验失败".into());
     }
