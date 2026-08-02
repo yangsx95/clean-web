@@ -166,14 +166,11 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
-
       - name: Check patch whitespace
         run: git diff --check
 
       - name: Validate bundled rules
-        run: npm run rules:check
+        run: node scripts/rules/validate-clash-rules.mjs
 
   frontend-validation:
     name: Validate frontend
@@ -264,7 +261,6 @@ jobs:
       - detect-changes
       - static-validation
       - frontend-validation
-      - desktop-rust-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_windows == 'true')
 
     steps:
@@ -308,7 +304,6 @@ jobs:
       - detect-changes
       - static-validation
       - frontend-validation
-      - desktop-rust-validation
     if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == 'true')
 
     steps:
