@@ -3,6 +3,38 @@ name: Build
 on:
   workflow_dispatch:
     inputs:
+      build_windows:
+        description: "Build the unsigned Windows installer"
+        required: true
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+      build_macos:
+        description: "Build the unsigned macOS Universal DMG"
+        required: true
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+      build_android:
+        description: "Build the unsigned Android package"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+      build_ios:
+        description: "Build the unsigned iOS simulator package"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
       publish_release:
         description: "Publish a GitHub Release after building"
         required: true
@@ -51,6 +83,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   detect-changes:
     name: Detect changed targets
@@ -74,7 +110,10 @@ jobs:
           desktop=false
           mobile=false
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            desktop=${{ inputs.build_windows == 'true' || inputs.build_macos == 'true' }}
+            mobile=${{ inputs.build_android == 'true' || inputs.build_ios == 'true' }}
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             desktop=true
             mobile=true
           else
@@ -91,17 +130,17 @@ jobs:
 
             while IFS= read -r file; do
               case "$file" in
-                .github/workflows/build.yml|.mise.toml|package.json|package-lock.json|packages/frontend/*)
+                .github/workflows/build.yml|.mise.toml|package.json|package-lock.json|packages/frontend/**)
                   desktop=true
                   mobile=true
                   ;;
-                apps/desktop/*)
+                apps/desktop/**)
                   desktop=true
                   ;;
-                crates/*)
+                crates/**)
                   desktop=true
                   ;;
-                apps/mobile/*|docs/platforms/mobile.md|docs/platforms/android.md|docs/platforms/ios.md|docs/project-structure.md)
+                apps/mobile/**|docs/platforms/mobile.md|docs/platforms/android.md|docs/platforms/ios.md|docs/project-structure.md)
                   mobile=true
                   ;;
               esac
@@ -111,11 +150,77 @@ jobs:
           echo "desktop=$desktop" >> "$GITHUB_OUTPUT"
           echo "mobile=$mobile" >> "$GITHUB_OUTPUT"
 
+  checks:
+    name: Run shared checks once
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.desktop == 'true' || needs.detect-changes.outputs.mobile == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Cache Rust checks
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clean-web/mise
+          key: rust-checks-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml', 'crates/**/Cargo.toml') }}
+          restore-keys: |
+            rust-checks-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: mise run install
+
+      - name: Check patch whitespace
+        run: mise run diff-check
+
+      - name: Validate bundled rules
+        run: mise run rules-check
+
+      - name: Test frontend
+        run: mise run test
+
+      - name: Build desktop frontend
+        if: needs.detect-changes.outputs.desktop == 'true'
+        run: mise run build
+
+      - name: Build mobile frontend
+        if: needs.detect-changes.outputs.mobile == 'true'
+        run: mise run build-mobile
+
+      - name: Check Rust formatting
+        if: needs.detect-changes.outputs.desktop == 'true'
+        run: mise run rust-fmt
+
+      - name: Test Rust
+        if: needs.detect-changes.outputs.desktop == 'true'
+        run: mise run rust-test
+
+      - name: Lint Rust
+        if: needs.detect-changes.outputs.desktop == 'true'
+        run: mise run rust-lint
+
   build-windows:
     name: Build unsigned Windows installer
     runs-on: windows-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.desktop == 'true'
+    needs:
+      - detect-changes
+      - checks
+    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_windows == 'true')
 
     steps:
       - name: Checkout
@@ -131,21 +236,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
+          key: desktop-windows
 
       - name: Install frontend dependencies
         run: mise run install
-
-      - name: Test frontend
-        run: mise run test
-
-      - name: Build frontend
-        run: mise run build
-
-      - name: Test Rust
-        run: mise run rust-test
-
-      - name: Lint Rust
-        run: mise run rust-lint
 
       - name: Build Tauri NSIS installer
         run: mise run desktop-build-windows
@@ -162,8 +256,10 @@ jobs:
   build-macos-universal:
     name: Build unsigned macOS Universal DMG
     runs-on: macos-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.desktop == 'true'
+    needs:
+      - detect-changes
+      - checks
+    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == 'true')
 
     steps:
       - name: Checkout
@@ -182,21 +278,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
+          key: desktop-macos
 
       - name: Install frontend dependencies
         run: mise run install
-
-      - name: Test frontend
-        run: mise run test
-
-      - name: Build frontend
-        run: mise run build
-
-      - name: Test Rust
-        run: mise run rust-test
-
-      - name: Lint Rust
-        run: mise run rust-lint
 
       - name: Build Tauri Universal DMG
         run: mise run desktop-build-macos
@@ -213,8 +298,10 @@ jobs:
   build-android:
     name: Build unsigned Android package
     runs-on: ubuntu-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.mobile == 'true'
+    needs:
+      - detect-changes
+      - checks
+    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.mobile == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_android == 'true')
 
     steps:
       - name: Checkout
@@ -231,6 +318,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -242,12 +330,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/mobile/src-tauri -> target
+          key: mobile-android
 
       - name: Install dependencies
         run: mise run install
-
-      - name: Test shared frontend
-        run: mise run test
 
       - name: Build Android APK
         run: mise run android-build
@@ -264,8 +350,10 @@ jobs:
   build-ios:
     name: Build unsigned iOS simulator package
     runs-on: macos-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.mobile == 'true'
+    needs:
+      - detect-changes
+      - checks
+    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.mobile == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_ios == 'true')
 
     steps:
       - name: Checkout
@@ -284,12 +372,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/mobile/src-tauri -> target
+          key: mobile-ios
 
       - name: Install dependencies
         run: mise run install
-
-      - name: Test shared frontend
-        run: mise run test
 
       - name: Build unsigned iOS simulator app
         run: mise run ios-build-sim
@@ -317,17 +403,22 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs:
+      - checks
       - build-windows
       - build-macos-universal
       - build-android
       - build-ios
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' && needs.checks.result == 'success' && (inputs.build_windows != 'true' || needs.build-windows.result == 'success') && (inputs.build_macos != 'true' || needs.build-macos-universal.result == 'success') && (inputs.build_android != 'true' || needs.build-android.result == 'success') && (inputs.build_ios != 'true' || needs.build-ios.result == 'success')
     permissions:
       contents: write
 
     steps:
       - name: Validate release tag
         run: |
+          if [ "${{ inputs.build_windows }}" != "true" ] && [ "${{ inputs.build_macos }}" != "true" ] && [ "${{ inputs.build_android }}" != "true" ] && [ "${{ inputs.build_ios }}" != "true" ]; then
+            echo "At least one build target must be enabled when publishing." >&2
+            exit 1
+          fi
           if [ -z "${{ inputs.release_tag }}" ]; then
             echo "release_tag is required when publish_release is true" >&2
             exit 1
