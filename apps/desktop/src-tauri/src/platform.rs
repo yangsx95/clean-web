@@ -9,6 +9,9 @@
 use serde::Serialize;
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
+use std::path::Path;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::{
     fs::{self, File},
@@ -19,7 +22,6 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-use std::{path::Path, process::Command};
 
 #[cfg(target_os = "macos")]
 const SYSTEM_RUNTIME_DIR: &str = "/Library/Application Support/CleanWeb";
