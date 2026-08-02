@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     proxy_crypto::encrypt_proxy_payload,
     storage::{AppState, SubscriptionRecord},
-    subscriptions::{import_text, SubscriptionFormat},
+    subscriptions::{import_safe_search_mappings, import_text, SubscriptionFormat},
 };
 
 const MAX_SUBSCRIPTION_BYTES: usize = 20 * 1024 * 1024;
@@ -23,17 +23,6 @@ pub struct RefreshReport {
     pub ignored_count: usize,
     pub proxy_count: usize,
     pub group_count: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct SafeSearchDocument {
-    mappings: Vec<SafeSearchMapping>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SafeSearchMapping {
-    domain: String,
-    target: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,8 +350,7 @@ fn refresh_safe_search_rules(
     id: &str,
     text: &str,
 ) -> Result<RefreshReport, String> {
-    let document: SafeSearchDocument =
-        serde_yaml::from_str(text).map_err(|value| format!("安全搜索映射解析失败：{value}"))?;
+    let report = import_safe_search_mappings(text)?;
     let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
     let tx = db.transaction().map_err(error)?;
     tx.execute(
@@ -375,26 +363,20 @@ fn refresh_safe_search_rules(
         params![id],
     )
     .map_err(error)?;
-    let mut imported_count = 0;
-    let mut ignored_count = 0;
-    for (index, mapping) in document.mappings.iter().enumerate() {
-        let domain = normalize_mapping_name(&mapping.domain);
-        let target = normalize_mapping_name(&mapping.target);
-        if domain.is_empty()
-            || target.is_empty()
-            || domain.contains(char::is_whitespace)
-            || target.contains(char::is_whitespace)
-        {
-            ignored_count += 1;
-            continue;
-        }
+    let imported_count = report.mappings.len();
+    let ignored_count = report.ignored.len();
+    for mapping in report.mappings {
         tx.execute(
             "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line)
              VALUES(?1,?2,?3,?4)",
-            params![id, domain, target, index as i64 + 1],
+            params![
+                id,
+                mapping.domain,
+                mapping.target,
+                mapping.source_line as i64
+            ],
         )
         .map_err(error)?;
-        imported_count += 1;
     }
     tx.commit().map_err(error)?;
     Ok(RefreshReport {
@@ -404,10 +386,6 @@ fn refresh_safe_search_rules(
         proxy_count: 0,
         group_count: 0,
     })
-}
-
-fn normalize_mapping_name(value: &str) -> String {
-    value.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {

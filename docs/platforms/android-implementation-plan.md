@@ -66,7 +66,7 @@ Validation:
 
 ## Milestone 3: DNS filtering data path
 
-Status: partially implemented. Android `VpnService` now routes system DNS to the VPN interface, reads IPv4 UDP DNS packets from TUN, asks the Rust DNS engine for block decisions, returns NXDOMAIN for blocked domains, and forwards allowed DNS through a protected upstream socket. This first pass covers manual domain rules and bundled CleanWeb rule files; third-party subscription storage/refresh and safe-search answer synthesis are still pending.
+Status: partially implemented. Android `VpnService` now routes system DNS to the VPN interface, reads IPv4 UDP DNS packets from TUN, asks the Rust DNS engine for block decisions, returns NXDOMAIN for blocked domains, and forwards allowed DNS through a protected upstream socket. The DNS data path covers manual domain rules, bundled CleanWeb rule files, Android-local rule subscription download/storage/refresh, and SafeSearch DNS mapping answers.
 
 Deliverables:
 
@@ -82,6 +82,8 @@ Validation:
 - DNS failures fail open only when service startup cannot complete.
 
 ## Milestone 4: proxy and full tunnel data path
+
+Status: not implemented. The current Android service intentionally remains DNS-only; routing `0.0.0.0/0` before a TCP/UDP forwarding path exists would break normal networking. Full tunnel must be implemented by integrating Mihomo or tun2socks behind `VpnService`, with CleanWeb DNS filtering still evaluated before proxy routing.
 
 Deliverables:
 

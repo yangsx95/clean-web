@@ -76,6 +76,7 @@ const mobilePrepareVpn = async () => invoke<MobileVpnStatus>("mobile_prepare_vpn
 const mobileStartVpn = async () => invoke<MobileVpnStatus>("mobile_start_vpn");
 const mobileStopVpn = async () => invoke<MobileVpnStatus>("mobile_stop_vpn");
 const mobileUpdatePolicy = async (policyJson: string) => invoke<MobileVpnStatus>("mobile_update_policy", { payload:{ policyJson } });
+const mobileRefreshSubscription = async (payload: { id:string; url:string; format?:string; category?:string }) => invoke<RefreshReport>("mobile_refresh_subscription", { payload });
 async function mobilePolicyPayload(){
   defaults=loadPreviewSettings();
   previewParentRules=loadPreviewParentRules();
@@ -83,7 +84,7 @@ async function mobilePolicyPayload(){
   return {
     settings: defaults,
     parentRules: previewParentRules,
-    subscriptions: previewSubscriptions.filter(item=>item.kind==="rule").map(item=>({id:item.id,category:item.category,enabled:item.enabled})),
+    subscriptions: previewSubscriptions.filter(item=>item.kind==="rule").map(item=>({id:item.id,category:item.category,format:item.format,enabled:item.enabled})),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -291,6 +292,15 @@ const previewRecommendedSources:RecommendedSource[]=[
 export async function getRecommendedSources():Promise<RecommendedSource[]>{return usesDesktopBackend()?invoke<RecommendedSource[]>("get_recommended_sources"):previewRecommendedSources;}
 export async function refreshSubscription(sessionToken:string,id:string):Promise<RefreshReport>{
   if(usesDesktopBackend())return invoke("refresh_subscription",{sessionToken,id});
+  if(isMobileTauri()){
+    previewSubscriptions=loadPreviewSubscriptions();
+    const item=previewSubscriptions.find(value=>value.id===id);
+    if(!item)throw new Error("订阅不存在");
+    const report=await mobileRefreshSubscription({id:item.id,url:item.url,format:item.format,category:item.category});
+    Object.assign(item,{lastUpdatedAt:new Date().toISOString(),lastError:undefined,importedRuleCount:report.importedCount,activeRuleCount:item.enabled?report.importedCount:0});
+    savePreviewSubscriptions();
+    return report;
+  }
   return {detectedFormat:"preview",importedCount:0,ignoredCount:0,proxyCount:0,groupCount:0};
 }
 export async function refreshDueSubscriptions():Promise<number>{return usesDesktopBackend()?invoke("refresh_due_subscriptions"):0;}

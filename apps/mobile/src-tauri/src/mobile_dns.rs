@@ -1,7 +1,12 @@
-use std::sync::{LazyLock, Mutex};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    path::Path,
+    sync::{LazyLock, Mutex},
+};
 
 use cleanweb_rules::{Action, MatcherKind, RuleInput, RuleSet};
-use cleanweb_subscriptions::{import_text, SubscriptionFormat};
+use cleanweb_subscriptions::{import_safe_search_mappings, import_text, SubscriptionFormat};
 use jni::{
     objects::{JByteArray, JObject, JString},
     sys::{jbyteArray, jstring},
@@ -9,12 +14,17 @@ use jni::{
 };
 use serde::Deserialize;
 
+use crate::mobile_subscription_store;
+
 static DNS_ENGINE: LazyLock<Mutex<MobileDnsEngine>> =
     LazyLock::new(|| Mutex::new(MobileDnsEngine::default()));
+const SAFE_SEARCH_CNAME_TTL: u32 = 300;
 
 #[derive(Default)]
 struct MobileDnsEngine {
     rules: RuleSet,
+    safe_search_enabled: bool,
+    safe_search_mappings: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -23,13 +33,15 @@ struct MobilePolicy {
     settings: Option<MobileSettings>,
     parent_rules: Option<Vec<MobileParentRule>>,
     subscriptions: Option<Vec<MobileSubscription>>,
+    subscription_store_dir: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MobileSettings {
+    safe_search_enabled: Option<bool>,
     strict_mode_enabled: Option<bool>,
-    categories: Option<std::collections::HashMap<String, bool>>,
+    categories: Option<HashMap<String, bool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +57,7 @@ struct MobileParentRule {
 struct MobileSubscription {
     id: String,
     category: Option<String>,
+    format: Option<String>,
     enabled: bool,
 }
 
@@ -52,21 +65,39 @@ impl MobileDnsEngine {
     fn update_policy(&mut self, policy_json: &str) -> Result<(), String> {
         let policy: MobilePolicy = serde_json::from_str(policy_json)
             .map_err(|value| format!("Android DNS policy payload is invalid JSON: {value}"))?;
-        self.rules = RuleSet::compile(policy_rules(&policy)).map_err(|value| value.to_string())?;
+        self.rules = RuleSet::compile(policy_rules(&policy)?).map_err(|value| value.to_string())?;
+        self.safe_search_enabled = policy
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.safe_search_enabled)
+            .unwrap_or(true);
+        self.safe_search_mappings = if self.safe_search_enabled {
+            safe_search_mappings(&policy)?
+        } else {
+            HashMap::new()
+        };
         Ok(())
     }
 
     fn handle_dns_query(&self, packet: &[u8]) -> Option<Vec<u8>> {
         let query = DnsQuestion::parse(packet)?;
-        let decision = self.rules.decide(Some(&query.domain), None)?;
-        if decision.action == Action::Block {
+        if self
+            .rules
+            .decide(Some(&query.domain), None)
+            .is_some_and(|decision| decision.action == Action::Block)
+        {
             return Some(blocked_response(packet, query.question_end));
+        }
+        if self.safe_search_enabled {
+            if let Some(target) = self.safe_search_mappings.get(&query.domain) {
+                return safe_search_response(packet, &query, target);
+            }
         }
         None
     }
 }
 
-fn policy_rules(policy: &MobilePolicy) -> Vec<RuleInput> {
+fn policy_rules(policy: &MobilePolicy) -> Result<Vec<RuleInput>, String> {
     let mut rules = Vec::new();
     if let Some(parent_rules) = &policy.parent_rules {
         for (index, rule) in parent_rules.iter().enumerate() {
@@ -91,7 +122,8 @@ fn policy_rules(policy: &MobilePolicy) -> Vec<RuleInput> {
     }
 
     append_bundled_rules(policy, &mut rules);
-    rules
+    append_stored_rules(policy, &mut rules)?;
+    Ok(rules)
 }
 
 fn append_bundled_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) {
@@ -146,6 +178,57 @@ fn append_bundled_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) {
             }
         }
     }
+}
+
+fn append_stored_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) -> Result<(), String> {
+    let Some(store_dir) = policy.subscription_store_dir.as_deref().map(Path::new) else {
+        return Ok(());
+    };
+    let Some(subscriptions) = &policy.subscriptions else {
+        return Ok(());
+    };
+    for subscription in subscriptions
+        .iter()
+        .filter(|item| item.enabled && item.format.as_deref() != Some("safe-search"))
+    {
+        for mut rule in
+            mobile_subscription_store::read_subscription_rules(store_dir, &subscription.id)?
+        {
+            if let Some(category) = &subscription.category {
+                rule.category = category.clone();
+            }
+            rules.push(rule);
+        }
+    }
+    Ok(())
+}
+
+fn safe_search_mappings(policy: &MobilePolicy) -> Result<HashMap<String, String>, String> {
+    let mut mappings = HashMap::new();
+    if subscription_enabled(policy, "default:cleanweb:safe-search", "custom") {
+        let report = import_safe_search_mappings(include_str!(
+            "../../../../resources/rules/cleanweb-safe-search.yaml"
+        ))?;
+        for mapping in report.mappings {
+            mappings.insert(mapping.domain, mapping.target);
+        }
+    }
+    if let Some(store_dir) = policy.subscription_store_dir.as_deref().map(Path::new) {
+        for subscription in policy
+            .subscriptions
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter(|item| item.enabled && item.format.as_deref() == Some("safe-search"))
+        {
+            for mapping in
+                mobile_subscription_store::read_safe_search_mappings(store_dir, &subscription.id)?
+            {
+                mappings.insert(mapping.domain, mapping.target);
+            }
+        }
+    }
+    Ok(mappings)
 }
 
 fn subscription_enabled(policy: &MobilePolicy, id: &str, category: &str) -> bool {
@@ -255,6 +338,8 @@ fn is_security_category(category: &str) -> bool {
 struct DnsQuestion {
     domain: String,
     question_end: usize,
+    query_type: u16,
+    query_class: u16,
 }
 
 impl DnsQuestion {
@@ -280,11 +365,93 @@ impl DnsQuestion {
         if labels.is_empty() || offset + 4 > packet.len() {
             return None;
         }
+        let query_type = read_u16(packet, offset)?;
+        let query_class = read_u16(packet, offset + 2)?;
         Some(Self {
             domain: labels.join("."),
             question_end: offset + 4,
+            query_type,
+            query_class,
         })
     }
+}
+
+fn safe_search_response(request: &[u8], query: &DnsQuestion, target: &str) -> Option<Vec<u8>> {
+    if let Ok(address) = target.parse::<IpAddr>() {
+        return match (query.query_type, address) {
+            (1, IpAddr::V4(address)) => {
+                Some(answer_response(request, query, &[DnsAnswer::A(address)]))
+            }
+            (28, IpAddr::V6(address)) => {
+                Some(answer_response(request, query, &[DnsAnswer::Aaaa(address)]))
+            }
+            _ => None,
+        };
+    }
+    Some(answer_response(
+        request,
+        query,
+        &[DnsAnswer::Cname(target.to_owned())],
+    ))
+}
+
+enum DnsAnswer {
+    Cname(String),
+    A(Ipv4Addr),
+    Aaaa(Ipv6Addr),
+}
+
+fn answer_response(request: &[u8], query: &DnsQuestion, answers: &[DnsAnswer]) -> Vec<u8> {
+    let mut response = Vec::with_capacity(query.question_end + 96);
+    response.extend_from_slice(&request[0..2]);
+    let request_flags = read_u16(request, 2).unwrap_or(0);
+    let recursion_desired = request_flags & 0x0100;
+    write_u16(&mut response, 0x8000 | recursion_desired | 0x0080);
+    response.extend_from_slice(&request[4..6]);
+    write_u16(&mut response, answers.len() as u16);
+    response.extend_from_slice(&[0, 0, 0, 0]);
+    response.extend_from_slice(&request[12..query.question_end]);
+    for answer in answers {
+        response.extend_from_slice(&[0xc0, 0x0c]);
+        match answer {
+            DnsAnswer::Cname(target) => {
+                let encoded = encode_dns_name(target).unwrap_or_default();
+                write_u16(&mut response, 5);
+                write_u16(&mut response, query.query_class);
+                write_u32(&mut response, SAFE_SEARCH_CNAME_TTL);
+                write_u16(&mut response, encoded.len() as u16);
+                response.extend_from_slice(&encoded);
+            }
+            DnsAnswer::A(address) => {
+                write_u16(&mut response, 1);
+                write_u16(&mut response, query.query_class);
+                write_u32(&mut response, SAFE_SEARCH_CNAME_TTL);
+                write_u16(&mut response, 4);
+                response.extend_from_slice(&address.octets());
+            }
+            DnsAnswer::Aaaa(address) => {
+                write_u16(&mut response, 28);
+                write_u16(&mut response, query.query_class);
+                write_u32(&mut response, SAFE_SEARCH_CNAME_TTL);
+                write_u16(&mut response, 16);
+                response.extend_from_slice(&address.octets());
+            }
+        }
+    }
+    response
+}
+
+fn encode_dns_name(domain: &str) -> Option<Vec<u8>> {
+    let mut output = Vec::new();
+    for label in domain.trim_end_matches('.').split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        output.push(label.len() as u8);
+        output.extend_from_slice(label.as_bytes());
+    }
+    output.push(0);
+    Some(output)
 }
 
 fn blocked_response(request: &[u8], question_end: usize) -> Vec<u8> {
@@ -307,6 +474,10 @@ fn read_u16(packet: &[u8], offset: usize) -> Option<u16> {
 }
 
 fn write_u16(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_be_bytes());
+}
+
+fn write_u32(output: &mut Vec<u8>, value: u32) {
     output.extend_from_slice(&value.to_be_bytes());
 }
 
@@ -358,6 +529,10 @@ mod tests {
     use super::*;
 
     fn query(domain: &str) -> Vec<u8> {
+        typed_query(domain, 1)
+    }
+
+    fn typed_query(domain: &str, query_type: u16) -> Vec<u8> {
         let mut packet = vec![
             0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
@@ -366,7 +541,8 @@ mod tests {
             packet.extend_from_slice(label.as_bytes());
         }
         packet.push(0);
-        packet.extend_from_slice(&[0, 1, 0, 1]);
+        packet.extend_from_slice(&query_type.to_be_bytes());
+        packet.extend_from_slice(&[0, 1]);
         packet
     }
 
@@ -396,6 +572,42 @@ mod tests {
             .unwrap();
         assert!(engine
             .handle_dns_query(&query("www.blocked.example"))
+            .is_none());
+    }
+
+    #[test]
+    fn safe_search_domains_return_cname_answers() {
+        let mut engine = MobileDnsEngine::default();
+        engine
+            .update_policy(r#"{"settings":{"safeSearchEnabled":true}}"#)
+            .unwrap();
+        let response = engine.handle_dns_query(&query("www.google.com")).unwrap();
+        assert_eq!(response[0..2], [0x12, 0x34]);
+        assert_eq!(read_u16(&response, 6).unwrap(), 1);
+        assert_eq!(
+            read_u16(&response, query("www.google.com").len() + 2).unwrap(),
+            5
+        );
+        assert!(response
+            .windows("forcesafesearch".len())
+            .any(|value| value == b"forcesafesearch"));
+    }
+
+    #[test]
+    fn safe_search_ip_targets_return_address_answers() {
+        let mut engine = MobileDnsEngine::default();
+        engine
+            .update_policy(r#"{"settings":{"safeSearchEnabled":true}}"#)
+            .unwrap();
+        let response = engine.handle_dns_query(&query("yandex.com")).unwrap();
+        assert_eq!(read_u16(&response, 6).unwrap(), 1);
+        assert_eq!(
+            read_u16(&response, query("yandex.com").len() + 2).unwrap(),
+            1
+        );
+        assert!(response.ends_with(&[213, 180, 193, 56]));
+        assert!(engine
+            .handle_dns_query(&typed_query("yandex.com", 28))
             .is_none());
     }
 }

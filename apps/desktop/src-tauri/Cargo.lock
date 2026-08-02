@@ -682,6 +682,7 @@ dependencies = [
  "cleanweb-rules",
  "ipnet",
  "serde",
+ "serde_yaml",
 ]
 
 [[package]]

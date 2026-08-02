@@ -1,4 +1,5 @@
 mod mobile_dns;
+mod mobile_subscription_store;
 mod mobile_vpn;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,7 +11,8 @@ pub fn run() {
             mobile_vpn::mobile_start_vpn,
             mobile_vpn::mobile_stop_vpn,
             mobile_vpn::mobile_vpn_status,
-            mobile_vpn::mobile_update_policy
+            mobile_vpn::mobile_update_policy,
+            mobile_vpn::mobile_refresh_subscription
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CleanWeb mobile app");

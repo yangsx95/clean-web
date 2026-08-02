@@ -40,6 +40,63 @@ pub struct ImportReport {
     pub ignored: Vec<IgnoredLine>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafeSearchMapping {
+    pub domain: String,
+    pub target: String,
+    pub source_line: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SafeSearchDocument {
+    mappings: Vec<SafeSearchDocumentMapping>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SafeSearchDocumentMapping {
+    domain: String,
+    target: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SafeSearchImportReport {
+    pub mappings: Vec<SafeSearchMapping>,
+    pub ignored: Vec<IgnoredLine>,
+}
+
+pub fn import_safe_search_mappings(text: &str) -> Result<SafeSearchImportReport, String> {
+    let document: SafeSearchDocument =
+        serde_yaml::from_str(text).map_err(|value| format!("安全搜索映射解析失败：{value}"))?;
+    let mut report = SafeSearchImportReport::default();
+    for (index, mapping) in document.mappings.iter().enumerate() {
+        let line = index + 1;
+        let domain = normalize_mapping_name(&mapping.domain);
+        let target = normalize_mapping_name(&mapping.target);
+        if domain.is_empty()
+            || target.is_empty()
+            || domain.contains(char::is_whitespace)
+            || target.contains(char::is_whitespace)
+        {
+            report.ignored.push(IgnoredLine {
+                line,
+                content: format!("{} -> {}", mapping.domain, mapping.target),
+                reason: "invalid safe search mapping".into(),
+            });
+            continue;
+        }
+        report.mappings.push(SafeSearchMapping {
+            domain,
+            target,
+            source_line: line,
+        });
+    }
+    Ok(report)
+}
+
+fn normalize_mapping_name(value: &str) -> String {
+    value.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
 pub fn import_text(
     format: SubscriptionFormat,
     text: &str,
@@ -325,5 +382,17 @@ mod tests {
         assert_eq!(report.rules[0].rule.kind, MatcherKind::Suffix);
         assert_eq!(report.rules[0].rule.action, Action::Proxy);
         assert_eq!(report.rules[1].rule.action, Action::Proxy);
+    }
+
+    #[test]
+    fn imports_safe_search_yaml_mappings() {
+        let report = import_safe_search_mappings(
+            "version: 1\nmappings:\n  - domain: WWW.Google.COM.\n    target: ForceSafeSearch.Google.com.\n  - domain: bad value\n    target: target.example\n",
+        )
+        .unwrap();
+        assert_eq!(report.mappings.len(), 1);
+        assert_eq!(report.mappings[0].domain, "www.google.com");
+        assert_eq!(report.mappings[0].target, "forcesafesearch.google.com");
+        assert_eq!(report.ignored.len(), 1);
     }
 }
