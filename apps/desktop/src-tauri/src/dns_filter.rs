@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     net::{IpAddr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
@@ -60,10 +60,16 @@ impl DnsFilterHandle {
 
 pub(crate) fn start_dns_filter(state: &AppState) -> Result<(), String> {
     stop_dns_filter(state)?;
-    let config = {
+    let mut config = {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
         build_dns_filter_config(&db, &state.data_dir)?
     };
+    let system_dns_servers = state
+        .system_dns_servers
+        .lock()
+        .map_err(|_| "系统 DNS 状态不可用")?
+        .clone();
+    config.upstreams = effective_dns_upstreams(&system_dns_servers, config.upstreams);
     let stop = Arc::new(AtomicBool::new(false));
     let socket = UdpSocket::bind(CLEANWEB_DNS_LISTEN)
         .map_err(|value| format!("无法启动 CleanWeb DNS 过滤服务：{value}"))?;
@@ -307,6 +313,20 @@ fn build_dns_filter_config(db: &Connection, data_dir: &Path) -> Result<DnsFilter
             .is_none_or(|value| value == "true"),
         safe_search_mappings: load_safe_search_mappings(db)?,
     })
+}
+
+pub(crate) fn effective_dns_upstreams(
+    system_dns_servers: &[String],
+    configured_upstreams: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    system_dns_servers
+        .iter()
+        .filter_map(|value| value.parse::<IpAddr>().ok())
+        .map(|address| SocketAddr::new(address, 53).to_string())
+        .chain(configured_upstreams)
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -736,6 +756,28 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn system_dns_precedes_public_fallbacks_without_duplicates() {
+        let upstreams = effective_dns_upstreams(
+            &["192.168.11.1".into(), "fd00::53".into()],
+            vec![
+                "223.5.5.5:53".into(),
+                "192.168.11.1:53".into(),
+                "119.29.29.29:53".into(),
+            ],
+        );
+
+        assert_eq!(
+            upstreams,
+            vec![
+                "192.168.11.1:53",
+                "[fd00::53]:53",
+                "223.5.5.5:53",
+                "119.29.29.29:53",
+            ]
+        );
+    }
 
     #[test]
     fn blocked_domains_return_nxdomain() {

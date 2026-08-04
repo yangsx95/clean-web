@@ -38,6 +38,7 @@ pub struct AppState {
     pub(crate) data_dir: PathBuf,
     pub(crate) core_process: Mutex<Option<Child>>,
     pub(crate) dns_filter: Mutex<Option<DnsFilterHandle>>,
+    pub(crate) system_dns_servers: Mutex<Vec<String>>,
     pub(crate) reload_in_progress: AtomicBool,
 }
 
@@ -192,6 +193,7 @@ impl AppState {
                 .to_path_buf(),
             core_process: Mutex::new(None),
             dns_filter: Mutex::new(None),
+            system_dns_servers: Mutex::new(Vec::new()),
             reload_in_progress: AtomicBool::new(false),
         })
     }

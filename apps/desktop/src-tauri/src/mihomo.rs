@@ -213,6 +213,13 @@ pub async fn auto_start_protection(app: AppHandle) -> Result<CoreStatus, String>
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
     stop_child(state)?;
     std::thread::sleep(Duration::from_millis(250));
+    let discovered_dns_servers = platform::system_dns_servers();
+    if !discovered_dns_servers.is_empty() {
+        *state
+            .system_dns_servers
+            .lock()
+            .map_err(|_| "系统 DNS 状态不可用")? = discovered_dns_servers;
+    }
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
@@ -763,7 +770,13 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     let proxy_enabled = setting_bool(&db, "proxy_enabled")?;
     let access_logging_enabled = setting_bool(&db, "access_logging_enabled")?;
     let automatic_node_selection = setting_bool(&db, "automatic_node_selection")?;
-    let dns_upstreams = configured_dns_upstreams(&db)?;
+    let system_dns_servers = state
+        .system_dns_servers
+        .lock()
+        .map_err(|_| "系统 DNS 状态不可用")?
+        .clone();
+    let dns_upstreams =
+        dns_filter::effective_dns_upstreams(&system_dns_servers, configured_dns_upstreams(&db)?);
     let dns_upstream_values: Vec<Value> = dns_upstreams
         .iter()
         .map(|value| Value::String(value.clone()))
@@ -895,13 +908,22 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+    let mut route_exclude_addresses = vec![
+        Value::String("127.0.0.0/8".into()),
+        Value::String("::1/128".into()),
+    ];
+    route_exclude_addresses.extend(system_dns_servers.iter().filter_map(|value| {
+        value.parse::<std::net::IpAddr>().ok().map(|address| {
+            Value::String(match address {
+                std::net::IpAddr::V4(address) => format!("{address}/32"),
+                std::net::IpAddr::V6(address) => format!("{address}/128"),
+            })
+        })
+    }));
     insert(
         &mut tun,
         "route-exclude-address",
-        Value::Sequence(vec![
-            Value::String("127.0.0.0/8".into()),
-            Value::String("::1/128".into()),
-        ]),
+        Value::Sequence(route_exclude_addresses),
     );
     insert(
         &mut tun,
@@ -944,7 +966,7 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         "direct-nameserver",
         Value::Sequence(vec![Value::String(dns_filter::CLEANWEB_DNS_LISTEN.into())]),
     );
-    // 本地域名使用系统 DNS 解析，避免无法访问路由器等内网设备
+    // 本地域名优先使用保护开启前的系统 DNS，避免丢失内网分流解析。
     let mut ns_policy = Mapping::new();
     insert(
         &mut ns_policy,
@@ -1612,6 +1634,34 @@ mod tests {
         storage::AppState,
     };
     use base64::{engine::general_purpose::STANDARD, Engine};
+
+    #[test]
+    fn preserves_system_dns_for_split_horizon_resolution() {
+        let state = AppState::open(":memory:").unwrap();
+        *state.system_dns_servers.lock().unwrap() = vec!["192.168.11.1".into(), "fd00::53".into()];
+
+        let config = build_config(&state, "secret", true).unwrap();
+        let yaml: Value = serde_yaml::from_str(&config).unwrap();
+        let tun_excludes = yaml
+            .get("tun")
+            .and_then(|tun| tun.get("route-exclude-address"))
+            .and_then(Value::as_sequence)
+            .unwrap();
+        let default_nameservers = yaml
+            .get("dns")
+            .and_then(|dns| dns.get("default-nameserver"))
+            .and_then(Value::as_sequence)
+            .unwrap();
+
+        assert!(tun_excludes.contains(&Value::String("192.168.11.1/32".into())));
+        assert!(tun_excludes.contains(&Value::String("fd00::53/128".into())));
+        assert_eq!(
+            default_nameservers.first().and_then(Value::as_str),
+            Some("192.168.11.1:53")
+        );
+        assert!(default_nameservers.contains(&Value::String("223.5.5.5:53".into())));
+    }
+
     #[test]
     fn generates_locked_redir_host_config_and_filter_rules() {
         let _guard = test_key_env_lock();

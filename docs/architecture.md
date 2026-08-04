@@ -92,6 +92,8 @@ CleanWeb 将 Mihomo 作为独立 GPLv3 程序，通过生成配置和外部控�
 
 安全搜索由桌面浏览器策略模块和 CleanWeb DNS 过滤组件共同完成：CleanWeb 为受支持浏览器写入托管策略，强制搜索服务安全模式、YouTube 受限模式，并关闭浏览器内置 DoH。Chromium 系浏览器共享同一类托管策略模型；Firefox、Safari 等不同策略机制必须在浏览器策略模块内单独建模，不能伪装成已支持的 Chromium 策略。CleanWeb DNS 过滤组件对官方支持的搜索安全入口做本地 DNS 补强。Mihomo 继续负责 TUN、代理和路由，DNS 使用 `redir-host` 透传 CleanWeb DNS 的 NXDOMAIN/CNAME/IP 结果，避免 fake-ip 覆盖 CleanWeb 域名拦截；不生成安全搜索 `hosts` 映射，也不把厂商安全搜索地址编译进 Mihomo 内核配置。
 
+保护启动时必须在替换系统 DNS 之前记录当前解析器。允许的 DNS 查询优先转发到这些系统解析器，以保留企业内网和 VPN 的 split-horizon 解析，再以 CleanWeb 配置的公共 DNS 作为传输失败时的回退。这些上游 DNS 地址需要精确绕过 CleanWeb TUN，避免 DNS 转发再次被本机 `dns-hijack` 捕获；域名过滤决策仍必须在上游转发之前执行。
+
 GPL 进程隔离降低业务代码耦合，但不免除发布者对准确二进制版本承担的许可证和对应源代码义务。
 
 ## 网络生命周期
