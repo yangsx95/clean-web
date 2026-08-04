@@ -155,11 +155,15 @@ pub fn get_core_status(state: State<'_, AppState>) -> Result<CoreStatus, String>
     };
     let mut pid = process.as_ref().map(|child| child.id());
     if !running {
-        if let Some(saved) = read_pid(&state.data_dir.join("mihomo/mihomo.pid")) {
+        let pid_path = state.data_dir.join("mihomo/mihomo.pid");
+        if let Some(saved) = read_pid(&pid_path) {
             if platform::cleanweb_mihomo_running(saved) {
                 running = true;
                 pid = Some(saved);
             }
+        }
+        if !running {
+            recover_stale_macos_network_state(&state, &pid_path);
         }
     }
     Ok(CoreStatus {
@@ -699,6 +703,7 @@ pub(crate) fn stop_child(state: &AppState) -> Result<(), String> {
     {
         platform::stop_mihomo_privileged()?;
         let _ = fs::remove_file(pid_path);
+        let _ = fs::remove_file(state.data_dir.join("mihomo/active-config"));
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]
@@ -724,8 +729,11 @@ pub(crate) fn stop_child(state: &AppState) -> Result<(), String> {
 }
 
 fn core_status(state: &AppState) -> Result<CoreStatus, String> {
-    let pid = read_pid(&state.data_dir.join("mihomo/mihomo.pid"))
-        .filter(|pid| platform::cleanweb_mihomo_running(*pid));
+    let pid_path = state.data_dir.join("mihomo/mihomo.pid");
+    let pid = read_pid(&pid_path).filter(|pid| platform::cleanweb_mihomo_running(*pid));
+    if pid.is_none() {
+        recover_stale_macos_network_state(state, &pid_path);
+    }
     Ok(CoreStatus {
         running: pid.is_some(),
         pid,
@@ -736,6 +744,15 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
             .display()
             .to_string(),
     })
+}
+
+fn recover_stale_macos_network_state(_state: &AppState, _pid_path: &Path) {
+    #[cfg(target_os = "macos")]
+    if _state.data_dir.join("mihomo/active-config").exists() {
+        let _ = platform::stop_mihomo_privileged();
+        let _ = fs::remove_file(_pid_path);
+        let _ = fs::remove_file(_state.data_dir.join("mihomo/active-config"));
+    }
 }
 fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
@@ -878,6 +895,14 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+    insert(
+        &mut tun,
+        "route-exclude-address",
+        Value::Sequence(vec![
+            Value::String("127.0.0.0/8".into()),
+            Value::String("::1/128".into()),
+        ]),
+    );
     insert(
         &mut tun,
         "dns-hijack",
@@ -1662,6 +1687,19 @@ mod tests {
                 .and_then(|tun| tun.get("route-address"))
                 .is_none(),
             "redir-host 模式必须让 auto-route 接管默认路由，不能用 route-address 限缩到 DNS 地址"
+        );
+        let route_excludes = yaml
+            .get("tun")
+            .and_then(|tun| tun.get("route-exclude-address"))
+            .and_then(Value::as_sequence)
+            .expect("TUN route excludes");
+        assert!(
+            route_excludes.contains(&Value::String("127.0.0.0/8".into())),
+            "TUN auto-route 必须排除 IPv4 loopback，避免本地隧道和控制面连接被接管"
+        );
+        assert!(
+            route_excludes.contains(&Value::String("::1/128".into())),
+            "TUN auto-route 必须排除 IPv6 loopback，避免 localhost 连接被接管"
         );
         assert_eq!(
             yaml.get("dns")

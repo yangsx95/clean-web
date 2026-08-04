@@ -226,22 +226,36 @@ export function App() {
   const dismissPolicyStatus=()=>{clearPolicyStatusTimer();setPolicyApplyStatus(null);};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;let checking=false;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{if(checking)return;checking=true;void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{}).finally(()=>{checking=false;});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();const timer=window.setInterval(showPendingQuitDialog,500);window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;window.clearInterval(timer);if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
-  useEffect(() => { void (async () => {
-    const [bootstrap,current,core,publicStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getBrowserPolicyStatus()]);
-    setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);setBrowserPolicyStatus(browserPolicies);
-    const storedToken = backend.getStoredSessionToken();
-    if (storedToken) {
-      try {
-        const result = await backend.validateSession(storedToken);
-        const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
-        setSessionToken(result.sessionToken);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules);setLocked(false);
-      } catch {
-        backend.clearStoredSessionToken();
+  useEffect(() => { let cancelled=false; void (async () => {
+    try {
+      const [bootstrap,current,core,publicStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getBrowserPolicyStatus()]);
+      if (cancelled) return;
+      setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);setBrowserPolicyStatus(browserPolicies);
+      const storedToken = backend.getStoredSessionToken();
+      if (storedToken) {
+        try {
+          const result = await backend.validateSession(storedToken);
+          const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
+          if (cancelled) return;
+          setSessionToken(result.sessionToken);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules);setLocked(false);
+        } catch {
+          backend.clearStoredSessionToken();
+        }
       }
+    } catch(reason) {
+      if (!cancelled) {
+        setRuntimeError(toErrorNotice(reason,"CleanWeb 初始化失败，请检查本地服务状态后重试"));
+        setNeedsSetup(false);
+        setSettings(structuredClone(backend.defaultSettings));
+        setCoreStatus({running:false,controller:"127.0.0.1:19090",configPath:"unavailable"});
+        setAccessLogStats(emptyAccessLogStats);
+        setBrowserPolicyStatus(null);
+      }
+    } finally {
+      if (!cancelled) setReady(true);
     }
-    setReady(true);
-  })(); }, []);
-  useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(setCoreStatus),5000);return()=>window.clearInterval(timer);},[]);
+  })(); return()=>{cancelled=true;}; }, []);
+  useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(status=>{setCoreStatus(status);setRuntimeError(previous=>previous?.message==="CleanWeb 状态刷新失败"?null:previous);}).catch(reason=>setRuntimeError(toErrorNotice(reason,"CleanWeb 状态刷新失败"))),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(count=>count>0?reloadRuntime(sessionToken,{silent:true}):undefined).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
   const handleLock = async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);setProxyInfoCache({}); setLocked(true); };

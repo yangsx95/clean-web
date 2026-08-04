@@ -44,7 +44,7 @@ const sessionTokenKey = "cleanweb.sessionToken";
 let previewParentRules:ParentRule[] = loadPreviewParentRules();
 let previewSubscriptions: Subscription[] = [];
 
-const defaultSettings: Settings = {
+export const defaultSettings: Settings = {
   protectionEnabled: false,
   proxyEnabled: false,
   automaticNodeSelection: true,

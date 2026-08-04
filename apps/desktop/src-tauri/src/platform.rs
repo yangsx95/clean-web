@@ -38,7 +38,7 @@ const DNS_BACKUP_FILE: &str = "/Library/Application Support/CleanWeb/dns-backup.
 #[cfg(target_os = "macos")]
 const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
 #[cfg(target_os = "macos")]
-const HELPER_PROTOCOL_VERSION: &str = "2026-08-01-mihomo-binary-hash-helper";
+const HELPER_PROTOCOL_VERSION: &str = "2026-08-03-mihomo-route-cleanup-helper";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const EXPECTED_MIHOMO_SHA256: &str =
     "55b7286331cb30a54b2564013b02b84a0c280e8b690bd1e5da4b9d4f4ca007ac";
@@ -500,6 +500,7 @@ fn helper_stop_mihomo() -> Result<(), String> {
     for _ in 0..20 {
         if pids.iter().all(|pid| !pid_running(*pid)) {
             restore_macos_dns()?;
+            cleanup_macos_mihomo_routes();
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -510,7 +511,61 @@ fn helper_stop_mihomo() -> Result<(), String> {
         }
     }
     restore_macos_dns()?;
+    cleanup_macos_mihomo_routes();
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_macos_mihomo_routes() {
+    let Some(routes) = run_command("/usr/sbin/netstat", &["-rn", "-f", "inet"]) else {
+        return;
+    };
+    for destination in stale_macos_mihomo_route_destinations(&routes) {
+        let _ = Command::new("/sbin/route")
+            .args(["-n", "delete", "-net", &destination])
+            .output();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stale_macos_mihomo_route_destinations(route_table: &str) -> Vec<String> {
+    route_table
+        .lines()
+        .filter_map(parse_stale_macos_mihomo_route_destination)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_stale_macos_mihomo_route_destination(line: &str) -> Option<String> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 4 {
+        return None;
+    }
+    let destination = fields[0];
+    let gateway = fields[1];
+    let netif = fields[3];
+    if !netif.starts_with("utun")
+        || !(gateway.starts_with("192.168.173.") || gateway.starts_with("198.18.0."))
+    {
+        return None;
+    }
+    if is_macos_mihomo_auto_route_destination(destination) {
+        Some(destination.to_owned())
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_mihomo_auto_route_destination(destination: &str) -> bool {
+    destination == "10"
+        || destination == "192.168.0/16"
+        || destination == "192.168.172/22"
+        || destination == "192.168.173.160/30"
+        || destination == "172.16/14"
+        || destination == "172.22/15"
+        || destination == "172.24/13"
+        || destination.starts_with("192.168.173.")
 }
 
 #[cfg(target_os = "macos")]
@@ -1017,6 +1072,25 @@ mod tests {
         assert_eq!(
             parse_macos_default_route_interface(output),
             Some("en0".into())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn identifies_stale_macos_mihomo_auto_routes() {
+        let output = "Routing tables\n\nInternet:\nDestination        Gateway            Flags               Netif Expire\ndefault            172.31.3.1         UGScg                 en0\n10                 192.168.173.161    UGSc                utun4\n127                127.0.0.1          UCS                   lo0\n172.16/14          192.168.173.161    UGSc                utun4\n172.22/15          192.168.173.161    UGSc                utun4\n172.24/13          192.168.173.161    UGSc                utun4\n192.168.0/16       192.168.173.161    UGSc                utun4\n192.168.172/22     192.168.173.161    UGSc                utun4\n192.168.173.160/30 192.168.173.162    UGSc                utun4\n192.168.173.161    192.168.173.162    UH                  utun4\n224.0.0/4          link#11            UmCS                  en0\n";
+        assert_eq!(
+            stale_macos_mihomo_route_destinations(output),
+            vec![
+                "10",
+                "172.16/14",
+                "172.22/15",
+                "172.24/13",
+                "192.168.0/16",
+                "192.168.172/22",
+                "192.168.173.160/30",
+                "192.168.173.161",
+            ]
         );
     }
 

@@ -41,6 +41,17 @@ describe("management actions", () => {
     await unlockManagement();
   });
 
+  it("shows the locked shell instead of staying blank when startup status fails", async () => {
+    const status = vi.spyOn(backend, "getCoreStatus").mockRejectedValueOnce(new Error("status unavailable"));
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("CleanWeb 锁定状态")).toBeTruthy();
+    expect(await screen.findByText("CleanWeb 初始化失败，请检查本地服务状态后重试")).toBeTruthy();
+    expect(screen.queryByText("正在读取 CleanWeb 配置…")).toBeNull();
+    status.mockRestore();
+  });
+
   it("sets the initial parent password with matching confirmation", async () => {
     const bootstrap = vi.spyOn(backend, "getBootstrapState").mockResolvedValueOnce({ passwordConfigured: false });
     const initialize = vi.spyOn(backend, "initializePassword").mockResolvedValueOnce(undefined);
