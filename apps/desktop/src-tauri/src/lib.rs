@@ -33,6 +33,7 @@ enum MenuAction {
 struct AppLifecycle {
     confirmed_exit: AtomicBool,
     quit_requested: AtomicBool,
+    network_cleanup_started: AtomicBool,
 }
 
 fn menu_action_for_id(id: &str) -> Option<MenuAction> {
@@ -97,7 +98,7 @@ fn confirmed_quit(
     state: tauri::State<'_, storage::AppState>,
 ) -> Result<(), String> {
     storage::verify_management_password(&password, &state)?;
-    mihomo::stop_child(&state)?;
+    stop_network_runtime_once(&lifecycle, &state)?;
     lifecycle.quit_requested.store(false, Ordering::SeqCst);
     lifecycle.confirmed_exit.store(true, Ordering::SeqCst);
     app.exit(0);
@@ -107,6 +108,26 @@ fn confirmed_quit(
 #[tauri::command]
 fn take_pending_quit_request(lifecycle: tauri::State<'_, AppLifecycle>) -> bool {
     lifecycle.quit_requested.swap(false, Ordering::SeqCst)
+}
+
+fn stop_network_runtime_once(
+    lifecycle: &AppLifecycle,
+    state: &storage::AppState,
+) -> Result<(), String> {
+    if lifecycle
+        .network_cleanup_started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(());
+    }
+    let result = mihomo::stop_child(state);
+    if result.is_err() {
+        lifecycle
+            .network_cleanup_started
+            .store(false, Ordering::SeqCst);
+    }
+    result
 }
 
 fn build_desktop_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
@@ -264,6 +285,11 @@ pub fn run() {
             if !lifecycle.confirmed_exit.swap(false, Ordering::SeqCst) {
                 api.prevent_exit();
                 request_quit_confirmation(app);
+            } else {
+                let state = app.state::<storage::AppState>();
+                if let Err(reason) = stop_network_runtime_once(&lifecycle, &state) {
+                    eprintln!("CleanWeb failed to stop network runtime during exit: {reason}");
+                }
             }
         }
         #[cfg(target_os = "macos")]

@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    net::{IpAddr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -33,6 +33,9 @@ use crate::storage::AppState;
 pub(crate) const CLEANWEB_DNS_LISTEN: &str = "127.0.0.1:19053";
 const UDP_PACKET_SIZE: usize = 4096;
 const SAFE_SEARCH_CNAME_TTL: u32 = 300;
+const DNS_HEALTH_CHECK_ZONE: &str = "healthcheck.cleanweb.test";
+const DNS_HEALTH_CHECK_TTL: u32 = 0;
+const DNS_HEALTH_CHECK_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const DOMAIN_INDEX_CACHE_VERSION: u32 = 1;
 
 struct DnsFilterConfig {
@@ -134,6 +137,9 @@ fn handle_dns_packet(
         .first()
         .map(|query| query.name().to_ascii())
         .map(|value| value.trim_end_matches('.').to_owned())?;
+    if let Some(response) = health_check_response(&message, &domain) {
+        return Some(response);
+    }
     if let Some(decision) = config
         .domain_index
         .decide(&domain)
@@ -150,6 +156,84 @@ fn handle_dns_packet(
         }
     }
     forward_dns_packet(packet, &config.upstreams).ok()
+}
+
+pub(crate) fn dns_endpoint_healthy(address: &str) -> bool {
+    dns_health_query(address).is_ok_and(|response| dns_health_response_valid(&response))
+}
+
+fn dns_health_query(address: &str) -> Result<Vec<u8>, std::io::Error> {
+    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    socket.set_read_timeout(Some(Duration::from_millis(350)))?;
+    socket.set_write_timeout(Some(Duration::from_millis(350)))?;
+    let request = dns_health_request()
+        .ok_or_else(|| std::io::Error::other("failed to build DNS health query"))?;
+    socket.send_to(&request, address)?;
+    let mut response = [0_u8; UDP_PACKET_SIZE];
+    let (len, _) = socket.recv_from(&mut response)?;
+    Ok(response[..len].to_vec())
+}
+
+fn dns_health_request() -> Option<Vec<u8>> {
+    let mut request = Message::query();
+    request.add_query(hickory_proto::op::Query::query(
+        Name::from_ascii(format!(
+            "{}.{DNS_HEALTH_CHECK_ZONE}.",
+            dns_health_check_nonce()
+        ))
+        .ok()?,
+        RecordType::A,
+    ));
+    request.to_vec().ok()
+}
+
+fn dns_health_check_nonce() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+fn dns_health_response_valid(packet: &[u8]) -> bool {
+    let Ok(message) = Message::from_vec(packet) else {
+        return false;
+    };
+    message.metadata.response_code == ResponseCode::NoError
+        && message.answers.iter().any(|record| {
+            dns_health_check_domain(record.name.to_ascii().trim_end_matches('.'))
+                && matches!(&record.data, RData::A(A(address)) if *address == DNS_HEALTH_CHECK_ADDRESS)
+        })
+}
+
+fn health_check_response(request: &Message, domain: &str) -> Option<Vec<u8>> {
+    if !dns_health_check_domain(domain) {
+        return None;
+    }
+    let query = request.queries.first()?;
+    if query.query_type() != RecordType::A {
+        return None;
+    }
+    let mut response = Message::new(
+        request.metadata.id,
+        hickory_proto::op::MessageType::Response,
+        request.metadata.op_code,
+    );
+    response.metadata = Metadata::response_from_request(&request.metadata);
+    response.metadata.recursion_available = true;
+    response.add_queries(request.queries.iter().cloned());
+    response.add_answer(Record::from_rdata(
+        query.name().clone(),
+        DNS_HEALTH_CHECK_TTL,
+        RData::A(A(DNS_HEALTH_CHECK_ADDRESS)),
+    ));
+    response.to_vec().ok()
+}
+
+fn dns_health_check_domain(domain: &str) -> bool {
+    domain == DNS_HEALTH_CHECK_ZONE
+        || domain
+            .strip_suffix(DNS_HEALTH_CHECK_ZONE)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 fn blocked_response(request: &Message) -> Option<Vec<u8>> {
@@ -807,6 +891,48 @@ mod tests {
         let message = Message::from_vec(&response).unwrap();
 
         assert_eq!(message.metadata.response_code, ResponseCode::NXDomain);
+    }
+
+    #[test]
+    fn health_check_domain_returns_loopback_without_upstream() {
+        let config = DnsFilterConfig {
+            domain_index: DomainRuleIndex::default(),
+            upstreams: Vec::new(),
+            safe_search_enabled: true,
+            safe_search_mappings: HashMap::new(),
+        };
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("healthcheck.cleanweb.test.").unwrap(),
+            RecordType::A,
+        ));
+        let response = handle_dns_packet(
+            &request.to_vec().unwrap(),
+            &config,
+            None,
+            "127.0.0.1:12345".parse().unwrap(),
+        )
+        .unwrap();
+        let message = Message::from_vec(&response).unwrap();
+
+        assert_eq!(message.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(message.answers.len(), 1);
+        assert_eq!(message.answers[0].data.to_string(), "127.0.0.1");
+    }
+
+    #[test]
+    fn dns_endpoint_health_requires_valid_health_response() {
+        let healthy_endpoint = spawn_dns_upstream(
+            "healthcheck.cleanweb.test.",
+            RecordType::A,
+            RData::A(A(Ipv4Addr::new(127, 0, 0, 1))),
+        );
+        assert!(dns_endpoint_healthy(&healthy_endpoint));
+
+        let unused_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let unused_endpoint = unused_socket.local_addr().unwrap().to_string();
+        drop(unused_socket);
+        assert!(!dns_endpoint_healthy(&unused_endpoint));
     }
 
     #[test]

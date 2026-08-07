@@ -143,40 +143,7 @@ pub fn get_network_conflicts() -> NetworkConflicts {
 
 #[tauri::command]
 pub fn get_core_status(state: State<'_, AppState>) -> Result<CoreStatus, String> {
-    let mut process = state.core_process.lock().map_err(|_| "内核状态不可用")?;
-    let mut running = match process.as_mut() {
-        Some(child) => match child.try_wait().map_err(error)? {
-            None => true,
-            Some(_) => {
-                *process = None;
-                false
-            }
-        },
-        None => false,
-    };
-    let mut pid = process.as_ref().map(|child| child.id());
-    if !running {
-        let pid_path = state.data_dir.join("mihomo/mihomo.pid");
-        if let Some(saved) = read_pid(&pid_path) {
-            if platform::cleanweb_mihomo_running(saved) {
-                running = true;
-                pid = Some(saved);
-            }
-        }
-        if !running {
-            recover_stale_macos_network_state(&state, &pid_path);
-        }
-    }
-    Ok(CoreStatus {
-        running,
-        pid,
-        controller: CONTROLLER.into(),
-        config_path: state
-            .data_dir
-            .join("mihomo/config.yaml")
-            .display()
-            .to_string(),
-    })
+    core_status(&state)
 }
 
 #[tauri::command]
@@ -792,12 +759,24 @@ pub(crate) fn stop_child(state: &AppState) -> Result<(), String> {
 
 fn core_status(state: &AppState) -> Result<CoreStatus, String> {
     let pid_path = state.data_dir.join("mihomo/mihomo.pid");
-    let pid = read_pid(&pid_path).filter(|pid| platform::cleanweb_mihomo_running(*pid));
-    if pid.is_none() {
-        recover_stale_macos_network_state(state, &pid_path);
+    let active_config_path = state.data_dir.join("mihomo/active-config");
+    let pid = current_core_pid(state, &pid_path)?;
+    let active_config_present = active_config_path.exists();
+    let cleanweb_dns_ready = pid.is_some()
+        && active_config_present
+        && dns_filter::dns_endpoint_healthy(dns_filter::CLEANWEB_DNS_LISTEN);
+    let mihomo_dns_ready = cleanweb_dns_ready && dns_filter::dns_endpoint_healthy("127.0.0.1:53");
+    let running = protection_resources_healthy(
+        pid.is_some(),
+        active_config_present,
+        cleanweb_dns_ready,
+        mihomo_dns_ready,
+    );
+    if !running {
+        recover_incomplete_protection_state(state, &pid_path);
     }
     Ok(CoreStatus {
-        running: pid.is_some(),
+        running,
         pid,
         controller: CONTROLLER.into(),
         config_path: state
@@ -808,13 +787,34 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
     })
 }
 
-fn recover_stale_macos_network_state(_state: &AppState, _pid_path: &Path) {
+fn current_core_pid(state: &AppState, pid_path: &Path) -> Result<Option<u32>, String> {
+    let mut process = state.core_process.lock().map_err(|_| "内核状态不可用")?;
+    if let Some(child) = process.as_mut() {
+        match child.try_wait().map_err(error)? {
+            None => return Ok(Some(child.id())),
+            Some(_) => *process = None,
+        }
+    }
+    Ok(read_pid(pid_path).filter(|pid| platform::cleanweb_mihomo_running(*pid)))
+}
+
+fn protection_resources_healthy(
+    mihomo_running: bool,
+    active_config_present: bool,
+    cleanweb_dns_ready: bool,
+    mihomo_dns_ready: bool,
+) -> bool {
+    mihomo_running && active_config_present && cleanweb_dns_ready && mihomo_dns_ready
+}
+
+fn recover_incomplete_protection_state(_state: &AppState, _pid_path: &Path) {
+    let _ = dns_filter::stop_dns_filter(_state);
     #[cfg(target_os = "macos")]
     if _state.data_dir.join("mihomo/active-config").exists() {
         let _ = platform::stop_mihomo_privileged();
-        let _ = fs::remove_file(_pid_path);
-        let _ = fs::remove_file(_state.data_dir.join("mihomo/active-config"));
     }
+    let _ = fs::remove_file(_pid_path);
+    let _ = fs::remove_file(_state.data_dir.join("mihomo/active-config"));
 }
 fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
@@ -2173,6 +2173,15 @@ mod tests {
         assert!(!tun_startup_ready(log));
         assert!(tun_startup_failed(log));
         assert!(mihomo_data_plane_failed(log));
+    }
+
+    #[test]
+    fn protection_runtime_requires_all_network_resources() {
+        assert!(protection_resources_healthy(true, true, true, true));
+        assert!(!protection_resources_healthy(false, true, true, true));
+        assert!(!protection_resources_healthy(true, false, true, true));
+        assert!(!protection_resources_healthy(true, true, false, true));
+        assert!(!protection_resources_healthy(true, true, true, false));
     }
 
     #[test]
