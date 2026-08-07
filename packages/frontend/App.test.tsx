@@ -103,6 +103,17 @@ describe("management actions", () => {
     expect(screen.getByRole("dialog", { name: "添加规则订阅" })).toBeTruthy();
   });
 
+  it("marks navigation active immediately while page content transitions", async () => {
+    render(<App />);
+    await unlockManagement();
+
+    const settingsButton = screen.getByRole("button", { name: "设置" });
+    await userEvent.click(settingsButton);
+
+    expect(settingsButton.classList.contains("active")).toBe(true);
+    expect(await screen.findByRole("tab", { name: /保护开关/ })).toBeTruthy();
+  });
+
   it("keeps the native context menu available in editable fields and app content", async () => {
     render(<App />);
     await unlockManagement();
