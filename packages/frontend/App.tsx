@@ -601,7 +601,7 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
 
 function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOpenLogs, onOpenRules, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onOpenRules:()=>void; onAddRule:()=>void }) {
   const running=coreStatus?.running===true;
-  const recentLogs = logs.slice(0,5);
+  const recentLogs = logs.slice(0,8);
   const enabledControls = [
     settings.safeSearchEnabled,
     settings.strictModeEnabled,
@@ -642,16 +642,19 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
           <SettingLine title="访问日志" note="记录本机最终网络决策" active={settings.accessLoggingEnabled}><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value) => onToggle("access_logging_enabled", value)} /></SettingLine>
           <div className="quick-policy-footer"><span>具体内置策略在规则管理中按分类和条目控制。</span><button type="button" className="row-link" onClick={onOpenRules}>管理内置规则</button></div>
         </article>
-        <article className="cw-panel">
+        <article className="cw-panel recent-log-panel">
           <div className="cw-panel-head"><h3>最近访问日志</h3><span>Live</span></div>
           <MiniLogList logs={recentLogs} />
+          <div className="recent-log-footer">
+            <button type="button" className="row-link" onClick={onOpenLogs}>查看全部日志</button>
+          </div>
         </article>
       </section>
   </>;
 }
 
 function SettingLine({ title, note, active, children }: { title:string; note?:string; active:boolean; children?:React.ReactNode }) {
-  return <div className="setting-line"><span className={active ? "dot on" : "dot warn"} /><div className="setting-line-main"><b>{title}</b>{note&&<small>{note}</small>}</div>{children ?? <span className="fixed-state">{active ? "开启" : "关闭"}</span>}</div>;
+  return <div className="setting-line"><div className="setting-line-main"><b>{title}</b>{note&&<small>{note}</small>}</div>{children ?? <span className="fixed-state">{active ? "开启" : "关闭"}</span>}</div>;
 }
 
 function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
@@ -662,6 +665,9 @@ function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
       { id:"sample-3", time:"10:31:55", target:"198.51.100.12:8443", meta:"未知 IP", decision:"警告", kind:"warning" },
       { id:"sample-4", time:"10:26:37", target:"search.clean:53", meta:"安全搜索", decision:"放行", kind:"allow" },
       { id:"sample-5", time:"10:22:09", target:"updates.example.org:443", meta:"默认策略", decision:"放行", kind:"allow" },
+      { id:"sample-6", time:"10:18:44", target:"learning.example.edu:443", meta:"默认策略", decision:"放行", kind:"allow" },
+      { id:"sample-7", time:"10:16:12", target:"ads.example.net:443", meta:"广告与跟踪", decision:"拦截", kind:"block" },
+      { id:"sample-8", time:"10:11:29", target:"search.example.com:53", meta:"DNS 查询", decision:"放行", kind:"allow" },
     ];
     return <div className="mini-log-list">{samples.map((row,index)=><div className={`mini-log-row ${index===0?"is-new":""}`} key={row.id}><span className={`dot ${row.kind}`} /><time>{row.time}</time><MiniLogTarget target={row.target}/><small title={row.meta}>{row.meta}</small><span className={`decision ${row.kind}`}>{row.decision}</span></div>)}</div>;
   }
@@ -1192,20 +1198,23 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
       const memberSet = currentGroup ? new Set(currentGroup.members) : null;
       const typeSummary = info ? Object.entries(info.proxies.reduce<Record<string,number>>((acc, p) => { acc[p.nodeType] = (acc[p.nodeType]||0)+1; return acc; }, {})).sort((a,b) => b[1]-a[1]).map(([t,c]) => ({ type: t, count: c })) : [];
       return <section className={`proxy-card${expanded ? " expanded" : ""}`} key={item.id}>
-        <div className="proxy-card-header" onClick={()=>void toggleExpand(item.id)} role="button" tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter"||e.key===" ")void toggleExpand(item.id);}}>
-          <div className="proxy-icon"><Network/></div>
-          <div className="proxy-info">
-            <div className="proxy-meta-row">
-              <span className="status">节点来源{info ? ` · ${info.proxies.length} 节点${info.groups.length > 0 ? ` · ${info.groups.length} 组` : ""}` : ""}</span>
-              {typeSummary.length > 0 && <div className="proxy-type-badges">{typeSummary.map(t => <span className="proxy-type-badge" key={t.type}><span className="proxy-type-name">{t.type.toUpperCase()}</span><span className="proxy-type-count">{t.count}</span></span>)}</div>}
+        <div className="proxy-card-header">
+          <button type="button" className="proxy-card-expand-main" aria-expanded={expanded} aria-label={`${expanded ? "收起" : "打开"}${item.name}节点来源`} onClick={()=>void toggleExpand(item.id)}>
+            <div className="proxy-icon"><Network/></div>
+            <div className="proxy-info">
+              <div className="proxy-meta-row">
+                <span className="status">节点来源{info ? ` · ${info.proxies.length} 节点${info.groups.length > 0 ? ` · ${info.groups.length} 组` : ""}` : ""}</span>
+                {typeSummary.length > 0 && <div className="proxy-type-badges">{typeSummary.map(t => <span className="proxy-type-badge" key={t.type}><span className="proxy-type-name">{t.type.toUpperCase()}</span><span className="proxy-type-count">{t.count}</span></span>)}</div>}
+              </div>
+              <h3>{item.name}</h3><p className={item.lastError?"error-text":""}>{item.lastError??(manualSource?"手动导入":item.url)}</p>
             </div>
-            <h3>{item.name}</h3><p className={item.lastError?"error-text":""}>{item.lastError??(manualSource?"手动导入":item.url)}</p></div>
-          <div className="proxy-actions" onClick={(e)=>e.stopPropagation()}>
+          </button>
+          <div className="proxy-actions">
             <Switch checked={item.enabled} label={`${item.name}订阅`} disabled={itemBusy} onChange={(value)=>onToggleSubscription(item.id,value)}/>
             <button className="row-action" aria-label={`更新${item.name}`} disabled={manualSource||itemBusy||refreshingId===item.id} onClick={()=>void onRefresh(item.id)}><RefreshCw size={15}/></button>
             <button className="row-action" aria-label={`删除${item.name}`} disabled={itemBusy} onClick={()=>void onDelete(item.id)}><Trash2 size={15}/></button>
           </div>
-          <span className="expand-chevron">{expanded ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</span>
+          <button type="button" className="expand-chevron" aria-expanded={expanded} aria-label={`${expanded ? "收起" : "展开"}${item.name}节点来源`} onClick={()=>void toggleExpand(item.id)}>{expanded ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</button>
         </div>
         {expanded && info && <div className="proxy-card-body">
           {info.proxies.length === 0 && info.groups.length === 0

@@ -659,6 +659,25 @@ describe("management actions", () => {
     proxies.mockRestore();
   });
 
+  it("expands a proxy subscription from the dedicated chevron control", async () => {
+    window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
+      {id:"proxy-source",kind:"proxy",name:"iKuuu V2",url:"https://example.test/proxy",format:"clash",enabled:true},
+    ]));
+    const proxies = vi.spyOn(backend, "getSubscriptionProxies").mockResolvedValue({
+      proxies: [{ name: "node-a", nodeType: "ss" }],
+      groups: [],
+    });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "代理节点" }));
+    await userEvent.click(await screen.findByRole("button", { name: "展开iKuuu V2节点来源" }));
+
+    expect(await screen.findByRole("button", { name: /node-a/ })).toBeTruthy();
+    expect(proxies).toHaveBeenCalledWith("browser-preview", "proxy-source");
+    proxies.mockRestore();
+  });
+
   it("keeps loaded proxy nodes cached after leaving and returning to the proxy page", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
       {id:"proxy-source",kind:"proxy",name:"我的代理",url:"https://example.test/proxy",format:"clash",enabled:true},

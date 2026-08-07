@@ -285,6 +285,7 @@ header h1 {
 
 .cw-dashboard-grid {
   grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.05fr);
+  align-items: start;
 }
 
 .cw-panel-head {
@@ -333,12 +334,14 @@ header h1 {
 
 .quick-policy-panel {
   gap: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .quick-policy-panel .setting-line {
-  min-height: 54px;
+  min-height: 48px;
   align-items: center;
-  padding: 8px 0;
+  padding: 7px 0;
   border-bottom: 1px solid #eef0ed;
 }
 
@@ -349,14 +352,15 @@ header h1 {
 .setting-line-main {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .setting-line-main b {
   overflow: hidden;
   color: var(--cw-ink);
-  font-size: 14px;
-  line-height: 19px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 750;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -364,9 +368,9 @@ header h1 {
 .setting-line-main small {
   overflow: hidden;
   color: var(--cw-muted);
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 700;
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -431,6 +435,24 @@ header h1 {
   flex-direction: column;
   gap: 2px;
   margin-inline: -6px;
+}
+
+.recent-log-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.recent-log-panel .mini-log-list {
+  flex: none;
+}
+
+.recent-log-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #eef0ed;
 }
 
 .mini-log-row {
@@ -2279,7 +2301,6 @@ h1 {
   padding: 20px var(--spacing-lg);
   display: flex;
   align-items: center;
-  cursor: pointer;
   border-radius: var(--radius-lg);
   transition: background var(--transition-fast);
 }
@@ -2291,12 +2312,43 @@ h1 {
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
+.proxy-card-expand-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.proxy-card-expand-main:focus-visible,
+.expand-chevron:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 4px;
+}
+
 .expand-chevron {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-text-muted);
   margin-left: 10px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.expand-chevron:hover {
+  background: #eef2ef;
+  color: var(--color-primary);
 }
 
 .proxy-card-body {
