@@ -113,7 +113,6 @@ const previewBuiltinSubscriptions: Subscription[] = [
   {id:"default:adaway:hosts",kind:"rule",name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:15:00",importedRuleCount:7124,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:70,toggleable:true,description:"AdAway 官方 hosts 广告拦截列表，体量较轻"},
   {id:"default:easylist:ads",kind:"rule",name:"EasyList · Ads",url:"https://easylist.to/easylist/easylist.txt",format:"adblock",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:16:00",importedRuleCount:68342,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:71,toggleable:true,description:"EasyList 官方英文广告过滤规则"},
   {id:"default:easylist:privacy",kind:"rule",name:"EasyPrivacy · Tracking",url:"https://easylist.to/easylist/easyprivacy.txt",format:"adblock",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:17:00",importedRuleCount:42118,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:72,toggleable:true,description:"EasyPrivacy 官方跟踪器拦截规则"},
-  {id:"default:adguard:dns-filter",kind:"rule",name:"AdGuard · DNS Filter",url:"https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",format:"adblock",category:"ads",updateIntervalHours:24,enabled:false,lastUpdatedAt:"2026-08-01 08:18:00",importedRuleCount:60121,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:73,toggleable:true,description:"AdGuard 官方 DNS 级广告与跟踪过滤规则"},
   {id:"default:loyalsoldier:cncidr",kind:"rule",name:"Loyalsoldier · China CIDR Routes",url:"https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt",format:"clash",category:"direct",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:11:00",importedRuleCount:9512,activeRuleCount:9512,uiGroup:"网络基础",uiOrder:1,description:"中国大陆 IP 段直连路由基础规则"},
 ];
 function loadPreviewSettings(): Settings {
@@ -285,7 +284,6 @@ const previewRecommendedSources:RecommendedSource[]=[
   {name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",description:"AdAway 官方 hosts 列表，适合作为轻量广告拦截源"},
   {name:"EasyList · Ads",url:"https://easylist.to/easylist/easylist.txt",format:"adblock",category:"ads",description:"EasyList 官方英文广告过滤列表，覆盖主流网页广告"},
   {name:"EasyPrivacy · Tracking",url:"https://easylist.to/easylist/easyprivacy.txt",format:"adblock",category:"ads",description:"EasyPrivacy 官方跟踪器过滤列表，补充隐私保护"},
-  {name:"AdGuard · DNS Filter",url:"https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",format:"adblock",category:"ads",description:"AdGuard 官方 DNS 过滤规则，适合网络层广告与跟踪拦截"},
   {name:"AdGuard · Base Filter",url:"https://filters.adtidy.org/extension/chromium/filters/2.txt",format:"adblock",category:"ads",description:"AdGuard 官方基础过滤规则，覆盖网页广告和常见跟踪"},
   {name:"AdGuard · Chinese Filter",url:"https://filters.adtidy.org/extension/chromium/filters/224.txt",format:"adblock",category:"ads",description:"AdGuard 官方中文过滤规则，适合补充国内网页广告"},
 ];

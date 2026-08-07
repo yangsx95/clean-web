@@ -160,17 +160,6 @@ default_rule_sources:
     toggleable: true
     enabled_by_default: false
     description: Loyalsoldier 广告与跟踪纯域名列表，适合 DNS 层拦截
-  - id: default:adguard:dns-filter
-    name: AdGuard · DNS Filter
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
-    format: adblock
-    category: ads
-    update_interval_hours: 24
-    ui_group: 广告与跟踪
-    ui_order: 73
-    toggleable: true
-    enabled_by_default: false
-    description: AdGuard 官方 DNS 级广告与跟踪过滤规则
   - id: default:loyalsoldier:cncidr
     name: Loyalsoldier · China CIDR Routes
     url: https://raw.githubusercontent.com/Loyalsoldier/surge-rules/release/ruleset/cncidr.txt
@@ -211,11 +200,6 @@ recommended_rule_sources:
     format: hosts
     category: ads
     description: AdAway 官方 hosts 列表，适合作为轻量广告拦截源
-  - name: AdGuard · DNS Filter
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
-    format: adblock
-    category: ads
-    description: AdGuard 官方 DNS 过滤规则，适合网络层广告与跟踪拦截
   - name: StevenBlack · Unified Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
     format: hosts

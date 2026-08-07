@@ -72,11 +72,6 @@ describe("browser preview persistence", () => {
           format: "adblock",
           category: "ads",
         }),
-        expect.objectContaining({
-          name: "AdGuard · DNS Filter",
-          format: "adblock",
-          category: "ads",
-        }),
       ]),
     );
   });
