@@ -21,7 +21,7 @@ on:
           - "arm64"
           - "all"
       build_macos:
-        description: "Build unsigned macOS DMGs"
+        description: "Build unsigned macOS DMGs for local testing only"
         required: true
         type: choice
         default: "true"
@@ -358,7 +358,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: Build unsigned macOS DMG (${{ matrix.package }})
+    name: Build unsigned macOS DMG for local testing (${{ matrix.package }})
     runs-on: macos-latest
     needs:
       - detect-changes
@@ -439,12 +439,35 @@ jobs:
         if: steps.package.outputs.should_build == 'true'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles dmg
 
+      - name: Mark macOS DMGs as unsigned local-testing artifacts
+        if: steps.package.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p macos-artifacts
+          cat > macos-artifacts/README-UNSIGNED-MACOS.txt <<'TXT'
+          These macOS DMGs are unsigned local-testing artifacts.
+
+          Do not publish them to users and do not expect them to open after a browser download.
+          Gatekeeper will reject unsigned or ad-hoc signed apps with messages such as:
+          "CleanWeb is damaged and can't be opened."
+
+          A distributable macOS DMG must pass:
+          scripts/release/verify-macos-dmg.sh /path/to/CleanWeb.dmg
+          TXT
+          shopt -s nullglob
+          for dmg in ${{ matrix.bundle_path }}; do
+            base="$(basename "$dmg" .dmg)"
+            cp "$dmg" "macos-artifacts/${base}_UNSIGNED_LOCAL_TESTING_ONLY.dmg"
+          done
+          test "$(find macos-artifacts -name '*.dmg' | wc -l | tr -d ' ')" != "0"
+
       - name: Upload macOS artifacts
         if: steps.package.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: cleanweb-macos-${{ matrix.artifact_suffix }}-unsigned
-          path: ${{ matrix.bundle_path }}
+          name: cleanweb-macos-${{ matrix.artifact_suffix }}-unsigned-local-testing-only
+          path: macos-artifacts/*
           if-no-files-found: error
 
   build-android:
@@ -622,6 +645,10 @@ jobs:
         run: |
           if [ "${{ inputs.build_windows }}" != "true" ] && [ "${{ inputs.build_macos }}" != "true" ] && [ "${{ inputs.build_android }}" != "true" ] && [ "${{ inputs.build_ios }}" != "true" ]; then
             echo "At least one build target must be enabled when publishing." >&2
+            exit 1
+          fi
+          if [ "${{ inputs.build_macos }}" = "true" ]; then
+            echo "Refusing to publish unsigned macOS DMGs. Build macOS artifacts only for local testing until Developer ID signing and notarization are wired into CI." >&2
             exit 1
           fi
           if [ -z "${{ inputs.release_tag }}" ]; then

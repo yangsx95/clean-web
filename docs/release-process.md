@@ -68,7 +68,7 @@ mise run rust-lint
 
 GitHub Actions 的 `Build` workflow 默认保持快速发布路径：
 
-- macOS 默认构建 `cleanweb-macos-arm64-unsigned` 和 `cleanweb-macos-x64-unsigned`，对应 Apple Silicon 和 Intel 两个 DMG。
+- macOS 默认构建 `cleanweb-macos-arm64-unsigned-local-testing-only` 和 `cleanweb-macos-x64-unsigned-local-testing-only`，对应 Apple Silicon 和 Intel 两个 DMG。这些产物只用于本机测试，浏览器下载后会被 macOS Gatekeeper 拒绝，可能显示“CleanWeb 已损坏，无法打开”。
 - Windows 默认构建 x64 和 ARM64，每个 CPU 各产出 NSIS `.exe` 和 MSI `.msi`。
 
 手动触发 workflow 时可以选择更多 CPU 包：
@@ -79,7 +79,21 @@ GitHub Actions 的 `Build` workflow 默认保持快速发布路径：
 - `windows_packages=arm64`：只构建 Windows ARM64 的 NSIS `.exe` 和 MSI `.msi`。
 - `windows_packages=all`：同时构建 Windows x64 和 ARM64，每个 CPU 各产出 NSIS `.exe` 和 MSI `.msi`。
 
-推送 `v*` 标签时，桌面端会自动构建全量矩阵。除移动端外，桌面发布应有 6 个安装文件：Windows x64 `.exe`、Windows x64 `.msi`、Windows ARM64 `.exe`、Windows ARM64 `.msi`、macOS Apple Silicon `.dmg`、macOS Intel `.dmg`。发布页面应把 macOS Apple Silicon 和 Windows x64 放在默认下载位置，其余 CPU 专用包放在“其他版本”或“高级下载”区域。
+推送 `v*` 标签时，桌面端会自动构建全量矩阵。除移动端外，正式桌面发布应有 6 个安装文件：Windows x64 `.exe`、Windows x64 `.msi`、Windows ARM64 `.exe`、Windows ARM64 `.msi`、macOS Apple Silicon `.dmg`、macOS Intel `.dmg`。发布页面应把 macOS Apple Silicon 和 Windows x64 放在默认下载位置，其余 CPU 专用包放在“其他版本”或“高级下载”区域。
+
+当前 CI 只产出 unsigned macOS DMG，因此 workflow 会拒绝把 macOS DMG 发布到 GitHub Release。正式发布 macOS 前必须接入 Developer ID 签名和 Apple 公证，并让 DMG 通过：
+
+```bash
+scripts/release/verify-macos-dmg.sh path/to/CleanWeb.dmg
+```
+
+本地临时测试 unsigned DMG 时，如果必须绕过 Gatekeeper，只能在测试机上手动移除 quarantine：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CleanWeb.app
+```
+
+这个命令不能写入发布流程，也不能作为用户安装指引。
 
 ## 人工发布检查
 
@@ -90,7 +104,7 @@ GitHub Actions 的 `Build` workflow 默认保持快速发布路径：
 - `package-lock.json` 与 `package.json` 版本一致。
 - Tauri `Cargo.toml` 和 `tauri.conf.json` 版本一致。
 - Mihomo 随包资源版本、许可证记录和归属说明准确。
-- macOS 发布包完成 Developer ID 签名和 Apple 公证。
+- macOS 发布包完成 Developer ID 签名和 Apple 公证，并通过 `scripts/release/verify-macos-dmg.sh`。
 - Windows 发布包验证服务安装、升级和卸载恢复。
 - Android/iOS 移动发布包从 `apps/mobile` 构建，并验证对应 VPN 插件启动、停止和升级路径。
 - 真实网络验证覆盖保护开启、拦截、代理、安全搜索、日志、崩溃恢复和卸载恢复。

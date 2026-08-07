@@ -1,9 +1,9 @@
 use std::{
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use std::process::Command;
@@ -179,26 +179,40 @@ pub async fn auto_start_protection(app: AppHandle) -> Result<CoreStatus, String>
 }
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
+    let startup_started = Instant::now();
     refresh_system_dns_servers(state)?;
+    log_startup_phase("refresh initial DNS", startup_started);
     stop_child(state)?;
+    log_startup_phase("stop previous runtime", startup_started);
     std::thread::sleep(Duration::from_millis(250));
     refresh_system_dns_servers(state)?;
+    log_startup_phase("refresh DNS after stop", startup_started);
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
+    log_startup_phase("ensure mihomo binary", startup_started);
     let secret = controller_secret(state)?;
     let config = build_config(state, &secret, true)?;
+    log_startup_phase("build mihomo config", startup_started);
     let config_hash = config_hash(&config);
     atomic_write(&runtime.join("config.yaml"), config.as_bytes()).map_err(error)?;
+    log_startup_phase("write mihomo config", startup_started);
     let config_path = runtime.join("config.yaml");
     #[cfg(target_os = "macos")]
-    let (pid, health_log) = platform::start_mihomo_privileged(&binary, &config_path)?;
+    let (pid, health_log, health_log_offset) = {
+        let (pid, health_log) = platform::start_mihomo_privileged(&binary, &config_path)?;
+        (pid, health_log, 0)
+    };
     #[cfg(not(target_os = "macos"))]
-    let (pid, health_log) = {
+    let (pid, health_log, health_log_offset) = {
+        let health_log = runtime.join("mihomo.log");
+        let health_log_offset = fs::metadata(&health_log)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         let stdout = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(runtime.join("mihomo.log"))
+            .open(&health_log)
             .map_err(error)?;
         let stderr = stdout.try_clone().map_err(error)?;
         let child = Command::new(binary)
@@ -213,21 +227,24 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
             .map_err(|value| format!("无法启动 Mihomo：{value}"))?;
         let pid = child.id();
         *state.core_process.lock().map_err(|_| "内核状态不可用")? = Some(child);
-        (pid, runtime.join("mihomo.log"))
+        (pid, health_log, health_log_offset)
     };
+    log_startup_phase("start mihomo process", startup_started);
     if let Err(reason) = dns_filter::start_dns_filter(state) {
         platform::kill_process(pid);
         return Err(reason);
     }
+    log_startup_phase("start DNS filter", startup_started);
     if let Err(reason) = fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error) {
         platform::kill_process(pid);
         let _ = dns_filter::stop_dns_filter(state);
         return Err(reason);
     }
+    log_startup_phase("write mihomo pid", startup_started);
     let mut log = String::new();
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(100));
-        log = fs::read_to_string(&health_log).unwrap_or_default();
+        log = read_log_since(&health_log, health_log_offset).unwrap_or_default();
         if tun_startup_failed(&log) {
             platform::kill_process(pid);
             let _ = dns_filter::stop_dns_filter(state);
@@ -247,6 +264,7 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
             break;
         }
     }
+    log_startup_phase("wait mihomo TUN ready", startup_started);
     if !tun_startup_ready(&log) {
         platform::kill_process(pid);
         let _ = dns_filter::stop_dns_filter(state);
@@ -266,7 +284,10 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
         let _ = fs::remove_file(runtime.join("mihomo.pid"));
         return Err(reason);
     }
-    core_status(state)
+    log_startup_phase("write active config", startup_started);
+    let status = core_status(state);
+    log_startup_phase("verify protection health", startup_started);
+    status
 }
 
 fn refresh_system_dns_servers(state: &AppState) -> Result<(), String> {
@@ -1629,6 +1650,21 @@ fn last_log_lines(path: &Path, count: usize) -> io::Result<String> {
         .rev()
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+fn read_log_since(path: &Path, offset: u64) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
+}
+
+fn log_startup_phase(phase: &str, started: Instant) {
+    eprintln!(
+        "CleanWeb protection startup: {phase} after {}ms",
+        started.elapsed().as_millis()
+    );
 }
 
 fn tun_startup_ready(log: &str) -> bool {

@@ -451,10 +451,7 @@ fn helper_start_mihomo(
 
     helper_stop_mihomo()?;
     fs::create_dir_all(&system_dir).map_err(|value| format!("无法创建系统运行目录：{value}"))?;
-    fs::copy(&source_binary, &installed_binary)
-        .map_err(|value| format!("无法安装 Mihomo 内核：{value}"))?;
-    fs::set_permissions(&installed_binary, fs::Permissions::from_mode(0o700))
-        .map_err(|value| format!("无法设置 Mihomo 权限：{value}"))?;
+    install_mihomo_binary_if_changed(&source_binary, &installed_binary)?;
     fs::copy(&source_config, &installed_config)
         .map_err(|value| format!("无法安装 Mihomo 配置：{value}"))?;
     fs::set_permissions(&installed_config, fs::Permissions::from_mode(0o600))
@@ -513,6 +510,35 @@ fn helper_stop_mihomo() -> Result<(), String> {
     restore_macos_dns()?;
     cleanup_macos_mihomo_routes();
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_mihomo_binary_if_changed(source: &Path, destination: &Path) -> Result<(), String> {
+    if installed_mihomo_binary_matches(source, destination)? {
+        return Ok(());
+    }
+    fs::copy(source, destination).map_err(|value| format!("无法安装 Mihomo 内核：{value}"))?;
+    fs::set_permissions(destination, fs::Permissions::from_mode(0o700))
+        .map_err(|value| format!("无法设置 Mihomo 权限：{value}"))
+}
+
+#[cfg(target_os = "macos")]
+fn installed_mihomo_binary_matches(source: &Path, destination: &Path) -> Result<bool, String> {
+    let Ok(source_metadata) = fs::metadata(source) else {
+        return Ok(false);
+    };
+    let Ok(destination_metadata) = fs::metadata(destination) else {
+        return Ok(false);
+    };
+    if destination_metadata.permissions().mode() & 0o777 != 0o700 {
+        return Ok(false);
+    }
+    if source_metadata.len() != destination_metadata.len() {
+        return Ok(false);
+    }
+    let bytes =
+        fs::read(destination).map_err(|value| format!("无法读取已安装 Mihomo 内核：{value}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)) == EXPECTED_MIHOMO_SHA256)
 }
 
 #[cfg(target_os = "macos")]
