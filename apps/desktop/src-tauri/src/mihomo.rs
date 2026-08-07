@@ -53,6 +53,7 @@ const ARM_BINARY_SHA256: &str = "8e77504f9eabb64b03852e056eef69c4a6928f9178d485a
 #[cfg(target_os = "windows")]
 const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52dd965ef207ae4f0eeb";
 const CONTROLLER: &str = "127.0.0.1:19090";
+const SYSTEM_DNS_CACHE_FILE: &str = "mihomo/system-dns-servers.json";
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct MihomoAsset {
@@ -211,15 +212,10 @@ pub async fn auto_start_protection(app: AppHandle) -> Result<CoreStatus, String>
 }
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
+    refresh_system_dns_servers(state)?;
     stop_child(state)?;
     std::thread::sleep(Duration::from_millis(250));
-    let discovered_dns_servers = platform::system_dns_servers();
-    if !discovered_dns_servers.is_empty() {
-        *state
-            .system_dns_servers
-            .lock()
-            .map_err(|_| "系统 DNS 状态不可用")? = discovered_dns_servers;
-    }
+    refresh_system_dns_servers(state)?;
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
@@ -304,6 +300,65 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
         return Err(reason);
     }
     core_status(state)
+}
+
+fn refresh_system_dns_servers(state: &AppState) -> Result<(), String> {
+    let discovered_dns_servers = platform::system_dns_servers();
+    let cached_dns_servers = if discovered_dns_servers.is_empty() {
+        read_cached_system_dns_servers(state)
+    } else {
+        Vec::new()
+    };
+    let mut guard = state
+        .system_dns_servers
+        .lock()
+        .map_err(|_| "系统 DNS 状态不可用")?;
+    let selected = select_system_dns_servers(&discovered_dns_servers, &guard, &cached_dns_servers);
+    if selected != *guard {
+        *guard = selected.clone();
+    }
+    drop(guard);
+    if !discovered_dns_servers.is_empty() {
+        write_cached_system_dns_servers(state, &discovered_dns_servers)?;
+    }
+    Ok(())
+}
+
+fn select_system_dns_servers(
+    discovered_dns_servers: &[String],
+    current_dns_servers: &[String],
+    cached_dns_servers: &[String],
+) -> Vec<String> {
+    if !discovered_dns_servers.is_empty() {
+        return discovered_dns_servers.to_vec();
+    }
+    if !current_dns_servers.is_empty() {
+        return current_dns_servers.to_vec();
+    }
+    cached_dns_servers.to_vec()
+}
+
+fn read_cached_system_dns_servers(state: &AppState) -> Vec<String> {
+    let path = state.data_dir.join(SYSTEM_DNS_CACHE_FILE);
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+        .map(|values| {
+            values
+                .into_iter()
+                .filter(|value| value.parse::<std::net::IpAddr>().is_ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_cached_system_dns_servers(state: &AppState, dns_servers: &[String]) -> Result<(), String> {
+    let path = state.data_dir.join(SYSTEM_DNS_CACHE_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(error)?;
+    }
+    let body = serde_json::to_vec(dns_servers).map_err(error)?;
+    atomic_write(&path, &body).map_err(error)
 }
 
 #[tauri::command]
@@ -1660,6 +1715,22 @@ mod tests {
             Some("192.168.11.1:53")
         );
         assert!(default_nameservers.contains(&Value::String("223.5.5.5:53".into())));
+    }
+
+    #[test]
+    fn keeps_previous_system_dns_when_current_scan_only_sees_cleanweb() {
+        assert_eq!(
+            select_system_dns_servers(&["192.168.11.1".into()], &[], &[]),
+            vec!["192.168.11.1"]
+        );
+        assert_eq!(
+            select_system_dns_servers(&[], &["192.168.11.1".into()], &["10.8.0.1".into()]),
+            vec!["192.168.11.1"]
+        );
+        assert_eq!(
+            select_system_dns_servers(&[], &[], &["10.8.0.1".into()]),
+            vec!["10.8.0.1"]
+        );
     }
 
     #[test]
