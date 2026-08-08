@@ -358,7 +358,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: Build unsigned macOS DMG for local testing (${{ matrix.package }})
+    name: Build macOS DMG (${{ matrix.package }})
     runs-on: macos-latest
     needs:
       - detect-changes
@@ -435,32 +435,91 @@ jobs:
         if: steps.package.outputs.should_build == 'true'
         run: npm ci
 
+      - name: Detect macOS signing credentials
+        id: macos_signing
+        if: steps.package.outputs.should_build == 'true'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$MACOS_CERTIFICATE_P12_BASE64" \
+            && -n "$MACOS_CERTIFICATE_PASSWORD" \
+            && -n "$MACOS_SIGNING_IDENTITY" \
+            && -n "$APPLE_ID" \
+            && -n "$APPLE_TEAM_ID" \
+            && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+            echo "mode=signed-notarized" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=local-testing" >> "$GITHUB_OUTPUT"
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.publish_release }}" == "true" ]]; then
+              echo "macOS release publishing requires Developer ID signing and notarization secrets." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Import macOS Developer ID certificate
+        if: steps.package.outputs.should_build == 'true' && steps.macos_signing.outputs.mode == 'signed-notarized'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/cleanweb-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/cleanweb-signing.p12"
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+
       - name: Build Tauri DMG
         if: steps.package.outputs.should_build == 'true'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles dmg
 
-      - name: Package ad-hoc signed macOS local-testing DMGs
+      - name: Package macOS DMGs
         if: steps.package.outputs.should_build == 'true'
         shell: bash
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p macos-artifacts
-          cat > macos-artifacts/README-LOCAL-TESTING-MACOS.txt <<'TXT'
-          These macOS DMGs are ad-hoc signed local-testing artifacts.
-
-          Do not publish them to users. They are not notarized and are only intended
-          for developer testing before Developer ID signing and notarization are wired
-          into CI.
-
-          A distributable macOS DMG must pass:
-          scripts/release/verify-macos-dmg.sh /path/to/CleanWeb.dmg
-          TXT
           shopt -s nullglob
           for dmg in ${{ matrix.bundle_path }}; do
             base="$(basename "$dmg" .dmg)"
-            scripts/release/package-local-macos-dmg.sh \
-              "$dmg" \
-              "macos-artifacts/${base}_ADHOC_SIGNED_LOCAL_TESTING_ONLY.dmg"
+            if [[ "${{ steps.macos_signing.outputs.mode }}" == "signed-notarized" ]]; then
+              scripts/release/package-signed-macos-dmg.sh \
+                "$dmg" \
+                "macos-artifacts/${base}_SIGNED_NOTARIZED.dmg"
+              scripts/release/verify-macos-dmg.sh "macos-artifacts/${base}_SIGNED_NOTARIZED.dmg"
+            else
+              cat > macos-artifacts/README-LOCAL-TESTING-MACOS.txt <<'TXT'
+          These macOS DMGs are ad-hoc signed local-testing artifacts.
+
+          They are intended for developer testing only. Browser downloads may still
+          be blocked by Gatekeeper because they are not Developer ID notarized.
+          TXT
+              scripts/release/package-local-macos-dmg.sh \
+                "$dmg" \
+                "macos-artifacts/${base}_ADHOC_SIGNED_LOCAL_TESTING_ONLY.dmg"
+            fi
           done
           test "$(find macos-artifacts -name '*.dmg' | wc -l | tr -d ' ')" != "0"
 
@@ -468,7 +527,7 @@ jobs:
         if: steps.package.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: cleanweb-macos-${{ matrix.artifact_suffix }}-unsigned-local-testing-only
+          name: cleanweb-macos-${{ matrix.artifact_suffix }}
           path: macos-artifacts/*
           if-no-files-found: error
 
@@ -647,10 +706,6 @@ jobs:
         run: |
           if [ "${{ inputs.build_windows }}" != "true" ] && [ "${{ inputs.build_macos }}" != "true" ] && [ "${{ inputs.build_android }}" != "true" ] && [ "${{ inputs.build_ios }}" != "true" ]; then
             echo "At least one build target must be enabled when publishing." >&2
-            exit 1
-          fi
-          if [ "${{ inputs.build_macos }}" = "true" ]; then
-            echo "Refusing to publish unsigned macOS DMGs. Build macOS artifacts only for local testing until Developer ID signing and notarization are wired into CI." >&2
             exit 1
           fi
           if [ -z "${{ inputs.release_tag }}" ]; then

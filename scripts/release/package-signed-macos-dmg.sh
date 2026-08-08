@@ -2,25 +2,30 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "Usage: scripts/release/package-local-macos-dmg.sh /path/to/CleanWeb.app-or.dmg /path/to/output.dmg" >&2
+  echo "Usage: scripts/release/package-signed-macos-dmg.sh /path/to/CleanWeb.app-or.dmg /path/to/output.dmg" >&2
+  exit 2
+fi
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "Signed macOS DMG packaging requires macOS." >&2
+  exit 2
+fi
+
+if [[ -z "${MACOS_SIGNING_IDENTITY:-}" ]]; then
+  echo "MACOS_SIGNING_IDENTITY is required." >&2
   exit 2
 fi
 
 INPUT="$1"
 OUTPUT="$2"
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "Local macOS DMG packaging requires macOS." >&2
-  exit 2
-fi
-
 if [[ ! -e "$INPUT" ]]; then
   echo "Input not found: $INPUT" >&2
   exit 2
 fi
 
-WORK_DIR="$(mktemp -d /tmp/cleanweb-local-dmg.XXXXXX)"
-MOUNT_POINT="$(mktemp -d /tmp/cleanweb-local-dmg-mount.XXXXXX)"
+WORK_DIR="$(mktemp -d /tmp/cleanweb-signed-dmg.XXXXXX)"
+MOUNT_POINT="$(mktemp -d /tmp/cleanweb-signed-dmg-mount.XXXXXX)"
 ATTACHED=0
 
 cleanup() {
@@ -70,19 +75,32 @@ APP="$STAGING/$(basename "$APP_SOURCE")"
 xattr -cr "$APP"
 /usr/libexec/PlistBuddy -c "Delete :LSRequiresCarbon" "$APP/Contents/Info.plist" 2>/dev/null || true
 codesign --remove-signature "$APP" 2>/dev/null || true
-codesign --force --deep --sign - "$APP"
+codesign \
+  --force \
+  --deep \
+  --options runtime \
+  --timestamp \
+  --sign "$MACOS_SIGNING_IDENTITY" \
+  "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 test -f "$APP/Contents/_CodeSignature/CodeResources"
 
-README="$STAGING/README-LOCAL-TESTING.txt"
-cat > "$README" <<'TXT'
-This is an ad-hoc signed local-testing build.
+TMP_DMG="$WORK_DIR/CleanWeb-signed.dmg"
+hdiutil create -volname CleanWeb -srcfolder "$STAGING" -ov -format UDZO "$TMP_DMG" -quiet
+codesign --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$TMP_DMG"
 
-It is intended for developer testing only. It is not notarized and must not be
-distributed as a production macOS release.
-TXT
+if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+  xcrun notarytool submit "$TMP_DMG" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    --wait
+  xcrun stapler staple "$TMP_DMG"
+  spctl --assess --type open --verbose=4 "$TMP_DMG"
+else
+  echo "Apple notarization credentials are not configured; produced a signed but not notarized DMG." >&2
+fi
 
-hdiutil create -volname CleanWeb -srcfolder "$STAGING" -ov -format UDZO "$OUTPUT" -quiet
+ditto "$TMP_DMG" "$OUTPUT"
 xattr -cr "$OUTPUT"
-
-echo "Wrote local-testing DMG: $OUTPUT"
+echo "Wrote signed macOS DMG: $OUTPUT"
