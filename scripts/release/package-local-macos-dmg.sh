@@ -68,6 +68,7 @@ ditto "$APP_SOURCE" "$STAGING/$(basename "$APP_SOURCE")"
 
 APP="$STAGING/$(basename "$APP_SOURCE")"
 xattr -cr "$APP"
+/usr/libexec/PlistBuddy -c "Delete :LSRequiresCarbon" "$APP/Contents/Info.plist" 2>/dev/null || true
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 

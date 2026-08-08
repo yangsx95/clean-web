@@ -11,7 +11,10 @@ pub mod subscriptions;
 
 use std::{
     fs,
+    io::Write,
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 use tauri::{Emitter, Manager};
 
@@ -34,6 +37,7 @@ struct AppLifecycle {
     confirmed_exit: AtomicBool,
     quit_requested: AtomicBool,
     network_cleanup_started: AtomicBool,
+    show_window_after_ready: AtomicBool,
 }
 
 fn menu_action_for_id(id: &str) -> Option<MenuAction> {
@@ -130,6 +134,26 @@ fn stop_network_runtime_once(
     result
 }
 
+fn append_startup_log(data_dir: &Path, message: impl AsRef<str>) {
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir.join("startup.log"))
+    {
+        let _ = writeln!(file, "{}", message.as_ref());
+    }
+}
+
+fn show_main_window_after_launch(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(Duration::from_millis(350));
+        let app_for_main_thread = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            show_main_window(&app_for_main_thread);
+        });
+    });
+}
+
 fn build_desktop_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
@@ -206,13 +230,31 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
-            app.manage(storage::AppState::open(data_dir.join("cleanweb.db"))?);
+            append_startup_log(&data_dir, "setup: data directory ready");
+            let state =
+                storage::AppState::open(data_dir.join("cleanweb.db")).map_err(|reason| {
+                    append_startup_log(&data_dir, format!("setup: storage failed: {reason}"));
+                    reason
+                })?;
+            app.manage(state);
+            append_startup_log(&data_dir, "setup: storage ready");
             access_logs::start_access_log_collector(app.handle().clone());
             #[cfg(target_os = "macos")]
             {
-                build_tray(app.handle())?;
+                if let Err(reason) = build_tray(app.handle()) {
+                    append_startup_log(&data_dir, format!("setup: tray warning: {reason}"));
+                } else {
+                    append_startup_log(&data_dir, "setup: tray ready");
+                }
                 if let Ok(executable) = std::env::current_exe() {
-                    platform::install_login_agent(&executable).map_err(std::io::Error::other)?;
+                    if let Err(reason) = platform::install_login_agent(&executable) {
+                        append_startup_log(
+                            &data_dir,
+                            format!("setup: login agent warning: {reason}"),
+                        );
+                    } else {
+                        append_startup_log(&data_dir, "setup: login agent ready");
+                    }
                 }
                 if let Some(window) = app.get_webview_window("main") {
                     let close_window = window.clone();
@@ -224,6 +266,10 @@ pub fn run() {
                     });
                     if std::env::args().any(|argument| argument == "--background") {
                         hide_to_background(app.handle());
+                    } else {
+                        app.state::<AppLifecycle>()
+                            .show_window_after_ready
+                            .store(true, Ordering::SeqCst);
                     }
                 }
             }
@@ -282,6 +328,15 @@ pub fn run() {
         .expect("failed to build CleanWeb");
 
     app.run(|app, event| match event {
+        tauri::RunEvent::Ready => {
+            let lifecycle = app.state::<AppLifecycle>();
+            if lifecycle
+                .show_window_after_ready
+                .swap(false, Ordering::SeqCst)
+            {
+                show_main_window_after_launch(app.clone());
+            }
+        }
         tauri::RunEvent::ExitRequested { api, .. } => {
             let lifecycle = app.state::<AppLifecycle>();
             if !lifecycle.confirmed_exit.swap(false, Ordering::SeqCst) {
