@@ -40,6 +40,7 @@ pub struct AppState {
     pub(crate) dns_filter: Mutex<Option<DnsFilterHandle>>,
     pub(crate) system_dns_servers: Mutex<Vec<String>>,
     pub(crate) reload_in_progress: AtomicBool,
+    pub(crate) protection_health_failures: Mutex<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +196,7 @@ impl AppState {
             dns_filter: Mutex::new(None),
             system_dns_servers: Mutex::new(Vec::new()),
             reload_in_progress: AtomicBool::new(false),
+            protection_health_failures: Mutex::new(0),
         })
     }
 

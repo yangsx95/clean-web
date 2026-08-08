@@ -54,6 +54,7 @@ const ARM_BINARY_SHA256: &str = "8e77504f9eabb64b03852e056eef69c4a6928f9178d485a
 const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52dd965ef207ae4f0eeb";
 const CONTROLLER: &str = "127.0.0.1:19090";
 const SYSTEM_DNS_CACHE_FILE: &str = "mihomo/system-dns-servers.json";
+const PROTECTION_HEALTH_FAILURE_LIMIT: u32 = 3;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct MihomoAsset {
@@ -738,6 +739,7 @@ pub async fn test_all_proxy_delays(
 }
 
 pub(crate) fn stop_child(state: &AppState) -> Result<(), String> {
+    reset_protection_health_failures(state);
     dns_filter::stop_dns_filter(state)?;
     let pid_path = state.data_dir.join("mihomo/mihomo.pid");
     if let Some(mut child) = state
@@ -793,7 +795,13 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
         cleanweb_dns_ready,
         mihomo_dns_ready,
     );
-    if !running {
+    if running {
+        reset_protection_health_failures(state);
+    } else if should_recover_incomplete_protection_state(
+        state,
+        pid.is_some(),
+        active_config_present,
+    ) {
         recover_incomplete_protection_state(state, &pid_path);
     }
     Ok(CoreStatus {
@@ -806,6 +814,31 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
             .display()
             .to_string(),
     })
+}
+
+fn should_recover_incomplete_protection_state(
+    state: &AppState,
+    mihomo_running: bool,
+    active_config_present: bool,
+) -> bool {
+    if !mihomo_running || !active_config_present {
+        return true;
+    }
+    record_protection_health_failure(state) >= PROTECTION_HEALTH_FAILURE_LIMIT
+}
+
+fn record_protection_health_failure(state: &AppState) -> u32 {
+    let Ok(mut failures) = state.protection_health_failures.lock() else {
+        return PROTECTION_HEALTH_FAILURE_LIMIT;
+    };
+    *failures = failures.saturating_add(1);
+    *failures
+}
+
+fn reset_protection_health_failures(state: &AppState) {
+    if let Ok(mut failures) = state.protection_health_failures.lock() {
+        *failures = 0;
+    }
 }
 
 fn current_core_pid(state: &AppState, pid_path: &Path) -> Result<Option<u32>, String> {
@@ -2218,6 +2251,29 @@ mod tests {
         assert!(!protection_resources_healthy(true, false, true, true));
         assert!(!protection_resources_healthy(true, true, false, true));
         assert!(!protection_resources_healthy(true, true, true, false));
+    }
+
+    #[test]
+    fn transient_runtime_health_failures_do_not_immediately_recover() {
+        let state = AppState::open(":memory:").unwrap();
+
+        assert!(!should_recover_incomplete_protection_state(
+            &state, true, true
+        ));
+        assert!(!should_recover_incomplete_protection_state(
+            &state, true, true
+        ));
+        assert!(should_recover_incomplete_protection_state(
+            &state, true, true
+        ));
+
+        reset_protection_health_failures(&state);
+        assert!(should_recover_incomplete_protection_state(
+            &state, false, true
+        ));
+        assert!(should_recover_incomplete_protection_state(
+            &state, true, false
+        ));
     }
 
     #[test]

@@ -159,7 +159,13 @@ fn handle_dns_packet(
 }
 
 pub(crate) fn dns_endpoint_healthy(address: &str) -> bool {
-    dns_health_query(address).is_ok_and(|response| dns_health_response_valid(&response))
+    for _ in 0..3 {
+        if dns_health_query(address).is_ok_and(|response| dns_health_response_valid(&response)) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(120));
+    }
+    false
 }
 
 fn dns_health_query(address: &str) -> Result<Vec<u8>, std::io::Error> {
