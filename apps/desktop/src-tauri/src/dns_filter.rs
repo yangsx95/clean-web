@@ -27,7 +27,6 @@ use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[cfg(target_os = "macos")]
 use crate::platform;
 use crate::storage::AppState;
 
