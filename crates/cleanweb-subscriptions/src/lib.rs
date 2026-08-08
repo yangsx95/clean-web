@@ -255,6 +255,7 @@ fn adblock_domain(
 
 fn action_from_policy(policy: Option<&str>) -> Action {
     match policy.map(str::to_ascii_uppercase).as_deref() {
+        Some("DIRECT") => Action::Allow,
         Some("REJECT") | Some("REJECT-DROP") => Action::Block,
         _ => Action::Block,
     }
@@ -287,6 +288,20 @@ mod tests {
         assert_eq!(report.ignored.len(), 1);
         assert_eq!(report.rules[1].rule.kind, MatcherKind::Suffix);
         assert_eq!(report.rules[2].rule.kind, MatcherKind::Regex);
+    }
+
+    #[test]
+    fn imports_clash_direct_as_allow() {
+        let report = import(
+            SubscriptionFormat::Clash,
+            "DOMAIN,creator.example,DIRECT\nDOMAIN-SUFFIX,media.example,DIRECT",
+        );
+
+        assert_eq!(report.rules.len(), 2);
+        assert!(report
+            .rules
+            .iter()
+            .all(|item| item.rule.action == Action::Allow));
     }
 
     #[test]

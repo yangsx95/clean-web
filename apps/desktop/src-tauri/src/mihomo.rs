@@ -1390,12 +1390,6 @@ fn load_filter_rules(db: &rusqlite::Connection) -> Result<Vec<Value>, String> {
         &mut result,
     )?;
     append_parent_rules(db, "action IN ('block','allow')", &mut result)?;
-    if enabled_categories
-        .get("category.entertainment")
-        .is_some_and(|value| value == "true")
-    {
-        append_entertainment_rules(&mut result);
-    }
     append_imported_rules(
         db,
         &enabled_categories,
@@ -1494,79 +1488,6 @@ fn append_parent_rules(
         }
     }
     Ok(())
-}
-
-fn append_entertainment_rules(result: &mut Vec<Value>) {
-    const ENTERTAINMENT_SUFFIXES: &[&str] = &[
-        "douyin.com",
-        "douyinpic.com",
-        "douyincdn.com",
-        "douyinvod.com",
-        "iesdouyin.com",
-        "snssdk.com",
-        "amemv.com",
-        "pstatp.com",
-        "bytecdn.cn",
-        "byteimg.com",
-        "bytedance.com",
-        "bytedance.net",
-        "zijieapi.com",
-        "tiktok.com",
-        "tiktokv.com",
-        "tiktokcdn.com",
-        "muscdn.com",
-        "byteoversea.com",
-        "kuaishou.com",
-        "gifshow.com",
-        "ksapisrv.com",
-        "yximgs.com",
-        "bilibili.com",
-        "bilivideo.com",
-        "bilivideo.cn",
-        "hdslb.com",
-        "biliapi.net",
-        "huya.com",
-        "msstatic.com",
-        "douyu.com",
-        "douyucdn.cn",
-        "yy.com",
-        "huoshan.com",
-        "ixigua.com",
-        "ixgvideo.com",
-        "xiaohongshu.com",
-        "xhscdn.com",
-        "snapchat.com",
-        "youtube.com",
-        "youtu.be",
-        "googlevideo.com",
-        "ytimg.com",
-        "roblox.com",
-        "rbxcdn.com",
-        "steamcommunity.com",
-        "steampowered.com",
-        "steamstatic.com",
-        "epicgames.com",
-        "epicgames.dev",
-        "discord.com",
-        "discord.gg",
-        "discordapp.net",
-        "twitch.tv",
-        "ttvnw.net",
-    ];
-    const ENTERTAINMENT_KEYWORDS: &[&str] = &[
-        "shortvideo",
-        "short-video",
-        "livestream",
-        "live-stream",
-        "mobilegame",
-        "gamevideo",
-    ];
-    for suffix in ENTERTAINMENT_SUFFIXES {
-        result.push(Value::String(format!("DOMAIN-SUFFIX,{suffix},REJECT")));
-    }
-    for keyword in ENTERTAINMENT_KEYWORDS {
-        result.push(Value::String(format!("DOMAIN-KEYWORD,{keyword},REJECT")));
-    }
 }
 
 fn append_imported_rules(
@@ -2415,6 +2336,26 @@ mod tests {
             reject_roblox < system_route,
             "系统路由规则也必须晚于内容过滤，避免绕过拦截"
         );
+    }
+
+    #[test]
+    fn builtin_creator_allow_rules_precede_douyin_entertainment_blocks() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE settings SET value='true' WHERE key='category.entertainment'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let config = build_config(&state, "secret", true).unwrap();
+        let creator_allow = config.find("DOMAIN,creator.douyin.com,DIRECT").unwrap();
+        let douyin_block = config.find("DOMAIN-SUFFIX,douyin.com,REJECT").unwrap();
+        assert!(creator_allow < douyin_block);
+        assert!(!config.contains("DOMAIN-SUFFIX,douyinvod.com,DIRECT"));
+        assert!(!config.contains("DOMAIN,www.douyin.com,DIRECT"));
     }
 
     #[test]

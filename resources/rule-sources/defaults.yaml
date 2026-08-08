@@ -103,7 +103,7 @@ default_rule_sources:
     ui_group: 短视频与直播
     ui_order: 60
     toggleable: true
-    enabled_by_default: false
+    enabled_by_default: true
     description: 抖音、TikTok、快手、B 站、直播和视频平台
   - id: local:cleanweb:entertainment-social
     name: CleanWeb · 社交社区
@@ -114,7 +114,7 @@ default_rule_sources:
     ui_group: 社交社区
     ui_order: 61
     toggleable: true
-    enabled_by_default: false
+    enabled_by_default: true
     description: Instagram、Telegram、X、Reddit 等社交社区平台
   - id: local:cleanweb:entertainment-games
     name: CleanWeb · 游戏内容
@@ -125,7 +125,7 @@ default_rule_sources:
     ui_group: 游戏内容
     ui_order: 62
     toggleable: true
-    enabled_by_default: false
+    enabled_by_default: true
     description: 国内外游戏平台、发行商和游戏社区
   - id: default:adaway:hosts
     name: AdAway · Hosts

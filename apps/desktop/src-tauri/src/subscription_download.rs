@@ -320,6 +320,9 @@ fn refresh_rules(
         return refresh_safe_search_rules(state, id, text);
     }
     let imported = import_text(format, text, id, url, category);
+    if imported.rules.is_empty() {
+        return Err("规则文件没有可用条目，继续使用最后一次有效规则".into());
+    }
     let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
     let tx = db.transaction().map_err(error)?;
     tx.execute(
@@ -351,6 +354,9 @@ fn refresh_safe_search_rules(
     text: &str,
 ) -> Result<RefreshReport, String> {
     let report = import_safe_search_mappings(text)?;
+    if report.mappings.is_empty() {
+        return Err("安全搜索规则没有可用映射，继续使用最后一次有效规则".into());
+    }
     let mut db = state.db.lock().map_err(|_| "数据库不可用")?;
     let tx = db.transaction().map_err(error)?;
     tx.execute(
@@ -541,6 +547,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(normal_rules, 0);
+    }
+
+    #[test]
+    fn refreshed_rule_subscription_replaces_packaged_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cleanweb.db");
+        let source_id = "local:cleanweb:entertainment-short-video";
+        {
+            let state = AppState::open(&path).unwrap();
+            let original_count: i64 = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1",
+                    params![source_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(original_count > 2);
+
+            let report = refresh_rules(
+                &state,
+                source_id,
+                "https://example.test/short-video.clash",
+                Some("clash"),
+                "entertainment",
+                "DOMAIN,replacement.example,DIRECT\nDOMAIN-SUFFIX,blocked.example,REJECT\n",
+            )
+            .unwrap();
+            assert_eq!(report.imported_count, 2);
+        }
+
+        let state = AppState::open(&path).unwrap();
+        let db = state.db.lock().unwrap();
+        let rules = db
+            .prepare(
+                "SELECT pattern,action FROM imported_rules
+                 WHERE subscription_id=?1 ORDER BY source_line",
+            )
+            .unwrap()
+            .query_map(params![source_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rules,
+            vec![
+                ("replacement.example".into(), "Allow".into()),
+                ("blocked.example".into(), "Block".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_rule_refresh_preserves_last_valid_rules() {
+        let state = AppState::open(":memory:").unwrap();
+        let source_id = "local:cleanweb:entertainment-short-video";
+        let before: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1",
+                params![source_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let error = refresh_rules(
+            &state,
+            source_id,
+            "https://example.test/short-video.clash",
+            Some("clash"),
+            "entertainment",
+            "this is not a valid clash rule\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("最后一次有效规则"));
+
+        let after: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1",
+                params![source_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, before);
     }
     #[test]
     fn store_proxy_payload_encrypts_payload() {

@@ -1,4 +1,11 @@
 # CleanWeb optional entertainment rules for short video, livestream, and video platforms.
+# Creator workflow exceptions must stay before the broad Douyin reject rules.
+DOMAIN,creator.douyin.com,DIRECT
+DOMAIN,lf-zt.douyin.com,DIRECT
+DOMAIN,sso.douyin.com,DIRECT
+DOMAIN,renzheng.douyin.com,DIRECT
+DOMAIN,s3.bytecdn.cn,DIRECT
+DOMAIN,s3a.bytecdn.cn,DIRECT
 DOMAIN-SUFFIX,douyin.com,REJECT
 DOMAIN-SUFFIX,douyinpic.com,REJECT
 DOMAIN-SUFFIX,douyincdn.com,REJECT

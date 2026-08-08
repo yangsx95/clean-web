@@ -744,7 +744,7 @@ fn build_domain_index_in_memory(
 ) -> Result<DomainRuleIndex, String> {
     let mut builder = DomainRuleIndexBuilder::default();
     append_parent_domain_rules(db, &mut builder)?;
-    append_imported_domain_blocks(db, settings, &mut builder)?;
+    append_imported_domain_rules(db, settings, &mut builder)?;
     builder.build().map_err(|value| value.to_string())
 }
 
@@ -772,7 +772,7 @@ fn rebuild_domain_index_cache(
     let result = (|| {
         let mut builder = DomainRuleIndexBuilder::default();
         append_parent_domain_rules(db, &mut builder)?;
-        append_imported_domain_blocks(db, settings, &mut builder)?;
+        append_imported_domain_rules(db, settings, &mut builder)?;
         builder
             .build_to_files(&temp_paths)
             .map_err(|value| value.to_string())?;
@@ -920,16 +920,16 @@ fn append_parent_domain_rules(
     Ok(())
 }
 
-fn append_imported_domain_blocks(
+fn append_imported_domain_rules(
     db: &Connection,
     settings: &std::collections::HashMap<String, String>,
     builder: &mut DomainRuleIndexBuilder,
 ) -> Result<(), String> {
     let mut statement = db
         .prepare(
-            "SELECT r.matcher_kind,r.pattern,r.category FROM imported_rules r
+            "SELECT r.matcher_kind,r.pattern,r.action,r.category FROM imported_rules r
              JOIN subscriptions s ON s.id=r.subscription_id
-             WHERE s.enabled=1 AND r.action='Block' AND r.matcher_kind IN ('Exact','Suffix')
+             WHERE s.enabled=1 AND r.action IN ('Allow','Block') AND r.matcher_kind IN ('Exact','Suffix')
              ORDER BY s.created_at,r.source_line",
         )
         .map_err(error)?;
@@ -939,11 +939,12 @@ fn append_imported_domain_blocks(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })
         .map_err(error)?;
     for row in rows {
-        let (kind, pattern, category) = row.map_err(error)?;
+        let (kind, pattern, action, category) = row.map_err(error)?;
         if !category_enabled(settings, &category) {
             continue;
         }
@@ -952,7 +953,9 @@ fn append_imported_domain_blocks(
         };
         builder
             .insert(DomainRuleInput {
-                tier: if is_security_category(&category) {
+                tier: if action == "Allow" {
+                    DomainRuleTier::ManualAllow
+                } else if is_security_category(&category) {
                     DomainRuleTier::SecurityBlock
                 } else {
                     DomainRuleTier::Block
@@ -1631,6 +1634,47 @@ mod tests {
                 .decide("www.game.example")
                 .is_some_and(|decision| decision.blocked));
         }
+    }
+
+    #[test]
+    fn builtin_creator_allow_rules_do_not_allow_douyin_consumer_domains() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled)
+                 VALUES('douyin','rule','douyin','https://x/douyin.txt','clash','entertainment',1)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+                 VALUES('douyin','1','Suffix','douyin.com','Block','entertainment',1),
+                       ('douyin','2','Suffix','douyinvod.com','Block','entertainment',2)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE settings SET value='true' WHERE key='category.entertainment'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = state.db.lock().unwrap();
+        let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
+        assert!(config
+            .domain_index
+            .decide("creator.douyin.com")
+            .is_some_and(|decision| !decision.blocked));
+        assert!(config
+            .domain_index
+            .decide("video.douyinvod.com")
+            .is_some_and(|decision| decision.blocked));
+        assert!(config
+            .domain_index
+            .decide("www.douyin.com")
+            .is_some_and(|decision| decision.blocked));
     }
 
     #[test]

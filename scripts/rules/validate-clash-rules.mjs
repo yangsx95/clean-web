@@ -16,6 +16,7 @@ const allowedTypes = new Set([
   "IP-CIDR",
   "IP-CIDR6",
 ]);
+const allowedActions = new Set(["REJECT", "DIRECT"]);
 
 const errors = [];
 
@@ -50,8 +51,8 @@ for (const file of ruleFiles) {
       errors.push(`${file}:${lineNumber} is missing rule value`);
     }
 
-    if (action !== "REJECT") {
-      errors.push(`${file}:${lineNumber} must use REJECT action`);
+    if (!allowedActions.has(action)) {
+      errors.push(`${file}:${lineNumber} has unsupported action: ${action}`);
     }
 
     if (options.length > 1 || (options.length === 1 && options[0] !== "no-resolve")) {

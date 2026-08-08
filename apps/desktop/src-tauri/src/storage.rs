@@ -446,6 +446,82 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
              OR id='default:cleanweb:strict-supplement'",
         [],
     )?;
+    seed_bundled_rule_fallbacks(db)?;
+    enable_entertainment_sources_by_default_v2(db)?;
+    Ok(())
+}
+
+fn enable_entertainment_sources_by_default_v2(db: &Connection) -> rusqlite::Result<()> {
+    let migrated = db
+        .query_row(
+            "SELECT value FROM settings WHERE key='migration.entertainment_sources_enabled_v2'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|value| value == "true");
+    if migrated {
+        return Ok(());
+    }
+    db.execute(
+        "UPDATE subscriptions SET enabled=1 WHERE id IN (
+           'local:cleanweb:entertainment-short-video',
+           'local:cleanweb:entertainment-social',
+           'local:cleanweb:entertainment-games'
+         )",
+        [],
+    )?;
+    db.execute(
+        "INSERT OR REPLACE INTO settings(key,value)
+         VALUES('migration.entertainment_sources_enabled_v2','true')",
+        [],
+    )?;
+    Ok(())
+}
+
+fn seed_bundled_rule_fallbacks(db: &Connection) -> rusqlite::Result<()> {
+    for bundled in crate::rules::bundled_rule_sources() {
+        let source = db
+            .query_row(
+                "SELECT url,category FROM subscriptions WHERE id=?1 AND kind='rule'",
+                params![bundled.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((url, category)) = source else {
+            continue;
+        };
+        let imported_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1",
+            params![bundled.id],
+            |row| row.get(0),
+        )?;
+        if imported_count > 0 {
+            continue;
+        }
+        let imported = cleanweb_subscriptions::import_text(
+            cleanweb_subscriptions::SubscriptionFormat::Clash,
+            bundled.content,
+            bundled.id,
+            &url,
+            &category,
+        );
+        for item in imported.rules {
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    bundled.id,
+                    item.rule.id,
+                    format!("{:?}", item.rule.kind),
+                    item.rule.pattern,
+                    format!("{:?}", item.rule.action),
+                    item.rule.category,
+                    item.source.source_line as i64
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1841,7 +1917,7 @@ mod tests {
     }
 
     #[test]
-    fn seeds_builtin_rule_source_metadata_without_rule_body() {
+    fn seeds_builtin_rule_metadata_and_offline_entertainment_fallback() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cleanweb.db");
         let state = AppState::open(&path).unwrap();
@@ -1895,7 +1971,7 @@ mod tests {
                 "https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-short-video.clash".into(),
                 "clash".into(),
                 Some(24),
-                false,
+                true,
                 true,
             )),
             "娱乐内容具体分类规则必须自动刷新导入"
@@ -1918,7 +1994,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(imported_count, 0, "打包规则正文不应写入可执行规则表");
+        assert!(imported_count > 0, "娱乐规则应提供首次安装的离线兜底");
         let safe_search_count: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM safe_search_mappings WHERE subscription_id='default:cleanweb:safe-search'",
