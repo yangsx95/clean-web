@@ -439,18 +439,18 @@ jobs:
         if: steps.package.outputs.should_build == 'true'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles dmg
 
-      - name: Mark macOS DMGs as unsigned local-testing artifacts
+      - name: Package ad-hoc signed macOS local-testing DMGs
         if: steps.package.outputs.should_build == 'true'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p macos-artifacts
-          cat > macos-artifacts/README-UNSIGNED-MACOS.txt <<'TXT'
-          These macOS DMGs are unsigned local-testing artifacts.
+          cat > macos-artifacts/README-LOCAL-TESTING-MACOS.txt <<'TXT'
+          These macOS DMGs are ad-hoc signed local-testing artifacts.
 
-          Do not publish them to users and do not expect them to open after a browser download.
-          Gatekeeper will reject unsigned or ad-hoc signed apps with messages such as:
-          "CleanWeb is damaged and can't be opened."
+          Do not publish them to users. They are not notarized and are only intended
+          for developer testing before Developer ID signing and notarization are wired
+          into CI.
 
           A distributable macOS DMG must pass:
           scripts/release/verify-macos-dmg.sh /path/to/CleanWeb.dmg
@@ -458,7 +458,9 @@ jobs:
           shopt -s nullglob
           for dmg in ${{ matrix.bundle_path }}; do
             base="$(basename "$dmg" .dmg)"
-            cp "$dmg" "macos-artifacts/${base}_UNSIGNED_LOCAL_TESTING_ONLY.dmg"
+            scripts/release/package-local-macos-dmg.sh \
+              "$dmg" \
+              "macos-artifacts/${base}_ADHOC_SIGNED_LOCAL_TESTING_ONLY.dmg"
           done
           test "$(find macos-artifacts -name '*.dmg' | wc -l | tr -d ' ')" != "0"
 

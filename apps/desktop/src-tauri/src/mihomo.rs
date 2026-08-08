@@ -959,10 +959,13 @@ fn should_recover_incomplete_protection_state(
     mihomo_running: bool,
     active_config_present: bool,
 ) -> bool {
-    if !mihomo_running || !active_config_present {
+    if !mihomo_running {
         return true;
     }
-    record_protection_health_failure(state) >= PROTECTION_HEALTH_FAILURE_LIMIT
+    if !active_config_present {
+        return record_protection_health_failure(state) >= PROTECTION_HEALTH_FAILURE_LIMIT;
+    }
+    false
 }
 
 fn record_protection_health_failure(state: &AppState) -> u32 {
@@ -2429,7 +2432,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_runtime_health_failures_do_not_immediately_recover() {
+    fn runtime_health_failures_report_status_without_stopping_core() {
         let state = AppState::open(":memory:").unwrap();
 
         assert!(!should_recover_incomplete_protection_state(
@@ -2438,13 +2441,19 @@ mod tests {
         assert!(!should_recover_incomplete_protection_state(
             &state, true, true
         ));
-        assert!(should_recover_incomplete_protection_state(
+        assert!(!should_recover_incomplete_protection_state(
             &state, true, true
         ));
 
         reset_protection_health_failures(&state);
         assert!(should_recover_incomplete_protection_state(
             &state, false, true
+        ));
+        assert!(!should_recover_incomplete_protection_state(
+            &state, true, false
+        ));
+        assert!(!should_recover_incomplete_protection_state(
+            &state, true, false
         ));
         assert!(should_recover_incomplete_protection_state(
             &state, true, false

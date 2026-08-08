@@ -13,6 +13,7 @@
     "icons:generate": "scripts/assets/generate-icons.sh",
     "release:bump": "scripts/release/bump-version.sh",
     "release:preflight": "scripts/release/preflight.sh",
+    "release:macos:local-dmg": "scripts/release/package-local-macos-dmg.sh",
     "release:macos:verify": "scripts/release/verify-macos-dmg.sh",
     "release:tag": "scripts/release/tag-release.sh",
     "tauri": "cd apps/desktop && tauri",

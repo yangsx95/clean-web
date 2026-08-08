@@ -217,6 +217,19 @@ describe("management actions", () => {
     expect(screen.getByRole("switch", { name: "总保护" }).getAttribute("aria-checked")).toBe("false");
   });
 
+  it("shows the concrete backend reason when protection fails to start", async () => {
+    const start = vi.spyOn(backend, "startProtection")
+      .mockRejectedValueOnce(new Error("CleanWeb 特权服务安装后未就绪"));
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("switch", { name: "总保护" }));
+
+    expect(await screen.findAllByText("保护未开启：CleanWeb 特权服务安装后未就绪")).not.toHaveLength(0);
+    expect(screen.getByText("技术详情")).toBeTruthy();
+    start.mockRestore();
+  });
+
   it("does not auto start protection on app launch", async () => {
     const enabled = { ...await backend.getSettings(), protectionEnabled: true };
     const settings = vi.spyOn(backend, "getSettings")

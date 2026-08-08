@@ -66,7 +66,7 @@ type ErrorNotice = {
 const DEFAULT_ERROR_MESSAGE = "操作失败，请稍后重试";
 
 function toErrorNotice(reason: unknown, fallback = DEFAULT_ERROR_MESSAGE): ErrorNotice {
-  const detail = String(reason ?? "").trim();
+  const detail = (reason instanceof Error ? reason.message : String(reason ?? "")).trim();
   const lower = detail.toLowerCase();
   let message = fallback;
   if (detail.includes("已取消管理员授权")) message = detail;
@@ -80,6 +80,15 @@ function toErrorNotice(reason: unknown, fallback = DEFAULT_ERROR_MESSAGE): Error
   else if (detail.includes("浏览器策略")) message = "浏览器增强保护配置失败，请检查系统授权后重试";
   else if (detail && fallback === DEFAULT_ERROR_MESSAGE) message = detail.split("\n")[0] || fallback;
   return { message, detail: detail && detail !== message ? detail : undefined };
+}
+
+function protectionStartFailureNotice(reason: unknown): ErrorNotice {
+  const notice = toErrorNotice(reason, "保护启动失败，请稍后重试");
+  const reasonText = (notice.detail ?? notice.message).split("\n")[0]?.trim();
+  return {
+    message: reasonText ? `保护未开启：${reasonText}` : "保护未开启：启动失败，请稍后重试",
+    detail: notice.detail ?? notice.message,
+  };
 }
 
 const busyScope = {
@@ -235,7 +244,7 @@ export function App() {
   const quitApp = async (password: string) => { await backend.confirmedQuit(password); setDialog(null); };
   const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
   const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();if(status.state==="applying")setRuntimeProgress(null);setPolicyApplyStatus(status);if(status.state==="applied"||status.state==="failed"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);setRuntimeProgress(null);policyStatusTimerRef.current=null;},2600);}};
-  const showPolicyFailure=()=>showPolicyStatus({state:"failed",message:"操作失败，请查看错误详情"});
+  const showPolicyFailure=(message="操作失败，请查看错误详情")=>showPolicyStatus({state:"failed",message});
   const dismissPolicyStatus=()=>{clearPolicyStatusTimer();setPolicyApplyStatus(null);setRuntimeProgress(null);};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;let checking=false;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{if(checking)return;checking=true;void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{}).finally(()=>{checking=false;});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();const timer=window.setInterval(showPendingQuitDialog,500);window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;window.clearInterval(timer);if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
@@ -294,7 +303,7 @@ export function App() {
     await runScopedOperation(key==="protection_enabled"?busyScope.protection:busyScope.setting(key), async()=>{try {
       if(key==="protection_enabled"){showPolicyStatus({state:"applying",message:value==="true"?"正在启动保护…":"正在关闭保护…"});const core=value==="true"?await backend.startProtection(sessionToken):await backend.stopProtection(sessionToken);setCoreStatus(core);setSettings(await backend.updateSetting(sessionToken,key,value));showPolicyStatus({state:"applied",message:value==="true"?"保护已开启":"保护已关闭"});}
       else {showPolicyStatus({state:"applying",message:"正在保存并应用设置…"});setSettings(await backend.updateSetting(sessionToken,key,value));await reloadRuntime(sessionToken,{applyingMessage:"正在应用设置到运行内核…"});}
-    } catch(reason) { const notice=toErrorNotice(reason,value==="true"?"保护启动失败，请稍后重试":"操作失败，请稍后重试");showPolicyFailure();setRuntimeError(notice); }});
+    } catch(reason) { const notice=value==="true"?protectionStartFailureNotice(reason):toErrorNotice(reason,"操作失败，请稍后重试");showPolicyFailure(notice.message);setRuntimeError(notice); }});
   };
   const toggle = (key: string, enabled: boolean) => setValue(key, String(enabled));
   const createSubscription = async (input: backend.NewSubscription) => {
