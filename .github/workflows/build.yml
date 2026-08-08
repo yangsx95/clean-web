@@ -24,7 +24,7 @@ on:
         description: "Build signed and notarized macOS DMGs"
         required: true
         type: choice
-        default: "true"
+        default: "false"
         options:
           - "true"
           - "false"
@@ -363,7 +363,7 @@ jobs:
     needs:
       - detect-changes
       - static-validation
-    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (github.event_name != 'workflow_dispatch' || inputs.build_macos == 'true')
+    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.desktop == 'true' && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_macos == 'true'))
     strategy:
       fail-fast: false
       matrix:
