@@ -25,10 +25,13 @@ export type SubscriptionRefreshProgress = {
   percent?:number|null;
   message:string;
 };
-export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string };
+export type CoreComponentStatus = { id:string; label:string; status:"ready"|"warning"|"stopped"; detail:string };
+export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string; components?:CoreComponentStatus[] };
+export type RuntimeProgress = { operation:string; phase:string; percent:number; message:string; components:CoreComponentStatus[] };
 export type MobileVpnStatus = { supported:boolean; prepared:boolean; running:boolean; stage:string; dataPlaneReady:boolean; lastError?:string|null };
 export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string;repeatCount?:number};
 export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
+export type AccessLogDailyStats={date:string;label:string;block:number;allow:number;warning:number;total:number};
 export type ParentRule={id:string;action:"allow"|"block"|"proxy"|"system_route";kind:string;pattern:string;category:string;enabled:boolean};
 export type NewParentRule=Pick<ParentRule,"action"|"kind"|"pattern"|"category">;
 export type RuleDiagnosticMatch={id:string;source:string;action:"allow"|"block"|"proxy"|"system_route"|string;kind:string;pattern:string;category:string;priority:number;matched?:boolean};
@@ -55,7 +58,7 @@ export const defaultSettings: Settings = {
   categories: { pornography: true, gambling: true, drugs: true, violence: true, self_harm: true, hate_extremism: true, fraud: true, phishing: true, malware: true, ads: true, tracking: true, entertainment: false },
   browserPolicy: { force_google_safe_search: true, force_youtube_restrict: true, disable_doh: true, use_system_dns_client: true },
 };
-const defaultCoreStatus: CoreStatus = { running: false, controller: "127.0.0.1:19090", configPath: "preview" };
+const defaultCoreStatus: CoreStatus = { running: false, controller: "127.0.0.1:19090", configPath: "preview", components: previewCoreComponents(false) };
 
 let defaults: Settings = loadPreviewSettings();
 let previewCoreStatus: CoreStatus = loadPreviewCoreStatus();
@@ -70,6 +73,11 @@ const mobileCoreStatus = (status: MobileVpnStatus): CoreStatus => ({
   running: status.running,
   controller: status.supported ? `android-vpn:${status.stage}` : "android-vpn:unsupported",
   configPath: status.dataPlaneReady ? "android-vpn" : "android-vpn-shell",
+  components: [
+    { id:"mobile-vpn", label:"移动 VPN", status:status.running?"ready":status.supported?"stopped":"warning", detail:status.supported ? status.stage : "当前平台暂不支持" },
+    { id:"mobile-policy", label:"策略载入", status:status.prepared?"ready":"stopped", detail:status.prepared ? "VPN 权限已准备" : "等待系统授权" },
+    { id:"mobile-data-plane", label:"数据通道", status:status.dataPlaneReady?"ready":"stopped", detail:status.dataPlaneReady ? "VPN 数据面正常" : "数据面未就绪" },
+  ],
 });
 const mobileVpnStatus = async () => invoke<MobileVpnStatus>("mobile_vpn_status");
 const mobilePrepareVpn = async () => invoke<MobileVpnStatus>("mobile_prepare_vpn");
@@ -131,10 +139,20 @@ function savePreviewSettings() {
 function loadPreviewCoreStatus(): CoreStatus {
   try {
     const raw = window.localStorage.getItem(previewCoreStatusKey);
-    return raw ? { ...defaultCoreStatus, ...JSON.parse(raw) } : structuredClone(defaultCoreStatus);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const status = parsed ? { ...defaultCoreStatus, ...parsed } : structuredClone(defaultCoreStatus);
+    return { ...status, components: Array.isArray(status.components) ? status.components : previewCoreComponents(status.running) };
   } catch {
     return structuredClone(defaultCoreStatus);
   }
+}
+function previewCoreComponents(running:boolean): CoreComponentStatus[] {
+  return [
+    { id:"mihomo", label:"Mihomo 内核", status:running?"ready":"stopped", detail:running?"预览进程运行中":"预览未运行" },
+    { id:"active-config", label:"运行配置", status:running?"ready":"stopped", detail:running?"已记录当前配置":"等待启动后写入" },
+    { id:"cleanweb-dns", label:"CleanWeb DNS", status:running?"ready":"stopped", detail:running?"127.0.0.1:19053 正常":"DNS 过滤未启动" },
+    { id:"mihomo-dns", label:"本机 DNS 接管", status:running?"ready":"stopped", detail:running?"127.0.0.1:53 正常":"系统 DNS 未接管" },
+  ];
 }
 function savePreviewCoreStatus() {
   try { window.localStorage.setItem(previewCoreStatusKey, JSON.stringify(previewCoreStatus)); } catch {}
@@ -303,9 +321,9 @@ export async function refreshSubscription(sessionToken:string,id:string):Promise
 }
 export async function refreshDueSubscriptions():Promise<number>{return usesDesktopBackend()?invoke("refresh_due_subscriptions"):0;}
 export async function getCoreStatus():Promise<CoreStatus>{if(usesDesktopBackend())return invoke("get_core_status");if(isMobileTauri())return mobileCoreStatus(await mobileVpnStatus());previewCoreStatus=loadPreviewCoreStatus();return structuredClone(previewCoreStatus);}
-export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();return mobileCoreStatus(await mobileStartVpn());}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview"};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
+export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();return mobileCoreStatus(await mobileStartVpn());}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(true)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function autoStartProtection():Promise<CoreStatus>{return usesDesktopBackend()?invoke("auto_start_protection"):getCoreStatus();}
-export async function stopProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("stop_protection",{sessionToken});if(isMobileTauri())return mobileCoreStatus(await mobileStopVpn());previewCoreStatus={running:false,controller:"127.0.0.1:19090",configPath:"preview"};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
+export async function stopProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("stop_protection",{sessionToken});if(isMobileTauri())return mobileCoreStatus(await mobileStopVpn());previewCoreStatus={running:false,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(false)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("reload_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));return mobileCoreStatus(await mobileVpnStatus());}return getCoreStatus();}
 export async function testProxyGroup(sessionToken:string,group="CleanWeb"):Promise<number>{if(!usesDesktopBackend())return 0;const value=await invoke<{delay:number}>("test_proxy_group",{sessionToken,group});return value.delay;}
 export type ProxyNode={name:string;nodeType:string;delay?:number|null};
@@ -351,6 +369,26 @@ export async function getPublicAccessLogStats():Promise<AccessLogStats>{
   if(usesDesktopBackend())return invoke("public_access_log_stats");
   return getAccessLogStats("browser-preview");
 }
+export async function getAccessLogDailyStats(sessionToken:string):Promise<AccessLogDailyStats[]>{
+  if(usesDesktopBackend())return invoke("access_log_daily_stats",{sessionToken});
+  return previewAccessLogDailyStats();
+}
+export async function getPublicAccessLogDailyStats():Promise<AccessLogDailyStats[]>{
+  if(usesDesktopBackend())return invoke("public_access_log_daily_stats");
+  return previewAccessLogDailyStats();
+}
+function previewAccessLogDailyStats():AccessLogDailyStats[]{
+  const formatter = new Intl.DateTimeFormat(undefined,{month:"2-digit",day:"2-digit"});
+  return Array.from({length:7},(_,index)=>{
+    const date = new Date();
+    date.setDate(date.getDate() - (6 - index));
+    const seed = index + 1;
+    const allow = seed * 7;
+    const block = index % 3 === 0 ? seed * 2 : seed;
+    const warning = index % 4 === 0 ? 1 : 0;
+    return {date:date.toISOString().slice(0,10),label:formatter.format(date),allow,block,warning,total:allow+block+warning};
+  });
+}
 export async function clearAccessLogs(sessionToken:string):Promise<number>{return usesDesktopBackend()?invoke("clear_access_logs",{sessionToken}):0;}
 export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return usesDesktopBackend()?invoke("export_access_logs_csv",{sessionToken}):"\ufefftime,domain\n";}
 export async function saveAccessLogsCsv(sessionToken:string):Promise<string|null>{
@@ -388,6 +426,11 @@ export async function onSubscriptionRefreshProgress(callback:(progress:Subscript
   if(!usesDesktopBackend())return()=>{};
   const { listen } = await import("@tauri-apps/api/event");
   return listen<SubscriptionRefreshProgress>("subscription-refresh-progress", event=>callback(event.payload));
+}
+export async function onRuntimeProgress(callback:(progress:RuntimeProgress)=>void):Promise<()=>void>{
+  if(!usesDesktopBackend())return()=>{};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<RuntimeProgress>("runtime-progress", event=>callback(event.payload));
 }
 export async function onQuitRequested(callback:()=>void):Promise<()=>void>{
   if(!usesDesktopBackend())return()=>{};

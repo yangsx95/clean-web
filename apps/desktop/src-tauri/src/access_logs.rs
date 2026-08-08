@@ -123,6 +123,17 @@ pub struct AccessLogStats {
     pub today_total: i64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessLogDailyStats {
+    pub date: String,
+    pub label: String,
+    pub block: i64,
+    pub allow: i64,
+    pub warning: i64,
+    pub total: i64,
+}
+
 pub fn start_access_log_collector(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::builder()
@@ -928,6 +939,22 @@ pub fn public_access_log_stats(state: State<'_, AppState>) -> Result<AccessLogSt
     access_log_stats_inner(&state)
 }
 
+#[tauri::command]
+pub fn access_log_daily_stats(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<AccessLogDailyStats>, String> {
+    state.require_session(&session_token)?;
+    access_log_daily_stats_inner(&state)
+}
+
+#[tauri::command]
+pub fn public_access_log_daily_stats(
+    state: State<'_, AppState>,
+) -> Result<Vec<AccessLogDailyStats>, String> {
+    access_log_daily_stats_inner(&state)
+}
+
 fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     prune_internal_cleanweb_dns_logs(&db)?;
@@ -958,6 +985,52 @@ fn access_log_stats_inner(state: &AppState) -> Result<AccessLogStats, String> {
         },
     )
     .map_err(error)
+}
+
+fn access_log_daily_stats_inner(state: &AppState) -> Result<Vec<AccessLogDailyStats>, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    prune_internal_cleanweb_dns_logs(&db)?;
+    let mut statement = db
+        .prepare(
+            "WITH RECURSIVE days(offset, day) AS (
+               SELECT 6, date('now','localtime','-6 days')
+               UNION ALL
+               SELECT offset - 1, date(day, '+1 day') FROM days WHERE offset > 0
+             ),
+             grouped AS (
+               SELECT date(observed_at_ms / 1000, 'unixepoch', 'localtime') AS day,
+                      COALESCE(SUM(CASE WHEN decision_code=1 THEN repeat_count ELSE 0 END),0) AS block,
+                      COALESCE(SUM(CASE WHEN decision_code=0 THEN repeat_count ELSE 0 END),0) AS allow,
+                      COALESCE(SUM(CASE WHEN decision_code=2 THEN repeat_count ELSE 0 END),0) AS warning,
+                      COALESCE(SUM(repeat_count),0) AS total
+                 FROM access_logs
+                WHERE observed_at_ms >= CAST(strftime('%s','now','localtime','start of day','-6 days','utc') AS INTEGER) * 1000
+                GROUP BY day
+             )
+             SELECT days.day,
+                    strftime('%m/%d', days.day),
+                    COALESCE(grouped.block,0),
+                    COALESCE(grouped.allow,0),
+                    COALESCE(grouped.warning,0),
+                    COALESCE(grouped.total,0)
+               FROM days
+               LEFT JOIN grouped ON grouped.day = days.day
+              ORDER BY days.day",
+        )
+        .map_err(error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(AccessLogDailyStats {
+                date: row.get(0)?,
+                label: row.get(1)?,
+                block: row.get(2)?,
+                allow: row.get(3)?,
+                warning: row.get(4)?,
+                total: row.get(5)?,
+            })
+        })
+        .map_err(error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(error)
 }
 
 fn local_today_start_ms(db: &rusqlite::Connection) -> Result<i64, String> {
@@ -1716,6 +1789,32 @@ mod tests {
         assert_eq!(stats.today_allow, 1);
         assert_eq!(stats.today_block, 1);
         assert_eq!(stats.today_total, 2);
+    }
+
+    #[test]
+    fn daily_stats_return_recent_seven_local_days() {
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            let today_start = local_today_start_ms(&db).unwrap();
+            insert_test_access_log_ms(&db, "today-allow", today_start + 1_000, "allow");
+            insert_test_access_log_ms(&db, "today-block", today_start + 2_000, "block");
+            insert_test_access_log_ms(
+                &db,
+                "yesterday-warning",
+                today_start - 86_400_000 + 3_000,
+                "warning",
+            );
+        }
+
+        let days = access_log_daily_stats_inner(&state).unwrap();
+
+        assert_eq!(days.len(), 7);
+        assert_eq!(days[5].warning, 1);
+        assert_eq!(days[5].total, 1);
+        assert_eq!(days[6].allow, 1);
+        assert_eq!(days[6].block, 1);
+        assert_eq!(days[6].total, 2);
     }
 
     #[test]

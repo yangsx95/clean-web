@@ -270,6 +270,8 @@ pub fn run() {
             access_logs::list_access_logs,
             access_logs::access_log_stats,
             access_logs::public_access_log_stats,
+            access_logs::access_log_daily_stats,
+            access_logs::public_access_log_daily_stats,
             access_logs::clear_access_logs,
             access_logs::export_access_logs_csv,
             access_logs::export_access_logs_csv_to_path,

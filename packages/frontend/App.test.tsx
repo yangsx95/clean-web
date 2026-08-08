@@ -509,6 +509,28 @@ describe("management actions", () => {
     expect(screen.getByText("累计 2 次")).toBeTruthy();
   });
 
+  it("shows runtime component status on the overview", async () => {
+    const status = vi.spyOn(backend, "getCoreStatus").mockResolvedValue({
+      running: false,
+      controller: "127.0.0.1:19090",
+      configPath: "preview",
+      components: [
+        { id:"mihomo", label:"Mihomo 内核", status:"ready", detail:"进程运行中" },
+        { id:"cleanweb-dns", label:"CleanWeb DNS", status:"warning", detail:"19053 健康探测失败" },
+      ],
+    });
+
+    render(<App />);
+    await unlockManagement();
+
+    expect(await screen.findByLabelText("组件状态")).toBeTruthy();
+    expect(screen.getByText("Mihomo 内核")).toBeTruthy();
+    expect(screen.getByText("CleanWeb DNS")).toBeTruthy();
+    expect(screen.getByText("19053 健康探测失败")).toBeTruthy();
+    expect(screen.getByText("1/2 正常")).toBeTruthy();
+    status.mockRestore();
+  });
+
   it("opens both subscription forms when unlocked", async () => {
     render(<App />);
     await unlockManagement();

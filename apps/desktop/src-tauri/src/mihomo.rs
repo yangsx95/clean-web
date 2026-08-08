@@ -17,7 +17,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::{
@@ -55,6 +55,7 @@ const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52d
 const CONTROLLER: &str = "127.0.0.1:19090";
 const SYSTEM_DNS_CACHE_FILE: &str = "mihomo/system-dns-servers.json";
 const PROTECTION_HEALTH_FAILURE_LIMIT: u32 = 3;
+const RUNTIME_PROGRESS_EVENT: &str = "runtime-progress";
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 struct MihomoAsset {
@@ -70,6 +71,26 @@ pub struct CoreStatus {
     pub pid: Option<u32>,
     pub controller: String,
     pub config_path: String,
+    pub components: Vec<CoreComponentStatus>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreComponentStatus {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProgress {
+    pub operation: String,
+    pub phase: String,
+    pub percent: u8,
+    pub message: String,
+    pub components: Vec<CoreComponentStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,23 +202,31 @@ pub async fn auto_start_protection(app: AppHandle) -> Result<CoreStatus, String>
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
     let startup_started = Instant::now();
+    emit_runtime_progress(
+        app,
+        "start",
+        "preparing",
+        4,
+        "准备启动保护",
+        core_components(false, false, false, false),
+    );
     refresh_system_dns_servers(state)?;
-    log_startup_phase("refresh initial DNS", startup_started);
+    log_startup_phase(app, "start", "refresh initial DNS", 10, startup_started);
     stop_child(state)?;
-    log_startup_phase("stop previous runtime", startup_started);
+    log_startup_phase(app, "start", "stop previous runtime", 18, startup_started);
     std::thread::sleep(Duration::from_millis(250));
     refresh_system_dns_servers(state)?;
-    log_startup_phase("refresh DNS after stop", startup_started);
+    log_startup_phase(app, "start", "refresh DNS after stop", 24, startup_started);
     let runtime = state.data_dir.join("mihomo");
     fs::create_dir_all(&runtime).map_err(error)?;
     let binary = ensure_binary(app, &runtime)?;
-    log_startup_phase("ensure mihomo binary", startup_started);
+    log_startup_phase(app, "start", "ensure mihomo binary", 32, startup_started);
     let secret = controller_secret(state)?;
     let config = build_config(state, &secret, true)?;
-    log_startup_phase("build mihomo config", startup_started);
+    log_startup_phase(app, "start", "build mihomo config", 42, startup_started);
     let config_hash = config_hash(&config);
     atomic_write(&runtime.join("config.yaml"), config.as_bytes()).map_err(error)?;
-    log_startup_phase("write mihomo config", startup_started);
+    log_startup_phase(app, "start", "write mihomo config", 48, startup_started);
     let config_path = runtime.join("config.yaml");
     #[cfg(target_os = "macos")]
     let (pid, health_log, health_log_offset) = {
@@ -230,18 +259,36 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
         *state.core_process.lock().map_err(|_| "内核状态不可用")? = Some(child);
         (pid, health_log, health_log_offset)
     };
-    log_startup_phase("start mihomo process", startup_started);
+    emit_runtime_progress(
+        app,
+        "start",
+        "start mihomo process",
+        58,
+        "保护内核已启动，等待网络接管",
+        core_components(true, false, false, false),
+    );
+    log_startup_phase(app, "start", "start mihomo process", 58, startup_started);
     if let Err(reason) = dns_filter::start_dns_filter(state) {
         platform::kill_process(pid);
+        emit_runtime_failure(app, "start", "start DNS filter", &reason);
         return Err(reason);
     }
-    log_startup_phase("start DNS filter", startup_started);
+    emit_runtime_progress(
+        app,
+        "start",
+        "start DNS filter",
+        68,
+        "CleanWeb DNS 过滤器已启动",
+        core_components(true, false, true, false),
+    );
+    log_startup_phase(app, "start", "start DNS filter", 68, startup_started);
     if let Err(reason) = fs::write(runtime.join("mihomo.pid"), pid.to_string()).map_err(error) {
         platform::kill_process(pid);
         let _ = dns_filter::stop_dns_filter(state);
+        emit_runtime_failure(app, "start", "write mihomo pid", &reason);
         return Err(reason);
     }
-    log_startup_phase("write mihomo pid", startup_started);
+    log_startup_phase(app, "start", "write mihomo pid", 72, startup_started);
     let mut log = String::new();
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(100));
@@ -250,29 +297,32 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
             platform::kill_process(pid);
             let _ = dns_filter::stop_dns_filter(state);
             let _ = fs::remove_file(runtime.join("mihomo.pid"));
-            return Err(
-                last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo TUN 启动失败".into())
-            );
+            let reason =
+                last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo TUN 启动失败".into());
+            emit_runtime_failure(app, "start", "wait mihomo TUN ready", &reason);
+            return Err(reason);
         }
         if !platform::pid_running(pid) {
             let _ = dns_filter::stop_dns_filter(state);
             let _ = fs::remove_file(runtime.join("mihomo.pid"));
-            return Err(
-                last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into())
-            );
+            let reason =
+                last_log_lines(&health_log, 12).unwrap_or_else(|_| "Mihomo 启动后立即退出".into());
+            emit_runtime_failure(app, "start", "start mihomo process", &reason);
+            return Err(reason);
         }
         if tun_startup_ready(&log) {
             break;
         }
     }
-    log_startup_phase("wait mihomo TUN ready", startup_started);
+    log_startup_phase(app, "start", "wait mihomo TUN ready", 82, startup_started);
     if !tun_startup_ready(&log) {
         platform::kill_process(pid);
         let _ = dns_filter::stop_dns_filter(state);
         let _ = fs::remove_file(runtime.join("mihomo.pid"));
-        return Err(
-            last_log_lines(&health_log, 12).unwrap_or_else(|_| "等待 Mihomo TUN 就绪超时".into())
-        );
+        let reason =
+            last_log_lines(&health_log, 12).unwrap_or_else(|_| "等待 Mihomo TUN 就绪超时".into());
+        emit_runtime_failure(app, "start", "wait mihomo TUN ready", &reason);
+        return Err(reason);
     }
     if let Err(reason) = atomic_write(
         &runtime.join("active-config"),
@@ -283,11 +333,40 @@ fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> 
         platform::kill_process(pid);
         let _ = dns_filter::stop_dns_filter(state);
         let _ = fs::remove_file(runtime.join("mihomo.pid"));
+        emit_runtime_failure(app, "start", "write active config", &reason);
         return Err(reason);
     }
-    log_startup_phase("write active config", startup_started);
+    emit_runtime_progress(
+        app,
+        "start",
+        "write active config",
+        90,
+        "运行配置已记录",
+        core_components(true, true, true, false),
+    );
+    log_startup_phase(app, "start", "write active config", 90, startup_started);
     let status = core_status(state);
-    log_startup_phase("verify protection health", startup_started);
+    if let Ok(status) = &status {
+        emit_runtime_progress(
+            app,
+            "start",
+            "verify protection health",
+            if status.running { 100 } else { 96 },
+            if status.running {
+                "保护组件已全部就绪"
+            } else {
+                "保护组件仍在检测中"
+            },
+            status.components.clone(),
+        );
+    }
+    log_startup_phase(
+        app,
+        "start",
+        "verify protection health",
+        100,
+        startup_started,
+    );
     status
 }
 
@@ -813,7 +892,66 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
             .join("mihomo/config.yaml")
             .display()
             .to_string(),
+        components: core_components(
+            pid.is_some(),
+            active_config_present,
+            cleanweb_dns_ready,
+            mihomo_dns_ready,
+        ),
     })
+}
+
+fn core_components(
+    mihomo_running: bool,
+    active_config_present: bool,
+    cleanweb_dns_ready: bool,
+    mihomo_dns_ready: bool,
+) -> Vec<CoreComponentStatus> {
+    vec![
+        component_status(
+            "mihomo",
+            "Mihomo 内核",
+            mihomo_running,
+            "进程运行中",
+            "未检测到运行进程",
+        ),
+        component_status(
+            "active-config",
+            "运行配置",
+            active_config_present,
+            "已记录当前配置",
+            "缺少 active-config",
+        ),
+        component_status(
+            "cleanweb-dns",
+            "CleanWeb DNS",
+            cleanweb_dns_ready,
+            "127.0.0.1:19053 正常",
+            "19053 健康探测失败",
+        ),
+        component_status(
+            "mihomo-dns",
+            "本机 DNS 接管",
+            mihomo_dns_ready,
+            "127.0.0.1:53 正常",
+            "53 端口健康探测失败",
+        ),
+    ]
+}
+
+fn component_status(
+    id: &str,
+    label: &str,
+    healthy: bool,
+    ready_detail: &str,
+    failed_detail: &str,
+) -> CoreComponentStatus {
+    CoreComponentStatus {
+        id: id.into(),
+        label: label.into(),
+        status: if healthy { "ready" } else { "stopped" }.into(),
+        detail: if healthy { ready_detail } else { failed_detail }.into(),
+    }
 }
 
 fn should_recover_incomplete_protection_state(
@@ -1693,7 +1831,44 @@ fn read_log_since(path: &Path, offset: u64) -> io::Result<String> {
     Ok(text)
 }
 
-fn log_startup_phase(phase: &str, started: Instant) {
+fn emit_runtime_progress(
+    app: &AppHandle,
+    operation: &str,
+    phase: &str,
+    percent: u8,
+    message: &str,
+    components: Vec<CoreComponentStatus>,
+) {
+    let _ = app.emit(
+        RUNTIME_PROGRESS_EVENT,
+        RuntimeProgress {
+            operation: operation.into(),
+            phase: phase.into(),
+            percent,
+            message: message.into(),
+            components,
+        },
+    );
+}
+
+fn emit_runtime_failure(app: &AppHandle, operation: &str, phase: &str, reason: &str) {
+    emit_runtime_progress(
+        app,
+        operation,
+        phase,
+        100,
+        reason.lines().next().unwrap_or("保护启动失败"),
+        core_components(false, false, false, false),
+    );
+}
+
+fn log_startup_phase(
+    _app: &AppHandle,
+    _operation: &str,
+    phase: &str,
+    _percent: u8,
+    started: Instant,
+) {
     eprintln!(
         "CleanWeb protection startup: {phase} after {}ms",
         started.elapsed().as_millis()
@@ -2274,6 +2449,18 @@ mod tests {
         assert!(should_recover_incomplete_protection_state(
             &state, true, false
         ));
+    }
+
+    #[test]
+    fn reports_runtime_component_health() {
+        let components = core_components(true, true, true, false);
+
+        assert_eq!(components.len(), 4);
+        assert_eq!(components[0].label, "Mihomo 内核");
+        assert_eq!(components[0].status, "ready");
+        assert_eq!(components[3].label, "本机 DNS 接管");
+        assert_eq!(components[3].status, "stopped");
+        assert_eq!(components[3].detail, "53 端口健康探测失败");
     }
 
     #[test]

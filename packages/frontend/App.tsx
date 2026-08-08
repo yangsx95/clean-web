@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import jsQR from "jsqr";
 import { Activity, BookOpen, ChevronDown, ChevronRight, Database, Download, Gauge, ListFilter, LockKeyhole, MonitorCheck, Network, Pencil, Plus, RefreshCw, ScanQrCode, Search, Settings, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import * as backend from "./backend";
+import { RuntimeComponentStatus } from "./RuntimeComponentStatus";
 
 type ProxyImportMode = "subscription" | "node" | "file" | "qr" | "clipboard";
 type AppDialog = "unlock" | "rules" | "editRuleSubscription" | "proxy" | "custom" | "quit" | null;
@@ -93,6 +94,7 @@ const busyScope = {
   rule: (id: string) => `rule:${id}`,
 };
 const emptyAccessLogStats: backend.AccessLogStats = { block:0, allow:0, warning:0, total:0, todayBlock:0, todayAllow:0, todayWarning:0, todayTotal:0 };
+const emptyAccessLogDailyStats: backend.AccessLogDailyStats[] = [];
 
 function useScopedOperations() {
   const [busyScopes, setBusyScopes] = useState<Record<string, true>>({});
@@ -209,9 +211,11 @@ export function App() {
   const [runtimeError,setRuntimeError]=useState<ErrorNotice|null>(null);
   const { anyBusy, isBusy, runScopedOperation } = useScopedOperations();
   const [policyApplyStatus,setPolicyApplyStatus]=useState<PolicyApplyStatus|null>(null);
+  const [runtimeProgress,setRuntimeProgress]=useState<backend.RuntimeProgress|null>(null);
   const policyStatusTimerRef=useRef<number|null>(null);
   const [accessLogs,setAccessLogs]=useState<backend.AccessLog[]>([]);
   const [accessLogStats,setAccessLogStats]=useState<backend.AccessLogStats>(emptyAccessLogStats);
+  const [accessLogDailyStats,setAccessLogDailyStats]=useState<backend.AccessLogDailyStats[]>(emptyAccessLogDailyStats);
   const [accessLogDecisionFilter,setAccessLogDecisionFilter]=useState<AccessLogDecisionFilter>("all");
   const [accessLogSearch,setAccessLogSearch]=useState("");
   const debouncedAccessLogSearch=useDebouncedValue(accessLogSearch,ACCESS_LOG_SEARCH_DEBOUNCE_MS);
@@ -230,23 +234,24 @@ export function App() {
   const hideToBackground = async () => { setDialog(null); await backend.hideMainWindow(); };
   const quitApp = async (password: string) => { await backend.confirmedQuit(password); setDialog(null); };
   const clearPolicyStatusTimer=()=>{if(policyStatusTimerRef.current!=null){window.clearTimeout(policyStatusTimerRef.current);policyStatusTimerRef.current=null;}};
-  const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();setPolicyApplyStatus(status);if(status.state==="applied"||status.state==="failed"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);policyStatusTimerRef.current=null;},2600);}};
+  const showPolicyStatus=(status:PolicyApplyStatus)=>{clearPolicyStatusTimer();if(status.state==="applying")setRuntimeProgress(null);setPolicyApplyStatus(status);if(status.state==="applied"||status.state==="failed"){policyStatusTimerRef.current=window.setTimeout(()=>{setPolicyApplyStatus(null);setRuntimeProgress(null);policyStatusTimerRef.current=null;},2600);}};
   const showPolicyFailure=()=>showPolicyStatus({state:"failed",message:"操作失败，请查看错误详情"});
-  const dismissPolicyStatus=()=>{clearPolicyStatusTimer();setPolicyApplyStatus(null);};
+  const dismissPolicyStatus=()=>{clearPolicyStatusTimer();setPolicyApplyStatus(null);setRuntimeProgress(null);};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;let checking=false;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{if(checking)return;checking=true;void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{}).finally(()=>{checking=false;});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();const timer=window.setInterval(showPendingQuitDialog,500);window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;window.clearInterval(timer);if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
+  useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;void backend.onRuntimeProgress(progress=>{if(cancelled)return;setRuntimeProgress(progress);setPolicyApplyStatus(previous=>previous?.state==="applying"?{...previous,message:progress.message}:previous);setCoreStatus(previous=>previous?{...previous,components:progress.components}:previous);}).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[]);
   useEffect(() => { let cancelled=false; void (async () => {
     try {
-      const [bootstrap,current,core,publicStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getBrowserPolicyStatus()]);
+      const [bootstrap,current,core,publicStats,publicDailyStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getPublicAccessLogDailyStats(),backend.getBrowserPolicyStatus()]);
       if (cancelled) return;
-      setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);setBrowserPolicyStatus(browserPolicies);
+      setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);setAccessLogDailyStats(publicDailyStats);setBrowserPolicyStatus(browserPolicies);
       const storedToken = backend.getStoredSessionToken();
       if (storedToken) {
         try {
           const result = await backend.validateSession(storedToken);
-          const [logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
+          const [logs,stats,dailyStats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.getAccessLogDailyStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);
           if (cancelled) return;
-          setSessionToken(result.sessionToken);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules);setLocked(false);
+          setSessionToken(result.sessionToken);setAccessLogs(logs);setAccessLogStats(stats);setAccessLogDailyStats(dailyStats);setSubscriptions(saved);setParentRules(rules);setLocked(false);
         } catch {
           backend.clearStoredSessionToken();
         }
@@ -258,6 +263,7 @@ export function App() {
         setSettings(structuredClone(backend.defaultSettings));
         setCoreStatus({running:false,controller:"127.0.0.1:19090",configPath:"unavailable"});
         setAccessLogStats(emptyAccessLogStats);
+        setAccessLogDailyStats(emptyAccessLogDailyStats);
         setBrowserPolicyStatus(null);
       }
     } finally {
@@ -266,8 +272,8 @@ export function App() {
   })(); return()=>{cancelled=true;}; }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(status=>{setCoreStatus(status);setRuntimeError(previous=>previous?.message==="CleanWeb 状态刷新失败"?null:previous);}).catch(reason=>setRuntimeError(toErrorNotice(reason,"CleanWeb 状态刷新失败"))),5000);return()=>window.clearInterval(timer);},[]);
   useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(count=>count>0?reloadRuntime(sessionToken,{silent:true}):undefined).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
-  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
-  const handleLock = useCallback(async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);setProxyInfoCache({}); setLocked(true); }, [sessionToken]);
+  const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,dailyStats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.getAccessLogDailyStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setAccessLogDailyStats(dailyStats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
+  const handleLock = useCallback(async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);setAccessLogDailyStats(emptyAccessLogDailyStats);setProxyInfoCache({}); setLocked(true); }, [sessionToken]);
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
     if(!options.silent)showPolicyStatus({state:"applying",message:options.applyingMessage??"正在应用网络策略…"});
     try{
@@ -350,7 +356,7 @@ export function App() {
       }
     });
   };
-  const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);});};
+  const clearLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.logs, async()=>{await backend.clearAccessLogs(sessionToken);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);setAccessLogDailyStats(emptyAccessLogDailyStats);});};
   const exportLogs=async()=>{if(!sessionToken){setDialog("unlock");return;}setRuntimeError(null);await runScopedOperation(busyScope.logs, async()=>{showPolicyStatus({state:"applying",message:"正在导出访问日志…"});try{const path=await backend.saveAccessLogsCsv(sessionToken);if(path)showPolicyStatus({state:"applied",message:"访问日志已导出"});else showPolicyStatus({state:"applied",message:"已取消导出"});}catch(reason){const notice=toErrorNotice(reason,"访问日志导出失败，请稍后重试");const exportNotice={message:"访问日志导出失败，请稍后重试",detail:notice.detail??notice.message};showPolicyFailure();setRuntimeError(exportNotice);}});};
   const createParentRule=async(input:backend.NewParentRule)=>{if(!sessionToken)throw new Error("请先解锁管理台");await runScopedOperation(busyScope.createRule, async()=>{setRuntimeError(null);showPolicyStatus({state:"applying",message:"正在保存并应用规则…"});await backend.createParentRule(sessionToken,input);setParentRules(await backend.listParentRules(sessionToken));setDialog(null);try{await reloadRuntime(sessionToken);}catch(reason){const notice=toErrorNotice(reason,"规则已添加，但保护配置重载失败");setRuntimeError({message:"规则已添加，但保护配置重载失败",detail:notice.detail??notice.message});}});};
   const toggleParentRule=async(id:string,enabled:boolean)=>{if(!sessionToken){setDialog("unlock");return;}await runScopedOperation(busyScope.rule(id), async()=>{showPolicyStatus({state:"applying",message:"正在更新规则状态…"});await backend.setParentRuleEnabled(sessionToken,id,enabled);setParentRules(await backend.listParentRules(sessionToken));await reloadRuntime(sessionToken);});};
@@ -397,8 +403,8 @@ export function App() {
       if(refreshing)return;
       refreshing=true;
       void backend.syncAccessLogs().catch(()=>0)
-        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,decision,search,contentPage==="overview"?ACCESS_LOG_OVERVIEW_LIMIT:ACCESS_LOG_PAGE_LIMIT),backend.getAccessLogStats(sessionToken)]))
-        .then(([logs,stats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);}})
+        .then(()=>Promise.all([backend.listAccessLogs(sessionToken,decision,search,contentPage==="overview"?ACCESS_LOG_OVERVIEW_LIMIT:ACCESS_LOG_PAGE_LIMIT),backend.getAccessLogStats(sessionToken),backend.getAccessLogDailyStats(sessionToken)]))
+        .then(([logs,stats,dailyStats])=>{if(!cancelled){setAccessLogs(logs);setAccessLogStats(stats);setAccessLogDailyStats(dailyStats);}})
         .catch(()=>undefined)
         .finally(()=>{refreshing=false;});
     };
@@ -415,8 +421,8 @@ export function App() {
     const refresh=()=>{
       if(refreshing)return;
       refreshing=true;
-      void backend.getPublicAccessLogStats()
-        .then(stats=>{if(!cancelled)setAccessLogStats(stats);})
+      void Promise.all([backend.getPublicAccessLogStats(),backend.getPublicAccessLogDailyStats()])
+        .then(([stats,dailyStats])=>{if(!cancelled){setAccessLogStats(stats);setAccessLogDailyStats(dailyStats);}})
         .catch(()=>undefined)
         .finally(()=>{refreshing=false;});
     };
@@ -429,7 +435,7 @@ export function App() {
   if (locked) return <LockedStatus coreStatus={coreStatus} stats={accessLogStats} runtimeError={runtimeError} needsSetup={needsSetup} onSetupComplete={() => setNeedsSetup(false)} onUnlock={handleUnlock} dialog={dialog} setDialog={setDialog} onDismissRuntimeError={()=>setRuntimeError(null)} onHideToBackground={hideToBackground} onQuitApp={quitApp} />;
   return <div className="shell">
     <AppShellSidebar page={page} locked={locked} onNavigate={navigatePage} onUnlock={openUnlockDialog} onLock={handleLock} />
-    <AppMainContent contentPage={contentPage} titles={titles} settings={settings} coreStatus={coreStatus} runtimeError={runtimeError} policyApplyStatus={policyApplyStatus} accessLogs={accessLogs} accessLogStats={accessLogStats} accessLogDecisionFilter={accessLogDecisionFilter} accessLogSearch={accessLogSearch} parentRules={parentRules} ruleSubscriptions={ruleSubscriptions} proxySubscriptions={proxySubscriptions} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} sessionToken={sessionToken} locked={locked} browserPolicyStatus={browserPolicyStatus} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} onDismissRuntimeError={()=>setRuntimeError(null)} onDismissPolicyStatus={dismissPolicyStatus} onToggle={toggle} onNavigate={navigatePage} onAddOverviewRule={() => { setParentRuleMode("block"); setDialog("custom"); }} onRefreshSubscription={refreshSubscription} onRefreshDueSubscriptions={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDeleteSubscription={removeSubscription} onEditSubscription={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAddRuleSubscription={() => requestAction("rules")} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClearLogs={clearLogs} onExportLogs={exportLogs} onRetention={(value) => setValue("log_retention", value)} onAddProxy={(mode) => requestAction("proxy", mode)} onAutomaticProxy={()=>setValue("automatic_node_selection","true")} onSelectProxyNode={selectProxyNode} onApplyBrowserPolicies={applyBrowserPolicies} />
+    <AppMainContent contentPage={contentPage} titles={titles} settings={settings} coreStatus={coreStatus} runtimeError={runtimeError} policyApplyStatus={policyApplyStatus} runtimeProgress={runtimeProgress} accessLogs={accessLogs} accessLogStats={accessLogStats} accessLogDailyStats={accessLogDailyStats} accessLogDecisionFilter={accessLogDecisionFilter} accessLogSearch={accessLogSearch} parentRules={parentRules} ruleSubscriptions={ruleSubscriptions} proxySubscriptions={proxySubscriptions} refreshingId={refreshingId} refreshProgress={subscriptionProgress} isBusy={isBusy} sessionToken={sessionToken} locked={locked} browserPolicyStatus={browserPolicyStatus} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} onDismissRuntimeError={()=>setRuntimeError(null)} onDismissPolicyStatus={dismissPolicyStatus} onToggle={toggle} onNavigate={navigatePage} onAddOverviewRule={() => { setParentRuleMode("block"); setDialog("custom"); }} onRefreshSubscription={refreshSubscription} onRefreshDueSubscriptions={refreshDueSubscriptions} onToggleParentRule={toggleParentRule} onDeleteParentRule={deleteParentRule} onAddParentRule={(mode)=>{setParentRuleMode(mode);locked?setDialog("unlock"):setDialog("custom");}} onToggleSubscription={toggleSubscription} onDeleteSubscription={removeSubscription} onEditSubscription={(item)=>{setEditingSubscription(item);setDialog("editRuleSubscription");}} onAddRuleSubscription={() => requestAction("rules")} onDecisionFilterChange={setAccessLogDecisionFilter} onSearchChange={setAccessLogSearch} onClearLogs={clearLogs} onExportLogs={exportLogs} onRetention={(value) => setValue("log_retention", value)} onAddProxy={(mode) => requestAction("proxy", mode)} onAutomaticProxy={()=>setValue("automatic_node_selection","true")} onSelectProxyNode={selectProxyNode} onApplyBrowserPolicies={applyBrowserPolicies} />
     {needsSetup && <SetupDialog onComplete={() => setNeedsSetup(false)} />}
     {dialog === "unlock" && <UnlockDialog onClose={() => setDialog(null)} onUnlock={handleUnlock} />}
     {dialog === "rules" && <SubscriptionDialog kind="规则" onClose={() => setDialog(null)} onSubmit={createSubscription} />}
@@ -456,15 +462,17 @@ const AppShellSidebar = memo(function AppShellSidebar({ page, locked, onNavigate
   </aside>;
 });
 
-function AppMainContent({ contentPage, titles, settings, coreStatus, runtimeError, policyApplyStatus, accessLogs, accessLogStats, accessLogDecisionFilter, accessLogSearch, parentRules, ruleSubscriptions, proxySubscriptions, refreshingId, refreshProgress, isBusy, sessionToken, locked, browserPolicyStatus, proxyInfoCache, setProxyInfoCache, onDismissRuntimeError, onDismissPolicyStatus, onToggle, onNavigate, onAddOverviewRule, onRefreshSubscription, onRefreshDueSubscriptions, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDeleteSubscription, onEditSubscription, onAddRuleSubscription, onDecisionFilterChange, onSearchChange, onClearLogs, onExportLogs, onRetention, onAddProxy, onAutomaticProxy, onSelectProxyNode, onApplyBrowserPolicies }: {
+function AppMainContent({ contentPage, titles, settings, coreStatus, runtimeError, policyApplyStatus, runtimeProgress, accessLogs, accessLogStats, accessLogDailyStats, accessLogDecisionFilter, accessLogSearch, parentRules, ruleSubscriptions, proxySubscriptions, refreshingId, refreshProgress, isBusy, sessionToken, locked, browserPolicyStatus, proxyInfoCache, setProxyInfoCache, onDismissRuntimeError, onDismissPolicyStatus, onToggle, onNavigate, onAddOverviewRule, onRefreshSubscription, onRefreshDueSubscriptions, onToggleParentRule, onDeleteParentRule, onAddParentRule, onToggleSubscription, onDeleteSubscription, onEditSubscription, onAddRuleSubscription, onDecisionFilterChange, onSearchChange, onClearLogs, onExportLogs, onRetention, onAddProxy, onAutomaticProxy, onSelectProxyNode, onApplyBrowserPolicies }: {
   contentPage:AppPage;
   titles:Record<AppPage,string>;
   settings:backend.Settings;
   coreStatus:backend.CoreStatus|null;
   runtimeError:ErrorNotice|null;
   policyApplyStatus:PolicyApplyStatus|null;
+  runtimeProgress:backend.RuntimeProgress|null;
   accessLogs:backend.AccessLog[];
   accessLogStats:backend.AccessLogStats;
+  accessLogDailyStats:backend.AccessLogDailyStats[];
   accessLogDecisionFilter:AccessLogDecisionFilter;
   accessLogSearch:string;
   parentRules:backend.ParentRule[];
@@ -505,21 +513,26 @@ function AppMainContent({ contentPage, titles, settings, coreStatus, runtimeErro
   return <main>
     <header><div><span className="eyebrow">{contentPage === "overview" ? "网络保护" : contentPage === "logs" ? "本地隐私日志" : contentPage === "proxy" ? "受控代理层" : contentPage === "settings" ? "管理员设置" : "策略规则模型"}</span><h1>{contentPage === "overview" && coreStatus?.running !== true ? settings.protectionEnabled ? "保护需要恢复" : "保护未接管" : titles[contentPage]}</h1></div></header>
     {runtimeError&&<ErrorNoticeView notice={runtimeError} onClose={onDismissRuntimeError}/>}
-    {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} onClose={onDismissPolicyStatus}/>}
+    {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} runtimeProgress={runtimeProgress} coreStatus={coreStatus} onClose={onDismissPolicyStatus}/>}
     {contentPage === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={onToggle} onOpenLogs={() => onNavigate("logs")} onOpenRules={() => onNavigate("rules")} onAddRule={onAddOverviewRule} />}
     {contentPage === "rules" && <Rules parentRules={parentRules} subscriptions={ruleSubscriptions} settings={settings} refreshingId={refreshingId} refreshProgress={refreshProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={onRefreshSubscription} onRefreshDue={onRefreshDueSubscriptions} onToggleParentRule={onToggleParentRule} onDeleteParentRule={onDeleteParentRule} onAddParentRule={onAddParentRule} onToggleSubscription={onToggleSubscription} onDelete={onDeleteSubscription} onEdit={onEditSubscription} onAdd={onAddRuleSubscription} />}
-    {contentPage === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} settings={settings} onDecisionFilterChange={onDecisionFilterChange} onSearchChange={onSearchChange} onClear={onClearLogs} onExport={onExportLogs} onToggle={onToggle} onRetention={onRetention} />}
+    {contentPage === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} dailyStats={accessLogDailyStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} onDecisionFilterChange={onDecisionFilterChange} onSearchChange={onSearchChange} onClear={onClearLogs} onExport={onExportLogs} />}
     {contentPage === "proxy" && <Proxy subscriptions={proxySubscriptions} refreshingId={refreshingId} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} isBusy={isBusy} onRefresh={onRefreshSubscription} onToggleSubscription={onToggleSubscription} onDelete={onDeleteSubscription} onAdd={onAddProxy} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={onAutomaticProxy} onSelectNode={onSelectProxyNode} sessionToken={sessionToken} />}
     {contentPage === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={onToggle} onRetention={onRetention} onApplyBrowserPolicies={onApplyBrowserPolicies} />}
   </main>;
 }
 
-function PolicyApplyBanner({status,onClose}:{status:PolicyApplyStatus;onClose?:()=>void}) {
+function PolicyApplyBanner({status,runtimeProgress,coreStatus,onClose}:{status:PolicyApplyStatus;runtimeProgress:backend.RuntimeProgress|null;coreStatus:backend.CoreStatus|null;onClose?:()=>void}) {
   const label = status.state === "applying" ? "应用中" : status.state === "applied" ? "已生效" : "应用失败";
+  const progressCoreStatus = runtimeProgress ? { ...(coreStatus ?? { running:false, controller:"127.0.0.1:19090", configPath:"unavailable" }), components: runtimeProgress.components } : coreStatus;
+  const showRuntimeProgress = status.state === "applying" && runtimeProgress?.operation === "start";
   return <div className={`policy-apply-banner ${status.state}`} role={status.state === "failed" ? "alert" : "status"} aria-live="polite">
-    <span className="policy-apply-dot" />
-    <b>{label}</b>
-    <span>{status.message}</span>
+    <div className="policy-apply-summary"><span className="policy-apply-dot" /><b>{label}</b><span>{status.message}</span></div>
+    {showRuntimeProgress && <div className="runtime-progress-wrap">
+      <div className="runtime-progress-meta"><span>{runtimeProgress.phase}</span><b>{runtimeProgress.percent}%</b></div>
+      <div className="runtime-progress-bar" aria-hidden="true"><span style={{width:`${Math.max(0,Math.min(100,runtimeProgress.percent))}%`}} /></div>
+      <RuntimeComponentStatus coreStatus={progressCoreStatus} compact pending />
+    </div>}
     {onClose&&<button type="button" className="notice-close" aria-label="关闭应用状态提示" onClick={onClose}><X size={14}/></button>}
   </div>;
 }
@@ -631,6 +644,7 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
         <article><span>今日放行</span><strong>{compactCount(logStats.todayAllow)}</strong><small>累计 {compactCount(logStats.allow)} 次</small></article>
         <article><span>今日请求</span><strong>{compactCount(logStats.todayTotal)}</strong><small>累计 {compactCount(logStats.total)} 条</small></article>
       </section>
+      <RuntimeComponentStatus coreStatus={coreStatus} />
       <section className="cw-dashboard-grid">
         <article className="cw-panel quick-policy-panel">
           <div className="cw-panel-head"><h3>快捷开关</h3><span>{enabledControls} 项启用</span></div>
@@ -683,14 +697,12 @@ function MiniLogTarget({ target, repeat }: { target:string; repeat?:string|null 
   return <b className="mini-log-target" title={target}><span>{target}</span>{repeat&&<span className="log-repeat">{repeat}</span>}</b>;
 }
 
-function LogsPage({ locked, logs, logStats, decisionFilter, search, isBusy, settings, onDecisionFilterChange, onSearchChange, onClear, onExport, onToggle, onRetention }: { locked:boolean; logs:backend.AccessLog[]; logStats:backend.AccessLogStats; decisionFilter:AccessLogDecisionFilter; search:string; isBusy:(scope:string)=>boolean; settings:backend.Settings; onDecisionFilterChange:(value:AccessLogDecisionFilter)=>void; onSearchChange:(value:string)=>void; onClear:()=>Promise<void>; onExport:()=>Promise<void>; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void> }) {
-  const retentionOptions = [{ value:"7d", label:"7 天" }, { value:"30d", label:"30 天" }, { value:"90d", label:"90 天" }, { value:"forever", label:"永久" }];
+function LogsPage({ locked, logs, logStats, dailyStats, decisionFilter, search, isBusy, onDecisionFilterChange, onSearchChange, onClear, onExport }: { locked:boolean; logs:backend.AccessLog[]; logStats:backend.AccessLogStats; dailyStats:backend.AccessLogDailyStats[]; decisionFilter:AccessLogDecisionFilter; search:string; isBusy:(scope:string)=>boolean; onDecisionFilterChange:(value:AccessLogDecisionFilter)=>void; onSearchChange:(value:string)=>void; onClear:()=>Promise<void>; onExport:()=>Promise<void> }) {
   return <>
     <section className="cw-page-intro"><p>查看仅保存在本机的最终网络决策。日志支持筛选、导出 CSV、清空和按策略保留。</p><div><button className="secondary" disabled={isBusy(busyScope.logs)} onClick={()=>void onExport()}>导出 CSV</button><button className="primary danger" disabled={isBusy(busyScope.logs)} onClick={()=>void onClear()}>清空日志</button></div></section>
     <section className="cw-logs-layout">
       <div className="cw-log-side">
-        <article className="cw-dark-card"><h3>今日处理</h3><strong>{compactCount(logStats.todayTotal)}</strong><span>条最终决策已记录</span><div><b>{compactCount(logStats.todayBlock)}</b> 拦截 · <b>{compactCount(logStats.todayAllow)}</b> 放行 · <b>{compactCount(logStats.todayWarning)}</b> 警告</div><span>累计 {compactCount(logStats.total)} 条 · {compactCount(logStats.block)} 次拦截</span></article>
-        <article className="cw-panel privacy-panel"><h3>隐私控制</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><div className="retention-tabs" role="group" aria-label="日志保留时间">{retentionOptions.map((option)=><button key={option.value} className={settings.logRetention===option.value?"active":""} disabled={isBusy(busyScope.setting("log_retention"))} onClick={()=>void onRetention(option.value)}>保留期：{option.label}</button>)}</div><p>诊断包导出是独立功能，默认会清除域名、IP、用户名、订阅地址、节点名称和凭据。</p></article>
+        <AccessLogTrendChart stats={logStats} dailyStats={dailyStats} />
       </div>
       <article className="cw-log-table">
         <div className="cw-panel-head"><h3>最终决策</h3><div className="filter-pills" role="group" aria-label="日志筛选"><button className={decisionFilter==="all"?"active":""} onClick={()=>onDecisionFilterChange("all")}>全部</button><button className={decisionFilter==="block"?"active":""} onClick={()=>onDecisionFilterChange("block")}>已拦截</button><button className={decisionFilter==="warning"?"active":""} onClick={()=>onDecisionFilterChange("warning")}>未知 IP</button></div></div>
@@ -705,6 +717,39 @@ function LogsPage({ locked, logs, logStats, decisionFilter, search, isBusy, sett
       </article>
     </section>
   </>;
+}
+
+function AccessLogTrendChart({ stats, dailyStats }: { stats:backend.AccessLogStats; dailyStats:backend.AccessLogDailyStats[] }) {
+  const days = dailyStats.length ? dailyStats : Array.from({length:7},(_,index)=>({date:`empty-${index}`,label:"--",allow:0,block:0,warning:0,total:0}));
+  const max = Math.max(1, ...days.map(item => item.total));
+  const sevenDayTotal = days.reduce((sum,item)=>sum+item.total,0);
+  const sevenDayBlock = days.reduce((sum,item)=>sum+item.block,0);
+  return <article className="cw-dark-card access-log-chart-card" aria-label="最近七天访问日志趋势">
+    <div className="access-log-chart-head"><div><h3>最近七天</h3><span>每日最终网络决策变化</span></div><strong>{compactCount(stats.todayTotal)}</strong></div>
+    <div className="access-log-bar-chart">
+      {days.map(item => {
+        const totalHeight = Math.max(8, Math.round((item.total / max) * 100));
+        const dayTotal = Math.max(1, item.total);
+        const allowHeight = Math.round((item.allow / dayTotal) * 100);
+        const blockHeight = Math.round((item.block / dayTotal) * 100);
+        const warningHeight = Math.max(0, 100 - allowHeight - blockHeight);
+        return <div className="access-log-bar" key={item.date} title={`${item.label} · ${compactCount(item.total)} 条`}>
+          <div className="access-log-bar-track" style={{height:`${totalHeight}%`}}>
+            <span className="allow" style={{height:`${allowHeight}%`}} />
+            <span className="warning" style={{height:`${warningHeight}%`}} />
+            <span className="block" style={{height:`${blockHeight}%`}} />
+          </div>
+          <b>{compactCount(item.total)}</b>
+          <small>{item.label}</small>
+        </div>;
+      })}
+    </div>
+    <div className="access-log-chart-foot">
+      <span><b>{compactCount(sevenDayTotal)}</b> 七天请求</span>
+      <span><b>{compactCount(sevenDayBlock)}</b> 七天拦截</span>
+      <span><b>{compactCount(stats.todayTotal)}</b> 今日请求</span>
+    </div>
+  </article>;
 }
 
 function SampleLogs() {
@@ -744,7 +789,7 @@ function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onReten
     <section className="cw-settings-layout">
       {tab==="protection"&&<article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="基于高风险后缀和关键词，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>}
       {tab==="browser"&&<BrowserPolicyPanel settings={settings} status={browserPolicyStatus} busy={isBusy(busyScope.setting("browser_policies"))} isBusy={isBusy} onToggle={onToggle} onApply={onApplyBrowserPolicies}/>}
-      {tab==="privacy"&&<article className="cw-panel privacy-panel settings-privacy-panel"><h3>日志隐私</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><div className="retention-tabs" role="group" aria-label="日志保留时间">{retentionOptions.map((option)=><button key={option.value} className={settings.logRetention===option.value?"active":""} disabled={isBusy(busyScope.setting("log_retention"))} onClick={()=>void onRetention(option.value)}>保留期：{option.label}</button>)}</div><p>访问日志页也可以管理日志开关、保留期、导出和清空；诊断包导出仍会默认脱敏。</p></article>}
+      {tab==="privacy"&&<article className="cw-panel privacy-panel settings-privacy-panel"><h3>日志隐私</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><div className="retention-tabs" role="group" aria-label="日志保留时间">{retentionOptions.map((option)=><button key={option.value} className={settings.logRetention===option.value?"active":""} disabled={isBusy(busyScope.setting("log_retention"))} onClick={()=>void onRetention(option.value)}>{option.label}</button>)}</div><p>访问日志页也可以管理日志开关、保留期、导出和清空；诊断包导出仍会默认脱敏。</p></article>}
     </section>
   </>;
 }
@@ -999,7 +1044,7 @@ function Rules({ parentRules, subscriptions, settings, refreshingId, refreshProg
       {expanded&&<div className="builtin-rule-group-body">{group.sources.map(renderBuiltinRow)}</div>}
     </section>;
   };
-  return <>
+  return <div className="rules-page">
     <section className="rules-tabs" role="tablist" aria-label="规则管理分类">
       <button role="tab" aria-selected={tab==="block"} className={tab==="block"?"active":""} onClick={()=>setTab("block")}>访问拦截 <span>{blockRules.length}</span></button>
       <button role="tab" aria-selected={tab==="route"} className={tab==="route"?"active":""} onClick={()=>setTab("route")}>路由设置 <span>{routeRules.length}</span></button>
@@ -1017,7 +1062,7 @@ function Rules({ parentRules, subscriptions, settings, refreshingId, refreshProg
       {builtinGroups.map(renderBuiltinGroup)}
     </section></>}
     {tab==="external"&&<><section className="toolbar"><div><h2>外部订阅</h2><p>用户导入的第三方规则来源，更新失败时保留最后一次有效规则。</p></div><button className="primary" disabled={isBusy(busyScope.createSubscription)} onClick={onAdd}><Plus size={16}/>添加订阅</button></section>
-    <section className="table-card">
+    <section className="table-card external-rules-table">
       <div className="table-head"><span>名称</span><span>格式</span><span>状态</span><span>操作</span></div>
       {externalSubscriptions.length === 0 && <div className="table-empty">尚未添加外部规则订阅</div>}
       {externalSubscriptions.map((item) => {
@@ -1049,7 +1094,7 @@ function Rules({ parentRules, subscriptions, settings, refreshingId, refreshProg
         </div>:<div className="table-empty">当前启用规则没有命中该目标，将进入默认放行/路由逻辑。</div>}
       </div>}
     </section></>}
-  </>;
+  </div>;
 }
 
 function DiagnosticRuleCard({ match, primary=false, matchKindLabel, ruleActionLabel }: { match:backend.RuleDiagnosticMatch; primary?:boolean; matchKindLabel:(kind:string)=>string; ruleActionLabel:(action:backend.ParentRule["action"])=>string }) {
