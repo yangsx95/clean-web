@@ -346,22 +346,51 @@ fn resolve_safe_search_target_answers(
 fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, std::io::Error> {
     let mut response = [0_u8; UDP_PACKET_SIZE];
     let mut last_error = None;
+    let mut last_negative_response = None;
     for upstream in upstreams {
         let upstream_socket = UdpSocket::bind("0.0.0.0:0")?;
-        bind_upstream_socket_to_default_interface(&upstream_socket)?;
+        bind_upstream_socket_to_upstream_interface(&upstream_socket, upstream)?;
         upstream_socket.set_read_timeout(Some(Duration::from_secs(2)))?;
         upstream_socket.send_to(packet, upstream)?;
         match upstream_socket.recv_from(&mut response) {
-            Ok((len, _)) => return Ok(response[..len].to_vec()),
+            Ok((len, _)) => {
+                let packet = response[..len].to_vec();
+                if dns_response_should_try_next_upstream(&packet) {
+                    last_negative_response = Some(packet);
+                    continue;
+                }
+                return Ok(packet);
+            }
             Err(error) => last_error = Some(error),
         }
+    }
+    if let Some(packet) = last_negative_response {
+        return Ok(packet);
     }
     Err(last_error.unwrap_or_else(|| std::io::Error::other("DNS upstream unavailable")))
 }
 
+fn dns_response_should_try_next_upstream(packet: &[u8]) -> bool {
+    let Ok(message) = Message::from_vec(packet) else {
+        return false;
+    };
+    matches!(
+        message.metadata.response_code,
+        ResponseCode::NXDomain | ResponseCode::ServFail | ResponseCode::Refused
+    ) || (message.metadata.response_code == ResponseCode::NoError && message.answers.is_empty())
+}
+
 #[cfg(target_os = "macos")]
-fn bind_upstream_socket_to_default_interface(socket: &UdpSocket) -> Result<(), std::io::Error> {
-    let Some(interface) = platform::default_route_interface() else {
+fn bind_upstream_socket_to_upstream_interface(
+    socket: &UdpSocket,
+    upstream: &str,
+) -> Result<(), std::io::Error> {
+    let Some(interface) = upstream
+        .parse::<SocketAddr>()
+        .ok()
+        .and_then(|address| platform::route_interface_for_address(address.ip()))
+        .or_else(platform::default_route_interface)
+    else {
         return Ok(());
     };
     let interface = CString::new(interface)
@@ -388,7 +417,10 @@ fn bind_upstream_socket_to_default_interface(socket: &UdpSocket) -> Result<(), s
 }
 
 #[cfg(not(target_os = "macos"))]
-fn bind_upstream_socket_to_default_interface(_socket: &UdpSocket) -> Result<(), std::io::Error> {
+fn bind_upstream_socket_to_upstream_interface(
+    _socket: &UdpSocket,
+    _upstream: &str,
+) -> Result<(), std::io::Error> {
     Ok(())
 }
 
@@ -979,6 +1011,52 @@ mod tests {
         assert_eq!(message.answers[1].data.to_string(), "216.239.38.120");
     }
 
+    #[test]
+    fn dns_forwarding_tries_next_upstream_after_nxdomain() {
+        let public_upstream = spawn_dns_negative_upstream(ResponseCode::NXDomain);
+        let private_upstream = spawn_dns_upstream(
+            "gitlab.internal.test.",
+            RecordType::A,
+            RData::A(A(Ipv4Addr::new(10, 8, 0, 42))),
+        );
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("gitlab.internal.test.").unwrap(),
+            RecordType::A,
+        ));
+
+        let response = forward_dns_packet(
+            &request.to_vec().unwrap(),
+            &[public_upstream, private_upstream],
+        )
+        .unwrap();
+        let message = Message::from_vec(&response).unwrap();
+
+        assert_eq!(message.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(message.answers.len(), 1);
+        assert_eq!(message.answers[0].data.to_string(), "10.8.0.42");
+    }
+
+    #[test]
+    fn dns_forwarding_returns_negative_response_when_all_upstreams_are_negative() {
+        let first_upstream = spawn_dns_negative_upstream(ResponseCode::NXDomain);
+        let second_upstream = spawn_dns_negative_upstream(ResponseCode::NXDomain);
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("missing.internal.test.").unwrap(),
+            RecordType::A,
+        ));
+
+        let response = forward_dns_packet(
+            &request.to_vec().unwrap(),
+            &[first_upstream, second_upstream],
+        )
+        .unwrap();
+        let message = Message::from_vec(&response).unwrap();
+
+        assert_eq!(message.metadata.response_code, ResponseCode::NXDomain);
+    }
+
     fn spawn_dns_upstream(name: &str, expected_record_type: RecordType, data: RData) -> String {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
@@ -1005,6 +1083,32 @@ mod tests {
             response.metadata.recursion_available = true;
             response.add_queries(request.queries.iter().cloned());
             response.add_answer(Record::from_rdata(name, SAFE_SEARCH_CNAME_TTL, data));
+            let _ = socket.send_to(&response.to_vec().unwrap(), peer);
+        });
+        address
+    }
+
+    fn spawn_dns_negative_upstream(response_code: ResponseCode) -> String {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let address = socket.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            let mut buffer = [0_u8; UDP_PACKET_SIZE];
+            let Ok((len, peer)) = socket.recv_from(&mut buffer) else {
+                return;
+            };
+            let request = Message::from_vec(&buffer[..len]).unwrap();
+            let mut response = Message::new(
+                request.metadata.id,
+                hickory_proto::op::MessageType::Response,
+                request.metadata.op_code,
+            );
+            response.metadata = Metadata::response_from_request(&request.metadata);
+            response.metadata.recursion_available = true;
+            response.metadata.response_code = response_code;
+            response.add_queries(request.queries.iter().cloned());
             let _ = socket.send_to(&response.to_vec().unwrap(), peer);
         });
         address

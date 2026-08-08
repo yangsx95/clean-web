@@ -85,6 +85,19 @@ pub fn default_route_interface() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub fn route_interface_for_address(address: std::net::IpAddr) -> Option<String> {
+    Command::new("/sbin/route")
+        .args(["-n", "get", &address.to_string()])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            parse_macos_default_route_interface(&String::from_utf8_lossy(&output.stdout))
+        })
+        .or_else(default_route_interface)
+}
+
+#[cfg(target_os = "macos")]
 fn parse_macos_default_route_interface(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
         line.trim()
