@@ -239,6 +239,25 @@ pub fn run() {
             app.manage(state);
             append_startup_log(&data_dir, "setup: storage ready");
             access_logs::start_access_log_collector(app.handle().clone());
+            {
+                let auto_start_app = app.handle().clone();
+                let auto_start_data_dir = data_dir.clone();
+                append_startup_log(&data_dir, "setup: auto start scheduled");
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(500));
+                    let state = auto_start_app.state::<storage::AppState>();
+                    match mihomo::auto_start_protection_inner(&auto_start_app, &state) {
+                        Ok(status) => append_startup_log(
+                            &auto_start_data_dir,
+                            format!("setup: auto start checked: running={}", status.running),
+                        ),
+                        Err(reason) => append_startup_log(
+                            &auto_start_data_dir,
+                            format!("setup: auto start warning: {reason}"),
+                        ),
+                    }
+                });
+            }
             #[cfg(target_os = "macos")]
             {
                 if let Err(reason) = build_tray(app.handle()) {

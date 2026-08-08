@@ -230,10 +230,12 @@ describe("management actions", () => {
     start.mockRestore();
   });
 
-  it("does not auto start protection on app launch", async () => {
+  it("auto starts protection on app launch when it is configured but not running", async () => {
     const enabled = { ...await backend.getSettings(), protectionEnabled: true };
     const settings = vi.spyOn(backend, "getSettings")
       .mockResolvedValueOnce(enabled);
+    const status = vi.spyOn(backend, "getCoreStatus")
+      .mockResolvedValueOnce({ running: false, controller: "127.0.0.1:19090", configPath: "preview" });
     const autoStart = vi.spyOn(backend, "autoStartProtection")
       .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
 
@@ -241,8 +243,20 @@ describe("management actions", () => {
 
     expect(await screen.findByLabelText("CleanWeb 锁定状态")).toBeTruthy();
     expect(screen.queryByRole("switch", { name: "总保护" })).toBeNull();
-    expect(autoStart).not.toHaveBeenCalled();
+    await waitFor(() => expect(autoStart).toHaveBeenCalled());
     settings.mockRestore();
+    status.mockRestore();
+    autoStart.mockRestore();
+  });
+
+  it("does not auto start protection on app launch when it is disabled", async () => {
+    const autoStart = vi.spyOn(backend, "autoStartProtection")
+      .mockResolvedValue({ running: true, pid: 1234, controller: "127.0.0.1:19090", configPath: "preview" });
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("CleanWeb 锁定状态")).toBeTruthy();
+    expect(autoStart).not.toHaveBeenCalled();
     autoStart.mockRestore();
   });
 

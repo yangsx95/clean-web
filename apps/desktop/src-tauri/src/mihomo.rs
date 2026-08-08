@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
@@ -8,7 +8,7 @@ use std::{
 
 use std::process::Command;
 #[cfg(not(target_os = "macos"))]
-use std::{fs::OpenOptions, process::Stdio};
+use std::process::Stdio;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use flate2::read::GzDecoder;
@@ -55,6 +55,7 @@ const X64_BINARY_SHA256: &str = "84f8bcd390ee146cba87746fe5447eb1bfa534c8f03c52d
 const CONTROLLER: &str = "127.0.0.1:19090";
 const SYSTEM_DNS_CACHE_FILE: &str = "mihomo/system-dns-servers.json";
 const PROTECTION_HEALTH_FAILURE_LIMIT: u32 = 3;
+const PROTECTION_START_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const RUNTIME_PROGRESS_EVENT: &str = "runtime-progress";
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -173,7 +174,7 @@ pub async fn start_protection(session_token: String, app: AppHandle) -> Result<C
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         state.require_session(&session_token)?;
-        start_inner(&app, &state)
+        start_protection_exclusive(&app, &state)
     })
     .await
     .map_err(error)?
@@ -183,21 +184,69 @@ pub async fn start_protection(session_token: String, app: AppHandle) -> Result<C
 pub async fn auto_start_protection(app: AppHandle) -> Result<CoreStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let protection_enabled = {
-            let db = state.db.lock().map_err(|_| "数据库不可用")?;
-            setting_bool(&db, "protection_enabled")?
-        };
-        if !protection_enabled {
-            return core_status(&state);
-        }
-        let status = core_status(&state)?;
-        if status.running {
-            return Ok(status);
-        }
-        start_inner(&app, &state)
+        auto_start_protection_inner(&app, &state)
     })
     .await
     .map_err(error)?
+}
+
+pub(crate) fn auto_start_protection_inner(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<CoreStatus, String> {
+    append_runtime_startup_log(state, "auto start: checking persisted setting");
+    let protection_enabled = {
+        let db = state.db.lock().map_err(|_| "数据库不可用")?;
+        setting_bool(&db, "protection_enabled")?
+    };
+    if !protection_enabled {
+        append_runtime_startup_log(state, "auto start: skipped because protection is disabled");
+        return core_status(state);
+    }
+    append_runtime_startup_log(state, "auto start: checking current runtime status");
+    let status = core_status(state)?;
+    if status.running {
+        append_runtime_startup_log(state, "auto start: existing runtime is healthy");
+        return Ok(status);
+    }
+    append_runtime_startup_log(state, "auto start: starting runtime");
+    start_protection_exclusive(app, state)
+}
+
+fn start_protection_exclusive(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
+    if state
+        .protection_start_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return wait_for_protection_start(state);
+    }
+    let result = start_inner(app, state);
+    state
+        .protection_start_in_progress
+        .store(false, Ordering::Release);
+    result
+}
+
+fn wait_for_protection_start(state: &AppState) -> Result<CoreStatus, String> {
+    let deadline = Instant::now() + PROTECTION_START_WAIT_TIMEOUT;
+    while state.protection_start_in_progress.load(Ordering::Acquire) {
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    core_status(state)
+}
+
+fn append_runtime_startup_log(state: &AppState, message: impl AsRef<str>) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(state.data_dir.join("startup.log"))
+    {
+        let _ = writeln!(file, "{}", message.as_ref());
+    }
 }
 
 fn start_inner(app: &AppHandle, state: &AppState) -> Result<CoreStatus, String> {
@@ -864,10 +913,9 @@ fn core_status(state: &AppState) -> Result<CoreStatus, String> {
     let active_config_path = state.data_dir.join("mihomo/active-config");
     let pid = current_core_pid(state, &pid_path)?;
     let active_config_present = active_config_path.exists();
-    let cleanweb_dns_ready = pid.is_some()
-        && active_config_present
-        && dns_filter::dns_endpoint_healthy(dns_filter::CLEANWEB_DNS_LISTEN);
-    let mihomo_dns_ready = cleanweb_dns_ready && dns_filter::dns_endpoint_healthy("127.0.0.1:53");
+    let cleanweb_dns_ready =
+        pid.is_some() && active_config_present && dns_filter::dns_filter_running(state);
+    let mihomo_dns_ready = cleanweb_dns_ready;
     let running = protection_resources_healthy(
         pid.is_some(),
         active_config_present,
@@ -926,15 +974,15 @@ fn core_components(
             "cleanweb-dns",
             "CleanWeb DNS",
             cleanweb_dns_ready,
-            "127.0.0.1:19053 正常",
-            "19053 健康探测失败",
+            "DNS 过滤线程已启动",
+            "DNS 过滤未启动",
         ),
         component_status(
             "mihomo-dns",
             "本机 DNS 接管",
             mihomo_dns_ready,
-            "127.0.0.1:53 正常",
-            "53 端口健康探测失败",
+            "DNS 接管已随内核运行",
+            "系统 DNS 未接管",
         ),
     ]
 }
@@ -1519,7 +1567,15 @@ fn append_imported_rules(
     } else {
         "NOT IN ('fraud','phishing','malware')"
     };
-    let sql=format!("SELECT r.matcher_kind,r.pattern,r.action,r.category FROM imported_rules r JOIN subscriptions s ON s.id=r.subscription_id WHERE s.enabled=1 AND r.category {comparator} ORDER BY s.created_at,r.source_line");
+    let sql = format!(
+        "SELECT r.matcher_kind,r.pattern,r.action,r.category
+         FROM imported_rules r
+         JOIN subscriptions s ON s.id=r.subscription_id
+         WHERE s.enabled=1
+           AND r.category {comparator}
+           AND NOT (r.action='Block' AND r.matcher_kind IN ('Exact','Suffix'))
+         ORDER BY s.created_at,r.source_line"
+    );
     let mut statement = db.prepare(&sql).map_err(error)?;
     let rows = statement
         .query_map([], |row| {
@@ -1552,9 +1608,6 @@ fn append_imported_rules(
             "Proxy" => "CleanWeb",
             _ => "REJECT",
         };
-        if target == "REJECT" && matches!(kind.as_str(), "Exact" | "Suffix") {
-            continue;
-        }
         if let Some(rule) = mihomo_rule(&kind, &pattern, target) {
             if emitted.insert(rule.clone()) {
                 result.push(Value::String(rule));
@@ -2432,6 +2485,28 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_protection_start_waits_for_existing_startup() {
+        let state = AppState::open(":memory:").unwrap();
+        state
+            .protection_start_in_progress
+            .store(true, Ordering::Release);
+
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                state
+                    .protection_start_in_progress
+                    .store(false, Ordering::Release);
+            });
+            let status = wait_for_protection_start(&state).unwrap();
+            assert!(!status.running);
+        });
+
+        assert!(started.elapsed() >= Duration::from_millis(100));
+    }
+
+    #[test]
     fn runtime_health_failures_report_status_without_stopping_core() {
         let state = AppState::open(":memory:").unwrap();
 
@@ -2469,7 +2544,7 @@ mod tests {
         assert_eq!(components[0].status, "ready");
         assert_eq!(components[3].label, "本机 DNS 接管");
         assert_eq!(components[3].status, "stopped");
-        assert_eq!(components[3].detail, "53 端口健康探测失败");
+        assert_eq!(components[3].detail, "系统 DNS 未接管");
     }
 
     #[test]

@@ -251,7 +251,22 @@ export function App() {
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;void backend.onRuntimeProgress(progress=>{if(cancelled)return;setRuntimeProgress(progress);setPolicyApplyStatus(previous=>previous?.state==="applying"?{...previous,message:progress.message}:previous);setCoreStatus(previous=>({...(previous??{running:false,controller:"127.0.0.1:19090",configPath:"unavailable"}),components:progress.components}));}).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[]);
   useEffect(() => { let cancelled=false; void (async () => {
     try {
-      const [bootstrap,current,core,publicStats,publicDailyStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getPublicAccessLogDailyStats(),backend.getBrowserPolicyStatus()]);
+      const [bootstrap,current,initialCore,publicStats,publicDailyStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getPublicAccessLogDailyStats(),backend.getBrowserPolicyStatus()]);
+      if (cancelled) return;
+      let core = initialCore;
+      if (current.protectionEnabled && !initialCore.running) {
+        try {
+          showPolicyStatus({state:"applying",message:"正在恢复网络保护…"});
+          core = await backend.autoStartProtection();
+          if (!cancelled) showPolicyStatus({state:core.running?"applied":"failed",message:core.running?"保护已恢复":"保护未开启，请查看组件状态"});
+        } catch(reason) {
+          if (!cancelled) {
+            const notice = protectionStartFailureNotice(reason);
+            showPolicyFailure(notice.message);
+            setRuntimeError(notice);
+          }
+        }
+      }
       if (cancelled) return;
       setNeedsSetup(!bootstrap.passwordConfigured); setSettings(current);setCoreStatus(core);setAccessLogStats(publicStats);setAccessLogDailyStats(publicDailyStats);setBrowserPolicyStatus(browserPolicies);
       const storedToken = backend.getStoredSessionToken();

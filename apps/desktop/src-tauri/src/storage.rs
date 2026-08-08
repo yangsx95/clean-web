@@ -39,6 +39,7 @@ pub struct AppState {
     pub(crate) core_process: Mutex<Option<Child>>,
     pub(crate) dns_filter: Mutex<Option<DnsFilterHandle>>,
     pub(crate) system_dns_servers: Mutex<Vec<String>>,
+    pub(crate) protection_start_in_progress: AtomicBool,
     pub(crate) reload_in_progress: AtomicBool,
     pub(crate) protection_health_failures: Mutex<u32>,
 }
@@ -195,6 +196,7 @@ impl AppState {
             core_process: Mutex::new(None),
             dns_filter: Mutex::new(None),
             system_dns_servers: Mutex::new(Vec::new()),
+            protection_start_in_progress: AtomicBool::new(false),
             reload_in_progress: AtomicBool::new(false),
             protection_health_failures: Mutex::new(0),
         })
@@ -361,6 +363,8 @@ fn create_imported_rule_indexes(db: &Connection) -> rusqlite::Result<()> {
            ON imported_rules(matcher_kind, pattern);
          CREATE INDEX IF NOT EXISTS idx_imported_rules_pattern_category
            ON imported_rules(pattern, category);
+         CREATE INDEX IF NOT EXISTS idx_imported_rules_runtime_route
+           ON imported_rules(category, action, matcher_kind, subscription_id, source_line);
          CREATE INDEX IF NOT EXISTS idx_imported_rules_subscription_line
            ON imported_rules(subscription_id, source_line);",
     )

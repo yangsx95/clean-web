@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, TrySendError},
         Arc,
     },
     thread::{self, JoinHandle},
@@ -37,12 +38,19 @@ const DNS_HEALTH_CHECK_ZONE: &str = "healthcheck.cleanweb.test";
 const DNS_HEALTH_CHECK_TTL: u32 = 0;
 const DNS_HEALTH_CHECK_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const DOMAIN_INDEX_CACHE_VERSION: u32 = 1;
+const DNS_WORKER_COUNT: usize = 4;
+const DNS_WORK_QUEUE_SIZE: usize = 256;
 
 struct DnsFilterConfig {
     domain_index: DomainRuleIndex,
     upstreams: Vec<String>,
     safe_search_enabled: bool,
     safe_search_mappings: HashMap<String, String>,
+}
+
+struct DnsJob {
+    packet: Vec<u8>,
+    peer: SocketAddr,
 }
 
 pub(crate) struct DnsFilterHandle {
@@ -104,13 +112,53 @@ pub(crate) fn stop_dns_filter(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn dns_filter_running(state: &AppState) -> bool {
+    state.dns_filter.lock().is_ok_and(|handle| handle.is_some())
+}
+
 fn run_dns_filter(
     socket: UdpSocket,
     config: DnsFilterConfig,
     db_path: PathBuf,
     stop: Arc<AtomicBool>,
 ) {
-    let log_db = Connection::open(db_path).ok();
+    let config = Arc::new(config);
+    let (sender, receiver) = mpsc::sync_channel::<DnsJob>(DNS_WORK_QUEUE_SIZE);
+    let receiver = Arc::new(std::sync::Mutex::new(receiver));
+    let workers: Vec<_> = (0..DNS_WORKER_COUNT)
+        .filter_map(|index| {
+            let worker_socket = socket.try_clone().ok()?;
+            let worker_config = Arc::clone(&config);
+            let worker_receiver = Arc::clone(&receiver);
+            let worker_db_path = db_path.clone();
+            let worker_stop = Arc::clone(&stop);
+            thread::Builder::new()
+                .name(format!("cleanweb-dns-worker-{index}"))
+                .spawn(move || {
+                    let log_db = Connection::open(worker_db_path).ok();
+                    while !worker_stop.load(Ordering::Acquire) {
+                        let job = {
+                            let Ok(receiver) = worker_receiver.lock() else {
+                                break;
+                            };
+                            receiver.recv_timeout(Duration::from_millis(250))
+                        };
+                        let Ok(job) = job else {
+                            continue;
+                        };
+                        if let Some(response) = handle_dns_packet(
+                            &job.packet,
+                            &worker_config,
+                            log_db.as_ref(),
+                            job.peer,
+                        ) {
+                            let _ = worker_socket.send_to(&response, job.peer);
+                        }
+                    }
+                })
+                .ok()
+        })
+        .collect();
     let mut buffer = [0_u8; UDP_PACKET_SIZE];
     while !stop.load(Ordering::Acquire) {
         let Ok((len, peer)) = socket.recv_from(&mut buffer) else {
@@ -119,10 +167,33 @@ fn run_dns_filter(
         if stop.load(Ordering::Acquire) {
             break;
         }
-        if let Some(response) = handle_dns_packet(&buffer[..len], &config, log_db.as_ref(), peer) {
+        if let Some(response) = health_check_response_for_packet(&buffer[..len]) {
             let _ = socket.send_to(&response, peer);
+            continue;
+        }
+        match sender.try_send(DnsJob {
+            packet: buffer[..len].to_vec(),
+            peer,
+        }) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Disconnected(_)) => break,
         }
     }
+    drop(sender);
+    for worker in workers {
+        let _ = worker.join();
+    }
+}
+
+fn health_check_response_for_packet(packet: &[u8]) -> Option<Vec<u8>> {
+    let message = Message::from_vec(packet).ok()?;
+    let domain = message
+        .queries
+        .first()
+        .map(|query| query.name().to_ascii())
+        .map(|value| value.trim_end_matches('.').to_owned())?;
+    health_check_response(&message, &domain)
 }
 
 fn handle_dns_packet(
@@ -158,7 +229,8 @@ fn handle_dns_packet(
     forward_dns_packet(packet, &config.upstreams).ok()
 }
 
-pub(crate) fn dns_endpoint_healthy(address: &str) -> bool {
+#[cfg(test)]
+fn dns_endpoint_healthy(address: &str) -> bool {
     for _ in 0..3 {
         if dns_health_query(address).is_ok_and(|response| dns_health_response_valid(&response)) {
             return true;
@@ -168,6 +240,7 @@ pub(crate) fn dns_endpoint_healthy(address: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn dns_health_query(address: &str) -> Result<Vec<u8>, std::io::Error> {
     let socket = UdpSocket::bind("127.0.0.1:0")?;
     socket.set_read_timeout(Some(Duration::from_millis(350)))?;
@@ -180,6 +253,7 @@ fn dns_health_query(address: &str) -> Result<Vec<u8>, std::io::Error> {
     Ok(response[..len].to_vec())
 }
 
+#[cfg(test)]
 fn dns_health_request() -> Option<Vec<u8>> {
     let mut request = Message::query();
     request.add_query(hickory_proto::op::Query::query(
@@ -193,6 +267,7 @@ fn dns_health_request() -> Option<Vec<u8>> {
     request.to_vec().ok()
 }
 
+#[cfg(test)]
 fn dns_health_check_nonce() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -200,6 +275,7 @@ fn dns_health_check_nonce() -> u128 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn dns_health_response_valid(packet: &[u8]) -> bool {
     let Ok(message) = Message::from_vec(packet) else {
         return false;
@@ -868,6 +944,10 @@ mod tests {
 
     use std::{
         net::{Ipv4Addr, UdpSocket},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
         thread,
         time::Duration,
     };
@@ -971,6 +1051,51 @@ mod tests {
         let unused_endpoint = unused_socket.local_addr().unwrap().to_string();
         drop(unused_socket);
         assert!(!dns_endpoint_healthy(&unused_endpoint));
+    }
+
+    #[test]
+    fn dns_filter_health_check_remains_available_while_upstream_is_slow() {
+        let filter_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        filter_socket
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let filter_endpoint = filter_socket.local_addr().unwrap().to_string();
+        let slow_upstream = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let slow_upstream_endpoint = slow_upstream.local_addr().unwrap().to_string();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let filter_thread = thread::spawn(move || {
+            run_dns_filter(
+                filter_socket,
+                DnsFilterConfig {
+                    domain_index: DomainRuleIndex::default(),
+                    upstreams: vec![slow_upstream_endpoint],
+                    safe_search_enabled: false,
+                    safe_search_mappings: HashMap::new(),
+                },
+                temp_dir.path().join("cleanweb.db"),
+                thread_stop,
+            )
+        });
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("slow.example.").unwrap(),
+            RecordType::A,
+        ));
+        let packet = request.to_vec().unwrap();
+        for _ in 0..DNS_WORKER_COUNT {
+            client.send_to(&packet, &filter_endpoint).unwrap();
+        }
+        thread::sleep(Duration::from_millis(100));
+
+        assert!(dns_endpoint_healthy(&filter_endpoint));
+
+        stop.store(true, Ordering::Release);
+        let _ = client.send_to(&[0], &filter_endpoint);
+        let _ = filter_thread.join();
+        drop(slow_upstream);
     }
 
     #[test]

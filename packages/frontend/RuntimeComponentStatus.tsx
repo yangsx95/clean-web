@@ -5,8 +5,8 @@ export function fallbackCoreComponents(running:boolean): CoreComponentStatus[] {
   return [
     { id:"mihomo", label:"Mihomo 内核", status:running?"ready":"stopped", detail:running?"进程运行中":"未检测到运行进程" },
     { id:"active-config", label:"运行配置", status:running?"ready":"stopped", detail:running?"已记录当前配置":"缺少 active-config" },
-    { id:"cleanweb-dns", label:"CleanWeb DNS", status:running?"ready":"stopped", detail:running?"127.0.0.1:19053 正常":"19053 健康探测失败" },
-    { id:"mihomo-dns", label:"本机 DNS 接管", status:running?"ready":"stopped", detail:running?"127.0.0.1:53 正常":"53 端口健康探测失败" },
+    { id:"cleanweb-dns", label:"CleanWeb DNS", status:running?"ready":"stopped", detail:running?"DNS 过滤线程已启动":"DNS 过滤未启动" },
+    { id:"mihomo-dns", label:"本机 DNS 接管", status:running?"ready":"stopped", detail:running?"DNS 接管已随内核运行":"系统 DNS 未接管" },
   ];
 }
 
