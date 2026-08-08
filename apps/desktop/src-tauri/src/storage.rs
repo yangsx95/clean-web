@@ -2253,12 +2253,12 @@ mod tests {
         seed_default_rule_subscriptions(&db).unwrap();
         let exists: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-adult-keywords','default:cleanweb:strict-gambling-keywords')",
+                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-adult-keywords','default:cleanweb:strict-gambling-keywords','default:cleanweb:strict-platforms')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(exists, 3, "内置能力订阅初始化时必须恢复");
+        assert_eq!(exists, 4, "内置能力订阅初始化时必须恢复");
     }
 
     #[test]

@@ -1,0 +1,3 @@
+# CleanWeb strict-mode platform supplement.
+# Broad platform domains that should only be blocked when strict mode is enabled.
+DOMAIN-SUFFIX,yandex.com,REJECT

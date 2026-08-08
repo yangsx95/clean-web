@@ -287,6 +287,13 @@ fn bundled_sources() -> Vec<BundledSource> {
             strict_only: true,
         },
         BundledSource {
+            subscription_id: "default:cleanweb:strict-platforms",
+            category: "strict",
+            url: "bundled://cleanweb-strict-platforms.clash",
+            text: include_str!("../../../../resources/rules/cleanweb-strict-platforms.clash"),
+            strict_only: true,
+        },
+        BundledSource {
             subscription_id: "local:cleanweb:entertainment-short-video",
             category: "entertainment",
             url: "bundled://cleanweb-entertainment-short-video.clash",

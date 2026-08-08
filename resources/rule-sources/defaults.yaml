@@ -193,6 +193,17 @@ rule_packs:
     toggleable: true
     enabled_by_default: false
     description: 严格模式赌博关键词规则
+  - id: default:cleanweb:strict-platforms
+    name: CleanWeb · 严格平台限制
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-platforms.clash
+    format: clash
+    category: strict
+    update_interval_hours: 24
+    ui_group: 严格模式
+    ui_order: 90
+    toggleable: true
+    enabled_by_default: false
+    description: 严格模式下额外拦截低价值或高干扰平台
 
 recommended_rule_sources:
   - name: AdAway · Hosts
