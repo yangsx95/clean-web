@@ -21,7 +21,7 @@ on:
           - "arm64"
           - "all"
       build_macos:
-        description: "Build unsigned macOS DMGs for local testing only"
+        description: "Build signed and notarized macOS DMGs"
         required: true
         type: choice
         default: "true"
@@ -456,11 +456,9 @@ jobs:
             && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
             echo "mode=signed-notarized" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=local-testing" >> "$GITHUB_OUTPUT"
-            if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.publish_release }}" == "true" ]]; then
-              echo "macOS release publishing requires Developer ID signing and notarization secrets." >&2
-              exit 1
-            fi
+            echo "macOS DMGs must be Developer ID signed and notarized." >&2
+            echo "Configure MACOS_CERTIFICATE_P12_BASE64, MACOS_CERTIFICATE_PASSWORD, MACOS_SIGNING_IDENTITY, APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD." >&2
+            exit 1
           fi
 
       - name: Import macOS Developer ID certificate
@@ -504,22 +502,10 @@ jobs:
           shopt -s nullglob
           for dmg in ${{ matrix.bundle_path }}; do
             base="$(basename "$dmg" .dmg)"
-            if [[ "${{ steps.macos_signing.outputs.mode }}" == "signed-notarized" ]]; then
-              scripts/release/package-signed-macos-dmg.sh \
-                "$dmg" \
-                "macos-artifacts/${base}_SIGNED_NOTARIZED.dmg"
-              scripts/release/verify-macos-dmg.sh "macos-artifacts/${base}_SIGNED_NOTARIZED.dmg"
-            else
-              cat > macos-artifacts/README-LOCAL-TESTING-MACOS.txt <<'TXT'
-          These macOS DMGs are ad-hoc signed local-testing artifacts.
-
-          They are intended for developer testing only. Browser downloads may still
-          be blocked by Gatekeeper because they are not Developer ID notarized.
-          TXT
-              scripts/release/package-local-macos-dmg.sh \
-                "$dmg" \
-                "macos-artifacts/${base}_ADHOC_SIGNED_LOCAL_TESTING_ONLY.dmg"
-            fi
+            scripts/release/package-signed-macos-dmg.sh \
+              "$dmg" \
+              "macos-artifacts/${base}_SIGNED_NOTARIZED.dmg"
+            scripts/release/verify-macos-dmg.sh "macos-artifacts/${base}_SIGNED_NOTARIZED.dmg"
           done
           test "$(find macos-artifacts -name '*.dmg' | wc -l | tr -d ' ')" != "0"
 
