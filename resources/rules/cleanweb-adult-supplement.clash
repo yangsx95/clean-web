@@ -1,5 +1,6 @@
 # CleanWeb built-in adult content supplement.
 # Curated from the user's OpenClash custom rules. Keep only high-confidence adult domains that are not already covered by upstream adult subscriptions.
 DOMAIN-SUFFIX,dh.net,REJECT
+DOMAIN-SUFFIX,17c.tw,REJECT
 DOMAIN-SUFFIX,zukong.net,REJECT
 DOMAIN-SUFFIX,gamebus001.com,REJECT

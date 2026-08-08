@@ -14,8 +14,10 @@ use std::path::Path;
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::{
+    collections::HashSet,
     fs::{self, File},
     io::{BufRead, BufReader, Write},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::fd::AsRawFd,
     os::unix::fs::{MetadataExt, PermissionsExt},
     os::unix::net::{UnixListener, UnixStream},
@@ -36,9 +38,11 @@ const HELPER_SOCKET: &str = "/var/run/cleanweb-helper.sock";
 #[cfg(target_os = "macos")]
 const DNS_BACKUP_FILE: &str = "/Library/Application Support/CleanWeb/dns-backup.json";
 #[cfg(target_os = "macos")]
+const DNS_BYPASS_ROUTES_FILE: &str = "/Library/Application Support/CleanWeb/dns-bypass-routes.json";
+#[cfg(target_os = "macos")]
 const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
 #[cfg(target_os = "macos")]
-const HELPER_PROTOCOL_VERSION: &str = "2026-08-03-mihomo-route-cleanup-helper";
+const HELPER_PROTOCOL_VERSION: &str = "2026-08-08-vpn-control-bypass-helper";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const EXPECTED_MIHOMO_SHA256: &str =
     "55b7286331cb30a54b2564013b02b84a0c280e8b690bd1e5da4b9d4f4ca007ac";
@@ -54,6 +58,13 @@ pub struct NetworkConflicts {
     pub vpn_services: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitDnsResolver {
+    pub domains: Vec<String>,
+    pub nameservers: Vec<String>,
+}
+
 /// Returns the DNS server addresses currently configured by the operating
 /// system. On macOS these can be LAN addresses, so the TUN config may add
 /// exact routes for them without overriding the whole route table.
@@ -66,6 +77,21 @@ pub fn system_dns_servers() -> Vec<String> {
             .ok()
             .filter(|output| output.status.success())
             .map(|output| parse_macos_dns_servers(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
+pub fn split_dns_resolvers() -> Vec<SplitDnsResolver> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/sbin/scutil")
+            .arg("--dns")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| parse_macos_split_dns_resolvers(&String::from_utf8_lossy(&output.stdout)))
             .unwrap_or_default()
     }
     #[cfg(not(target_os = "macos"))]
@@ -97,6 +123,26 @@ pub fn route_interface_for_address(address: std::net::IpAddr) -> Option<String> 
         .or_else(default_route_interface)
 }
 
+/// Returns routes that already belong to another VPN/TUN before CleanWeb starts.
+/// CleanWeb excludes these ranges from its own TUN so enterprise or DACS-style
+/// split tunnels keep handling their internal traffic.
+pub fn existing_vpn_route_excludes() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/sbin/netstat")
+            .args(["-rn", "-f", "inet"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                parse_macos_existing_vpn_route_excludes(&String::from_utf8_lossy(&output.stdout))
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
 #[cfg(target_os = "macos")]
 fn parse_macos_default_route_interface(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
@@ -106,6 +152,79 @@ fn parse_macos_default_route_interface(output: &str) -> Option<String> {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
     })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_existing_vpn_route_excludes(route_table: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    route_table
+        .lines()
+        .filter_map(parse_macos_existing_vpn_route_exclude)
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_existing_vpn_route_exclude(line: &str) -> Option<String> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 4 {
+        return None;
+    }
+    let destination = fields[0];
+    let gateway = fields[1];
+    let netif = fields[3];
+    if !netif.starts_with("utun") && !netif.starts_with("ppp") && !netif.starts_with("ipsec") {
+        return None;
+    }
+    if gateway.starts_with("198.18.0.") {
+        return None;
+    }
+    normalize_macos_route_destination(destination)
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_macos_route_destination(destination: &str) -> Option<String> {
+    if matches!(
+        destination,
+        "default" | "127" | "127.0.0.1" | "255.255.255.255/32"
+    ) {
+        return None;
+    }
+    let (address, prefix) = if let Some((address, prefix)) = destination.split_once('/') {
+        let prefix = prefix.parse::<u8>().ok()?;
+        (address, prefix)
+    } else {
+        let octets = destination.split('.').count();
+        let prefix = match octets {
+            1 => 8,
+            2 => 16,
+            3 => 24,
+            4 => 32,
+            _ => return None,
+        };
+        (destination, prefix)
+    };
+    if !(8..=32).contains(&prefix) {
+        return None;
+    }
+    let mut octets = address
+        .split('.')
+        .map(|value| value.parse::<u8>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if octets.is_empty() || octets.len() > 4 {
+        return None;
+    }
+    let first = octets[0];
+    if first == 0 || first == 127 || first >= 224 {
+        return None;
+    }
+    while octets.len() < 4 {
+        octets.push(0);
+    }
+    Some(format!(
+        "{}.{}.{}.{}/{}",
+        octets[0], octets[1], octets[2], octets[3], prefix
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -127,6 +246,69 @@ fn parse_macos_dns_servers(output: &str) -> Vec<String> {
         }
     }
     values
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_split_dns_resolvers(output: &str) -> Vec<SplitDnsResolver> {
+    let mut result = Vec::new();
+    let mut domains = Vec::new();
+    let mut nameservers = Vec::new();
+    let mut scoped = false;
+    let flush = |result: &mut Vec<SplitDnsResolver>,
+                 domains: &mut Vec<String>,
+                 nameservers: &mut Vec<String>,
+                 scoped: &mut bool| {
+        domains.retain(|domain| split_dns_domain_allowed(domain));
+        if *scoped && !domains.is_empty() && !nameservers.is_empty() {
+            domains.sort();
+            domains.dedup();
+            nameservers.sort();
+            nameservers.dedup();
+            result.push(SplitDnsResolver {
+                domains: std::mem::take(domains),
+                nameservers: std::mem::take(nameservers),
+            });
+        } else {
+            domains.clear();
+            nameservers.clear();
+        }
+        *scoped = false;
+    };
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("resolver #") {
+            flush(&mut result, &mut domains, &mut nameservers, &mut scoped);
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim();
+            let value = value.trim().trim_end_matches('.').to_ascii_lowercase();
+            if key == "domain" || key.starts_with("search domain[") {
+                if !value.is_empty() {
+                    domains.push(value);
+                }
+            } else if key.starts_with("nameserver[") {
+                if value.parse::<std::net::IpAddr>().is_ok()
+                    && !matches!(value.as_str(), "127.0.0.1" | "::1" | "198.18.0.1")
+                {
+                    nameservers.push(value);
+                }
+            } else if key == "flags" && value.contains("scoped") {
+                scoped = true;
+            }
+        }
+    }
+    flush(&mut result, &mut domains, &mut nameservers, &mut scoped);
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn split_dns_domain_allowed(domain: &str) -> bool {
+    !domain.is_empty()
+        && !matches!(domain, "local")
+        && !domain.ends_with(".arpa")
+        && !domain.ends_with(".ip6.arpa")
+        && !domain.ends_with(".in-addr.arpa")
 }
 
 /// A human-readable operating-system version string.
@@ -473,6 +655,11 @@ fn helper_start_mihomo(
     fs::set_permissions(&log, fs::Permissions::from_mode(0o644))
         .map_err(|value| format!("无法设置 Mihomo 日志权限：{value}"))?;
 
+    if let Err(reason) = install_dns_upstream_bypass_routes(&installed_config) {
+        cleanup_dns_upstream_bypass_routes();
+        return Err(reason);
+    }
+
     let stdout = fs::OpenOptions::new()
         .append(true)
         .open(&log)
@@ -492,13 +679,24 @@ fn helper_start_mihomo(
         .spawn()
         .map_err(|value| format!("无法启动 Mihomo：{value}"))?;
     let pid = child.id();
-    if let Err(reason) = backup_and_set_macos_dns() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(reason);
+    let preserve_system_dns = should_preserve_system_dns_for_vpn(&existing_vpn_route_excludes());
+    if !preserve_system_dns {
+        if let Err(reason) = backup_and_set_macos_dns() {
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_dns_upstream_bypass_routes();
+            return Err(reason);
+        }
+    } else {
+        write_helper_log("preserving system DNS because another VPN/TUN route is active");
     }
     std::mem::forget(child);
     Ok((pid, log))
+}
+
+#[cfg(target_os = "macos")]
+fn should_preserve_system_dns_for_vpn(existing_vpn_routes: &[String]) -> bool {
+    !existing_vpn_routes.is_empty()
 }
 
 #[cfg(target_os = "macos")]
@@ -521,6 +719,7 @@ fn helper_stop_mihomo() -> Result<(), String> {
         }
     }
     restore_macos_dns()?;
+    cleanup_dns_upstream_bypass_routes();
     cleanup_macos_mihomo_routes();
     Ok(())
 }
@@ -564,6 +763,189 @@ fn cleanup_macos_mihomo_routes() {
             .args(["-n", "delete", "-net", &destination])
             .output();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn install_dns_upstream_bypass_routes(config: &Path) -> Result<(), String> {
+    cleanup_dns_upstream_bypass_routes();
+    let Some(gateway) = default_ipv4_gateway() else {
+        return Ok(());
+    };
+    let mut addresses = dns_upstream_ipv4_addresses_from_config(config)?;
+    addresses.extend(active_vpn_control_ipv4_addresses());
+    addresses = deduplicate_ipv4_addresses(addresses);
+    let installed = addresses
+        .into_iter()
+        .filter(|address| add_ipv4_host_route(*address, gateway))
+        .collect::<Vec<_>>();
+    if installed.is_empty() {
+        return Ok(());
+    }
+    let body = serde_json::to_string(&installed)
+        .map_err(|value| format!("无法序列化 DNS 旁路路由：{value}"))?;
+    fs::write(DNS_BYPASS_ROUTES_FILE, body)
+        .map_err(|value| format!("无法记录 DNS 旁路路由：{value}"))?;
+    fs::set_permissions(DNS_BYPASS_ROUTES_FILE, fs::Permissions::from_mode(0o600))
+        .map_err(|value| format!("无法设置 DNS 旁路路由权限：{value}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn active_vpn_control_ipv4_addresses() -> Vec<Ipv4Addr> {
+    let Some(output) = run_command("/usr/sbin/lsof", &["-nP", "-iTCP", "-sTCP:ESTABLISHED"]) else {
+        return Vec::new();
+    };
+    parse_active_vpn_control_ipv4_addresses(&output)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_active_vpn_control_ipv4_addresses(output: &str) -> Vec<Ipv4Addr> {
+    let mut seen = HashSet::new();
+    output
+        .lines()
+        .filter_map(parse_active_vpn_control_ipv4_address)
+        .filter(|address| seen.insert(*address))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_active_vpn_control_ipv4_address(line: &str) -> Option<Ipv4Addr> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    let command = fields.first()?.to_ascii_lowercase();
+    if !vpn_control_process_name(&command) {
+        return None;
+    }
+    let endpoint = fields.iter().find(|field| field.contains("->"))?;
+    let remote = endpoint.split_once("->")?.1;
+    let host = remote.rsplit_once(':')?.0;
+    let address = host.parse::<Ipv4Addr>().ok()?;
+    if address.is_loopback()
+        || address.is_private()
+        || address.is_link_local()
+        || address.is_multicast()
+        || address.is_broadcast()
+        || address.is_unspecified()
+    {
+        return None;
+    }
+    Some(address)
+}
+
+#[cfg(target_os = "macos")]
+fn vpn_control_process_name(command: &str) -> bool {
+    ["vpn", "proxy", "proxyd", "tunnel", "tun"]
+        .iter()
+        .any(|needle| command.contains(needle))
+}
+
+#[cfg(target_os = "macos")]
+fn deduplicate_ipv4_addresses(addresses: Vec<Ipv4Addr>) -> Vec<Ipv4Addr> {
+    let mut seen = HashSet::new();
+    addresses
+        .into_iter()
+        .filter(|address| seen.insert(*address))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_dns_upstream_bypass_routes() {
+    let path = Path::new(DNS_BYPASS_ROUTES_FILE);
+    let Ok(body) = fs::read_to_string(path) else {
+        return;
+    };
+    if let Ok(addresses) = serde_json::from_str::<Vec<Ipv4Addr>>(&body) {
+        for address in addresses {
+            let _ = Command::new("/sbin/route")
+                .args(["-n", "delete", "-host", &address.to_string()])
+                .output();
+        }
+    }
+    let _ = fs::remove_file(path);
+}
+
+#[cfg(target_os = "macos")]
+fn default_ipv4_gateway() -> Option<Ipv4Addr> {
+    Command::new("/sbin/route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            parse_macos_default_ipv4_gateway(&String::from_utf8_lossy(&output.stdout))
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_default_ipv4_gateway(output: &str) -> Option<Ipv4Addr> {
+    output.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("gateway:")
+            .map(str::trim)
+            .and_then(|value| value.parse::<Ipv4Addr>().ok())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dns_upstream_ipv4_addresses_from_config(config: &Path) -> Result<Vec<Ipv4Addr>, String> {
+    let body = fs::read_to_string(config)
+        .map_err(|value| format!("无法读取 Mihomo 配置中的 DNS 上游：{value}"))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&body)
+        .map_err(|value| format!("无法解析 Mihomo 配置中的 DNS 上游：{value}"))?;
+    Ok(dns_upstream_ipv4_addresses(&value))
+}
+
+#[cfg(target_os = "macos")]
+fn dns_upstream_ipv4_addresses(value: &serde_yaml::Value) -> Vec<Ipv4Addr> {
+    let mut seen = HashSet::new();
+    value
+        .get("dns")
+        .into_iter()
+        .flat_map(dns_upstream_strings)
+        .filter_map(|value| dns_upstream_ipv4_address(&value))
+        .filter(|address| !address.is_loopback() && seen.insert(*address))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn dns_upstream_strings(value: &serde_yaml::Value) -> Vec<String> {
+    match value {
+        serde_yaml::Value::String(value) => vec![value.clone()],
+        serde_yaml::Value::Sequence(values) => {
+            values.iter().flat_map(dns_upstream_strings).collect()
+        }
+        serde_yaml::Value::Mapping(values) => {
+            values.values().flat_map(dns_upstream_strings).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dns_upstream_ipv4_address(value: &str) -> Option<Ipv4Addr> {
+    if let Ok(SocketAddr::V4(address)) = value.parse::<SocketAddr>() {
+        return Some(*address.ip());
+    }
+    value
+        .parse::<IpAddr>()
+        .ok()
+        .and_then(|address| match address {
+            IpAddr::V4(address) => Some(address),
+            IpAddr::V6(_) => None,
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn add_ipv4_host_route(address: Ipv4Addr, gateway: Ipv4Addr) -> bool {
+    Command::new("/sbin/route")
+        .args([
+            "-n",
+            "add",
+            "-host",
+            &address.to_string(),
+            &gateway.to_string(),
+        ])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 #[cfg(target_os = "macos")]
@@ -1112,6 +1494,45 @@ mod tests {
             parse_macos_default_route_interface(output),
             Some("en0".into())
         );
+        assert_eq!(
+            parse_macos_default_ipv4_gateway(output),
+            Some("10.75.80.184".parse().unwrap())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extracts_dns_upstream_addresses_from_mihomo_config() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            "dns:\n  default-nameserver:\n    - 114.114.114.114:53\n    - 223.5.5.5:53\n  nameserver:\n    - 127.0.0.1:19053\n  proxy-server-nameserver:\n    - 114.114.114.114:53\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            dns_upstream_ipv4_addresses(&config),
+            vec![
+                "114.114.114.114".parse::<Ipv4Addr>().unwrap(),
+                "223.5.5.5".parse::<Ipv4Addr>().unwrap(),
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn preserves_system_dns_when_another_vpn_route_exists() {
+        assert!(should_preserve_system_dns_for_vpn(&["10.0.0.0/8".into()]));
+        assert!(!should_preserve_system_dns_for_vpn(&[]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extracts_existing_proxy_control_endpoints() {
+        let output = "COMMAND   PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nDProxyd  100 alice 19u IPv4 0x1 0t0 TCP 10.0.0.2:49773->116.236.254.75:5600 (ESTABLISHED)\nBrowser  101 alice 20u IPv4 0x2 0t0 TCP 10.0.0.2:49774->93.184.216.34:443 (ESTABLISHED)\nProxyApp 102 alice 21u IPv4 0x3 0t0 TCP 127.0.0.1:9900->127.0.0.1:49770 (ESTABLISHED)\n";
+
+        assert_eq!(
+            parse_active_vpn_control_ipv4_addresses(output),
+            vec!["116.236.254.75".parse::<Ipv4Addr>().unwrap()]
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1130,6 +1551,37 @@ mod tests {
                 "192.168.173.160/30",
                 "192.168.173.161",
             ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_existing_vpn_routes_for_tun_excludes() {
+        let output = "Routing tables\n\nInternet:\nDestination        Gateway            Flags               Netif Expire\ndefault            10.174.209.32      UGScg                 en0\n0/1                192.168.172.33     UGSc                utun4\n10                 192.168.172.33     UGSc                utun4\n127                127.0.0.1          UCS                   lo0\n172.16/14          192.168.172.33     UGSc                utun4\n192.168.0/16       192.168.172.33     UGSc                utun4\n192.168.172/22     192.168.172.33     UGSc                utun4\n192.168.172.32/30  192.168.172.34     UGSc                utun4\n192.168.172.33     192.168.172.34     UH                  utun4\n114.114.114.0/26   198.18.0.1         UGSc                utun5\n224.0.0/4          link#11            UmCS                  en0\n";
+        assert_eq!(
+            parse_macos_existing_vpn_route_excludes(output),
+            vec![
+                "10.0.0.0/8",
+                "172.16.0.0/14",
+                "192.168.0.0/16",
+                "192.168.172.0/22",
+                "192.168.172.32/30",
+                "192.168.172.33/32",
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_scoped_split_dns_resolvers() {
+        let output = "DNS configuration\n\nresolver #1\n  nameserver[0] : 114.114.114.114\n  if_index : 6 (en0)\n\nresolver #2\n  domain   : corp.example.com\n  nameserver[0] : 10.0.0.53\n  flags    : Scoped, Request A records\n  if_index : 22 (utun4)\n\nresolver #3\n  search domain[0] : local\n  nameserver[0] : 10.0.0.54\n  flags    : Scoped\n";
+
+        assert_eq!(
+            parse_macos_split_dns_resolvers(output),
+            vec![SplitDnsResolver {
+                domains: vec!["corp.example.com".into()],
+                nameservers: vec!["10.0.0.53".into()],
+            }]
         );
     }
 

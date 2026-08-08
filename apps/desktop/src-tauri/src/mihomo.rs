@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::atomic::Ordering,
     time::{Duration, Instant},
@@ -1050,6 +1051,21 @@ fn protection_resources_healthy(
     mihomo_running && active_config_present && cleanweb_dns_ready && mihomo_dns_ready
 }
 
+fn dns_upstream_route_excludes(upstreams: &[String]) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    upstreams
+        .iter()
+        .filter_map(|value| value.parse::<SocketAddr>().ok().map(|address| address.ip()))
+        .filter(|address| seen.insert(*address))
+        .map(|address| {
+            Value::String(match address {
+                std::net::IpAddr::V4(address) => format!("{address}/32"),
+                std::net::IpAddr::V6(address) => format!("{address}/128"),
+            })
+        })
+        .collect()
+}
+
 fn recover_incomplete_protection_state(_state: &AppState, _pid_path: &Path) {
     let _ = dns_filter::stop_dns_filter(_state);
     #[cfg(target_os = "macos")]
@@ -1210,14 +1226,12 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
         Value::String("127.0.0.0/8".into()),
         Value::String("::1/128".into()),
     ];
-    route_exclude_addresses.extend(system_dns_servers.iter().filter_map(|value| {
-        value.parse::<std::net::IpAddr>().ok().map(|address| {
-            Value::String(match address {
-                std::net::IpAddr::V4(address) => format!("{address}/32"),
-                std::net::IpAddr::V6(address) => format!("{address}/128"),
-            })
-        })
-    }));
+    route_exclude_addresses.extend(
+        platform::existing_vpn_route_excludes()
+            .into_iter()
+            .map(Value::String),
+    );
+    route_exclude_addresses.extend(dns_upstream_route_excludes(&dns_upstreams));
     insert(
         &mut tun,
         "route-exclude-address",
@@ -1573,7 +1587,6 @@ fn append_imported_rules(
          JOIN subscriptions s ON s.id=r.subscription_id
          WHERE s.enabled=1
            AND r.category {comparator}
-           AND NOT (r.action='Block' AND r.matcher_kind IN ('Exact','Suffix'))
          ORDER BY s.created_at,r.source_line"
     );
     let mut statement = db.prepare(&sql).map_err(error)?;
@@ -2066,7 +2079,10 @@ mod tests {
         assert!(config.contains("enhanced-mode: redir-host"));
         assert!(!config.contains("fake-ip-range"));
         assert!(!config.contains("fake-ip-filter"));
-        assert!(!config.contains("DOMAIN-SUFFIX,bad.example,REJECT"));
+        assert!(
+            config.contains("DOMAIN-SUFFIX,bad.example,REJECT"),
+            "导入的域名拦截必须进入 Mihomo，兼容模式保留系统 DNS 时仍要由 TUN 侧拦截"
+        );
         assert!(
             !config.contains("DOMAIN-SUFFIX,baidu.com,DIRECT"),
             "厂商域名直连不应写死在 Mihomo 生成逻辑中"
@@ -2306,8 +2322,8 @@ mod tests {
         }
         let strict_config = build_config(&state, "secret", true).unwrap();
         assert!(
-            !strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"),
-            "Exact/Suffix imported block rules are enforced by CleanWeb DNS filter, not mihomo"
+            strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"),
+            "导入的 Exact/Suffix 拦截规则也必须进入 Mihomo，兼容模式保留系统 DNS 时仍要拦截"
         );
         assert!(
             !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
@@ -2373,8 +2389,8 @@ mod tests {
         assert!(enabled_config.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"));
         assert!(enabled_config.contains("DOMAIN-SUFFIX,roblox.com,REJECT"));
         assert!(
-            !enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"),
-            "Exact/Suffix imported block rules are enforced by CleanWeb DNS filter, not mihomo"
+            enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"),
+            "导入的 Exact/Suffix 拦截规则也必须进入 Mihomo，兼容模式保留系统 DNS 时仍要拦截"
         );
         let allow_douyin = enabled_config.find("DOMAIN,douyin.com,DIRECT").unwrap();
         let reject_douyin = enabled_config
@@ -2482,6 +2498,25 @@ mod tests {
         assert!(!protection_resources_healthy(true, false, true, true));
         assert!(!protection_resources_healthy(true, true, false, true));
         assert!(!protection_resources_healthy(true, true, true, false));
+    }
+
+    #[test]
+    fn tun_route_excludes_cover_all_dns_upstreams() {
+        let values = dns_upstream_route_excludes(&[
+            "192.0.2.53:53".into(),
+            "198.51.100.53:53".into(),
+            "203.0.113.53:53".into(),
+            "198.51.100.53:53".into(),
+        ]);
+
+        assert_eq!(
+            values,
+            vec![
+                Value::String("192.0.2.53/32".into()),
+                Value::String("198.51.100.53/32".into()),
+                Value::String("203.0.113.53/32".into()),
+            ]
+        );
     }
 
     #[test]

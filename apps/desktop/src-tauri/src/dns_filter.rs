@@ -1,12 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, TrySendError},
-        Arc,
+        Arc, Mutex, OnceLock,
     },
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -40,12 +40,24 @@ const DNS_HEALTH_CHECK_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const DOMAIN_INDEX_CACHE_VERSION: u32 = 1;
 const DNS_WORKER_COUNT: usize = 4;
 const DNS_WORK_QUEUE_SIZE: usize = 256;
+const SYSTEM_RESOLVER_FALLBACK_TIMEOUT: Duration = Duration::from_millis(750);
+const SYSTEM_RESOLVER_FALLBACK_TTL: u32 = 30;
+
+static SYSTEM_RESOLVER_FALLBACK_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 struct DnsFilterConfig {
     domain_index: DomainRuleIndex,
     upstreams: Vec<String>,
+    split_upstreams: Vec<SplitDnsUpstream>,
+    system_resolver_fallback_enabled: bool,
     safe_search_enabled: bool,
     safe_search_mappings: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SplitDnsUpstream {
+    domains: Vec<String>,
+    upstreams: Vec<String>,
 }
 
 struct DnsJob {
@@ -81,6 +93,10 @@ pub(crate) fn start_dns_filter(state: &AppState) -> Result<(), String> {
         .map_err(|_| "系统 DNS 状态不可用")?
         .clone();
     config.upstreams = effective_dns_upstreams(&system_dns_servers, config.upstreams);
+    let split_resolvers = platform::split_dns_resolvers();
+    config.split_upstreams = effective_split_dns_upstreams(split_resolvers);
+    config.system_resolver_fallback_enabled =
+        !config.split_upstreams.is_empty() || !platform::existing_vpn_route_excludes().is_empty();
     let stop = Arc::new(AtomicBool::new(false));
     let socket = UdpSocket::bind(CLEANWEB_DNS_LISTEN)
         .map_err(|value| format!("无法启动 CleanWeb DNS 过滤服务：{value}"))?;
@@ -226,7 +242,21 @@ fn handle_dns_packet(
             return Some(response);
         }
     }
-    forward_dns_packet(packet, &config.upstreams).ok()
+    if let Some(upstreams) = split_upstreams_for_domain(&config.split_upstreams, &domain) {
+        if let Ok(response) = forward_dns_packet(packet, upstreams) {
+            if !dns_response_should_try_next_upstream(&response) {
+                return Some(response);
+            }
+        }
+    }
+    forward_dns_packet_with_system_fallback(
+        packet,
+        &message,
+        &domain,
+        &config.upstreams,
+        config.system_resolver_fallback_enabled,
+    )
+    .ok()
 }
 
 #[cfg(test)]
@@ -446,6 +476,26 @@ fn forward_dns_packet(packet: &[u8], upstreams: &[String]) -> Result<Vec<u8>, st
     Err(last_error.unwrap_or_else(|| std::io::Error::other("DNS upstream unavailable")))
 }
 
+fn forward_dns_packet_with_system_fallback(
+    packet: &[u8],
+    request: &Message,
+    domain: &str,
+    upstreams: &[String],
+    system_resolver_fallback_enabled: bool,
+) -> Result<Vec<u8>, std::io::Error> {
+    let response = forward_dns_packet(packet, upstreams);
+    if !system_resolver_fallback_enabled {
+        return response;
+    }
+    match response {
+        Ok(packet) if dns_response_should_try_next_upstream(&packet) => {
+            Ok(system_resolver_response(request, domain).unwrap_or(packet))
+        }
+        Ok(packet) => Ok(packet),
+        Err(error) => system_resolver_response(request, domain).ok_or(error),
+    }
+}
+
 fn dns_response_should_try_next_upstream(packet: &[u8]) -> bool {
     let Ok(message) = Message::from_vec(packet) else {
         return false;
@@ -454,6 +504,101 @@ fn dns_response_should_try_next_upstream(packet: &[u8]) -> bool {
         message.metadata.response_code,
         ResponseCode::NXDomain | ResponseCode::ServFail | ResponseCode::Refused
     ) || (message.metadata.response_code == ResponseCode::NoError && message.answers.is_empty())
+}
+
+fn system_resolver_response(request: &Message, domain: &str) -> Option<Vec<u8>> {
+    let query = request.queries.first()?;
+    let query_type = query.query_type();
+    if !matches!(query_type, RecordType::A | RecordType::AAAA) {
+        return None;
+    }
+    let addresses = system_resolver_addresses(domain, query_type);
+    system_resolver_response_for_addresses(request, addresses)
+}
+
+fn system_resolver_response_for_addresses(
+    request: &Message,
+    addresses: Vec<IpAddr>,
+) -> Option<Vec<u8>> {
+    let query = request.queries.first()?;
+    let query_type = query.query_type();
+    let mut response = Message::new(
+        request.metadata.id,
+        hickory_proto::op::MessageType::Response,
+        request.metadata.op_code,
+    );
+    response.metadata = Metadata::response_from_request(&request.metadata);
+    response.metadata.recursion_available = true;
+    response.add_queries(request.queries.iter().cloned());
+    for address in addresses {
+        let record = match (query_type, address) {
+            (RecordType::A, IpAddr::V4(address)) => Some(Record::from_rdata(
+                query.name().clone(),
+                SYSTEM_RESOLVER_FALLBACK_TTL,
+                RData::A(A(address)),
+            )),
+            (RecordType::AAAA, IpAddr::V6(address)) => Some(Record::from_rdata(
+                query.name().clone(),
+                SYSTEM_RESOLVER_FALLBACK_TTL,
+                RData::AAAA(AAAA(address)),
+            )),
+            _ => None,
+        };
+        if let Some(record) = record {
+            response.add_answer(record);
+        }
+    }
+    if response.answers.is_empty() {
+        return None;
+    }
+    response.to_vec().ok()
+}
+
+fn system_resolver_addresses(domain: &str, query_type: RecordType) -> Vec<IpAddr> {
+    let key = format!("{query_type:?}:{domain}");
+    let in_flight = SYSTEM_RESOLVER_FALLBACK_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let Ok(mut guard) = in_flight.lock() else {
+            return Vec::new();
+        };
+        if !guard.insert(key.clone()) {
+            return Vec::new();
+        }
+    }
+    let (sender, receiver) = mpsc::channel();
+    let domain = domain.to_owned();
+    let _ = thread::Builder::new()
+        .name("cleanweb-system-dns-fallback".into())
+        .spawn(move || {
+            let addresses = (domain.as_str(), 0)
+                .to_socket_addrs()
+                .map(|values| {
+                    values
+                        .filter_map(|value| match (query_type, value.ip()) {
+                            (RecordType::A, IpAddr::V4(address)) => Some(IpAddr::V4(address)),
+                            (RecordType::AAAA, IpAddr::V6(address)) => Some(IpAddr::V6(address)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let _ = sender.send(addresses);
+        });
+    let addresses = receiver
+        .recv_timeout(SYSTEM_RESOLVER_FALLBACK_TIMEOUT)
+        .unwrap_or_default();
+    if let Ok(mut guard) = in_flight.lock() {
+        guard.remove(&key);
+    }
+    deduplicate_addresses(addresses)
+}
+
+fn deduplicate_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
+    let mut seen = HashSet::new();
+    addresses
+        .into_iter()
+        .filter(|address| seen.insert(*address))
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -506,11 +651,49 @@ fn build_dns_filter_config(db: &Connection, data_dir: &Path) -> Result<DnsFilter
     Ok(DnsFilterConfig {
         domain_index,
         upstreams: configured_dns_upstreams(&settings),
+        split_upstreams: Vec::new(),
+        system_resolver_fallback_enabled: false,
         safe_search_enabled: settings
             .get("safe_search_enabled")
             .is_none_or(|value| value == "true"),
         safe_search_mappings: load_safe_search_mappings(db)?,
     })
+}
+
+pub(crate) fn effective_split_dns_upstreams(
+    resolvers: Vec<platform::SplitDnsResolver>,
+) -> Vec<SplitDnsUpstream> {
+    resolvers
+        .into_iter()
+        .filter_map(|resolver| {
+            let domains: Vec<String> = resolver
+                .domains
+                .into_iter()
+                .map(normalize_domain)
+                .filter(|value| !value.is_empty())
+                .collect();
+            let upstreams = effective_dns_upstreams(&resolver.nameservers, []);
+            if domains.is_empty() || upstreams.is_empty() {
+                return None;
+            }
+            Some(SplitDnsUpstream { domains, upstreams })
+        })
+        .collect()
+}
+
+fn split_upstreams_for_domain<'a>(
+    split_upstreams: &'a [SplitDnsUpstream],
+    domain: &str,
+) -> Option<&'a [String]> {
+    split_upstreams
+        .iter()
+        .find(|resolver| {
+            resolver
+                .domains
+                .iter()
+                .any(|suffix| domain == suffix || domain.ends_with(&format!(".{suffix}")))
+        })
+        .map(|resolver| resolver.upstreams.as_slice())
 }
 
 pub(crate) fn effective_dns_upstreams(
@@ -991,6 +1174,8 @@ mod tests {
             }])
             .unwrap(),
             upstreams: Vec::new(),
+            split_upstreams: Vec::new(),
+            system_resolver_fallback_enabled: false,
             safe_search_enabled: true,
             safe_search_mappings: HashMap::new(),
         };
@@ -1016,6 +1201,8 @@ mod tests {
         let config = DnsFilterConfig {
             domain_index: DomainRuleIndex::default(),
             upstreams: Vec::new(),
+            split_upstreams: Vec::new(),
+            system_resolver_fallback_enabled: false,
             safe_search_enabled: true,
             safe_search_mappings: HashMap::new(),
         };
@@ -1071,6 +1258,8 @@ mod tests {
                 DnsFilterConfig {
                     domain_index: DomainRuleIndex::default(),
                     upstreams: vec![slow_upstream_endpoint],
+                    split_upstreams: Vec::new(),
+                    system_resolver_fallback_enabled: false,
                     safe_search_enabled: false,
                     safe_search_mappings: HashMap::new(),
                 },
@@ -1108,6 +1297,8 @@ mod tests {
         let config = DnsFilterConfig {
             domain_index: DomainRuleIndex::default(),
             upstreams: vec![upstream],
+            split_upstreams: Vec::new(),
+            system_resolver_fallback_enabled: false,
             safe_search_enabled: true,
             safe_search_mappings: HashMap::from([(
                 "www.google.com".into(),
@@ -1182,6 +1373,69 @@ mod tests {
         assert_eq!(message.metadata.response_code, ResponseCode::NXDomain);
     }
 
+    #[test]
+    fn split_dns_upstreams_match_domain_suffixes() {
+        let split = vec![SplitDnsUpstream {
+            domains: vec!["corp.example".into()],
+            upstreams: vec!["10.0.0.53:53".into()],
+        }];
+
+        assert_eq!(
+            split_upstreams_for_domain(&split, "gitlab.corp.example"),
+            Some(&["10.0.0.53:53".to_owned()][..])
+        );
+        assert!(split_upstreams_for_domain(&split, "public.example").is_none());
+    }
+
+    #[test]
+    fn system_resolver_fallback_synthesizes_address_response() {
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("gitlab.internal.test.").unwrap(),
+            RecordType::A,
+        ));
+
+        let response = system_resolver_response_for_addresses(
+            &request,
+            vec![
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 150)),
+                IpAddr::V6("fd00::150".parse().unwrap()),
+            ],
+        )
+        .unwrap();
+        let message = Message::from_vec(&response).unwrap();
+
+        assert_eq!(message.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(message.answers.len(), 1);
+        assert_eq!(message.answers[0].data.to_string(), "192.168.1.150");
+    }
+
+    #[test]
+    fn system_resolver_fallback_replaces_negative_upstream_response() {
+        let upstream = spawn_dns_negative_upstream(ResponseCode::NXDomain);
+        let mut request = Message::query();
+        request.add_query(Query::query(
+            Name::from_ascii("localhost.").unwrap(),
+            RecordType::A,
+        ));
+
+        let response = forward_dns_packet_with_system_fallback(
+            &request.to_vec().unwrap(),
+            &request,
+            "localhost",
+            &[upstream],
+            true,
+        )
+        .unwrap();
+        let message = Message::from_vec(&response).unwrap();
+
+        assert_eq!(message.metadata.response_code, ResponseCode::NoError);
+        assert!(message
+            .answers
+            .iter()
+            .any(|record| record.data.to_string() == "127.0.0.1"));
+    }
+
     fn spawn_dns_upstream(name: &str, expected_record_type: RecordType, data: RData) -> String {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
@@ -1244,6 +1498,8 @@ mod tests {
         let config = DnsFilterConfig {
             domain_index: DomainRuleIndex::default(),
             upstreams: Vec::new(),
+            split_upstreams: Vec::new(),
+            system_resolver_fallback_enabled: false,
             safe_search_enabled: true,
             safe_search_mappings: HashMap::from([("yandex.ru".into(), "213.180.193.56".into())]),
         };
