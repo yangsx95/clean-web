@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, Seek, SeekFrom},
     net::IpAddr,
@@ -248,7 +247,6 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
     };
     let os = platform::os_version();
     let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-    let categories = rule_categories(state)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     prune_internal_cleanweb_dns_logs(&db)?;
     for connection in response.connections {
@@ -278,7 +276,7 @@ pub(crate) async fn sync_access_logs_inner(state: &AppState) -> Result<usize, St
         let category = if dns_resolution {
             Some("DNS 解析".to_owned())
         } else {
-            categories.get(&connection.rule_payload).cloned()
+            rule_category(&db, &connection.rule_payload)?
         };
         let rule_id = intern_access_log_string(&db, Some(connection.rule.as_str()))?;
         let category_id = intern_access_log_string(&db, category.as_deref())?;
@@ -1200,17 +1198,17 @@ fn setting_bool(state: &AppState, key: &str) -> Result<bool, String> {
         .map_err(error)?
         == "true")
 }
-fn rule_categories(state: &AppState) -> Result<HashMap<String, String>, String> {
-    let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    let mut statement = db
-        .prepare("SELECT DISTINCT pattern,category FROM imported_rules")
-        .map_err(error)?;
-    let rows = statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(error)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(error)?;
-    Ok(rows)
+fn rule_category(db: &rusqlite::Connection, rule_payload: &str) -> Result<Option<String>, String> {
+    if rule_payload.trim().is_empty() {
+        return Ok(None);
+    }
+    db.query_row(
+        "SELECT category FROM imported_rules WHERE pattern=?1 LIMIT 1",
+        params![rule_payload],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(error)
 }
 fn csv(value: String) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
@@ -1641,6 +1639,43 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM access_logs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn looks_up_rule_category_by_payload_index() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,category,enabled)
+             VALUES('rules','rule','Rules','https://example.invalid/rules','custom',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+             VALUES('rules','r1','Suffix','slow.example','Block','custom',1),
+                   ('rules','r2','Suffix','match.example','Block','security',2)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            rule_category(&db, "match.example").unwrap(),
+            Some("security".to_owned())
+        );
+        assert_eq!(rule_category(&db, "missing.example").unwrap(), None);
+
+        let plan: String = db
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT category FROM imported_rules WHERE pattern='match.example' LIMIT 1",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(
+            plan.contains("idx_imported_rules_pattern_category"),
+            "unexpected query plan: {plan}"
+        );
     }
 
     #[test]

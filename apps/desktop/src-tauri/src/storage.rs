@@ -359,6 +359,8 @@ fn create_imported_rule_indexes(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_imported_rules_kind_pattern
            ON imported_rules(matcher_kind, pattern);
+         CREATE INDEX IF NOT EXISTS idx_imported_rules_pattern_category
+           ON imported_rules(pattern, category);
          CREATE INDEX IF NOT EXISTS idx_imported_rules_subscription_line
            ON imported_rules(subscription_id, source_line);",
     )

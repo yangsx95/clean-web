@@ -239,7 +239,7 @@ export function App() {
   const dismissPolicyStatus=()=>{clearPolicyStatusTimer();setPolicyApplyStatus(null);setRuntimeProgress(null);};
   useEffect(()=>()=>clearPolicyStatusTimer(),[]);
   useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;let checking=false;const showQuitDialog=()=>{void backend.takePendingQuitRequest().catch(()=>false).finally(()=>{if(!cancelled)setDialog("quit");});};const showPendingQuitDialog=()=>{if(checking)return;checking=true;void backend.takePendingQuitRequest().then(pending=>{if(pending&&!cancelled)setDialog("quit");}).catch(()=>{}).finally(()=>{checking=false;});};void backend.onQuitRequested(showQuitDialog).then(stop=>{if(cancelled)stop();else unlisten=stop;});showPendingQuitDialog();const timer=window.setInterval(showPendingQuitDialog,500);window.addEventListener("focus",showPendingQuitDialog);document.addEventListener("visibilitychange",showPendingQuitDialog);return()=>{cancelled=true;window.clearInterval(timer);if(unlisten)unlisten();window.removeEventListener("focus",showPendingQuitDialog);document.removeEventListener("visibilitychange",showPendingQuitDialog);};},[]);
-  useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;void backend.onRuntimeProgress(progress=>{if(cancelled)return;setRuntimeProgress(progress);setPolicyApplyStatus(previous=>previous?.state==="applying"?{...previous,message:progress.message}:previous);setCoreStatus(previous=>previous?{...previous,components:progress.components}:previous);}).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[]);
+  useEffect(()=>{let cancelled=false;let unlisten:(()=>void)|undefined;void backend.onRuntimeProgress(progress=>{if(cancelled)return;setRuntimeProgress(progress);setPolicyApplyStatus(previous=>previous?.state==="applying"?{...previous,message:progress.message}:previous);setCoreStatus(previous=>({...(previous??{running:false,controller:"127.0.0.1:19090",configPath:"unavailable"}),components:progress.components}));}).then(stop=>{if(cancelled)stop();else unlisten=stop;});return()=>{cancelled=true;if(unlisten)unlisten();};},[]);
   useEffect(() => { let cancelled=false; void (async () => {
     try {
       const [bootstrap,current,core,publicStats,publicDailyStats,browserPolicies] = await Promise.all([backend.getBootstrapState(), backend.getSettings(),backend.getCoreStatus(),backend.getPublicAccessLogStats(),backend.getPublicAccessLogDailyStats(),backend.getBrowserPolicyStatus()]);
@@ -513,8 +513,8 @@ function AppMainContent({ contentPage, titles, settings, coreStatus, runtimeErro
   return <main>
     <header><div><span className="eyebrow">{contentPage === "overview" ? "网络保护" : contentPage === "logs" ? "本地隐私日志" : contentPage === "proxy" ? "受控代理层" : contentPage === "settings" ? "管理员设置" : "策略规则模型"}</span><h1>{contentPage === "overview" && coreStatus?.running !== true ? settings.protectionEnabled ? "保护需要恢复" : "保护未接管" : titles[contentPage]}</h1></div></header>
     {runtimeError&&<ErrorNoticeView notice={runtimeError} onClose={onDismissRuntimeError}/>}
-    {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} runtimeProgress={runtimeProgress} coreStatus={coreStatus} onClose={onDismissPolicyStatus}/>}
-    {contentPage === "overview" && <Overview settings={settings} coreStatus={coreStatus} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={onToggle} onOpenLogs={() => onNavigate("logs")} onOpenRules={() => onNavigate("rules")} onAddRule={onAddOverviewRule} />}
+    {policyApplyStatus&&<PolicyApplyBanner status={policyApplyStatus} runtimeProgress={runtimeProgress} onClose={onDismissPolicyStatus}/>}
+    {contentPage === "overview" && <Overview settings={settings} coreStatus={coreStatus} componentStatusPending={policyApplyStatus?.state==="applying"&&runtimeProgress?.operation==="start"} isBusy={isBusy} logs={accessLogs} logStats={accessLogStats} onToggle={onToggle} onOpenLogs={() => onNavigate("logs")} onOpenRules={() => onNavigate("rules")} onAddRule={onAddOverviewRule} />}
     {contentPage === "rules" && <Rules parentRules={parentRules} subscriptions={ruleSubscriptions} settings={settings} refreshingId={refreshingId} refreshProgress={refreshProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={onRefreshSubscription} onRefreshDue={onRefreshDueSubscriptions} onToggleParentRule={onToggleParentRule} onDeleteParentRule={onDeleteParentRule} onAddParentRule={onAddParentRule} onToggleSubscription={onToggleSubscription} onDelete={onDeleteSubscription} onEdit={onEditSubscription} onAdd={onAddRuleSubscription} />}
     {contentPage === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} dailyStats={accessLogDailyStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} onDecisionFilterChange={onDecisionFilterChange} onSearchChange={onSearchChange} onClear={onClearLogs} onExport={onExportLogs} />}
     {contentPage === "proxy" && <Proxy subscriptions={proxySubscriptions} refreshingId={refreshingId} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} isBusy={isBusy} onRefresh={onRefreshSubscription} onToggleSubscription={onToggleSubscription} onDelete={onDeleteSubscription} onAdd={onAddProxy} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={onAutomaticProxy} onSelectNode={onSelectProxyNode} sessionToken={sessionToken} />}
@@ -522,16 +522,14 @@ function AppMainContent({ contentPage, titles, settings, coreStatus, runtimeErro
   </main>;
 }
 
-function PolicyApplyBanner({status,runtimeProgress,coreStatus,onClose}:{status:PolicyApplyStatus;runtimeProgress:backend.RuntimeProgress|null;coreStatus:backend.CoreStatus|null;onClose?:()=>void}) {
+function PolicyApplyBanner({status,runtimeProgress,onClose}:{status:PolicyApplyStatus;runtimeProgress:backend.RuntimeProgress|null;onClose?:()=>void}) {
   const label = status.state === "applying" ? "应用中" : status.state === "applied" ? "已生效" : "应用失败";
-  const progressCoreStatus = runtimeProgress ? { ...(coreStatus ?? { running:false, controller:"127.0.0.1:19090", configPath:"unavailable" }), components: runtimeProgress.components } : coreStatus;
   const showRuntimeProgress = status.state === "applying" && runtimeProgress?.operation === "start";
   return <div className={`policy-apply-banner ${status.state}`} role={status.state === "failed" ? "alert" : "status"} aria-live="polite">
     <div className="policy-apply-summary"><span className="policy-apply-dot" /><b>{label}</b><span>{status.message}</span></div>
     {showRuntimeProgress && <div className="runtime-progress-wrap">
       <div className="runtime-progress-meta"><span>{runtimeProgress.phase}</span><b>{runtimeProgress.percent}%</b></div>
       <div className="runtime-progress-bar" aria-hidden="true"><span style={{width:`${Math.max(0,Math.min(100,runtimeProgress.percent))}%`}} /></div>
-      <RuntimeComponentStatus coreStatus={progressCoreStatus} compact pending />
     </div>}
     {onClose&&<button type="button" className="notice-close" aria-label="关闭应用状态提示" onClick={onClose}><X size={14}/></button>}
   </div>;
@@ -612,7 +610,7 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
   </div>;
 }
 
-function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOpenLogs, onOpenRules, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onOpenRules:()=>void; onAddRule:()=>void }) {
+function Overview({ settings, coreStatus, componentStatusPending, isBusy, logs, logStats, onToggle, onOpenLogs, onOpenRules, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;componentStatusPending:boolean;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onOpenRules:()=>void; onAddRule:()=>void }) {
   const running=coreStatus?.running===true;
   const recentLogs = logs.slice(0,8);
   const enabledControls = [
@@ -644,7 +642,7 @@ function Overview({ settings, coreStatus, isBusy, logs, logStats, onToggle, onOp
         <article><span>今日放行</span><strong>{compactCount(logStats.todayAllow)}</strong><small>累计 {compactCount(logStats.allow)} 次</small></article>
         <article><span>今日请求</span><strong>{compactCount(logStats.todayTotal)}</strong><small>累计 {compactCount(logStats.total)} 条</small></article>
       </section>
-      <RuntimeComponentStatus coreStatus={coreStatus} />
+      <RuntimeComponentStatus coreStatus={coreStatus} pending={componentStatusPending} />
       <section className="cw-dashboard-grid">
         <article className="cw-panel quick-policy-panel">
           <div className="cw-panel-head"><h3>快捷开关</h3><span>{enabledControls} 项启用</span></div>
