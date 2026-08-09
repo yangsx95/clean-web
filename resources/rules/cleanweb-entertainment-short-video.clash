@@ -10,6 +10,7 @@ DOMAIN,lf-douyin-security-h5.amemv.com,DIRECT
 DOMAIN,lf-fe-douyin-account.amemv.com,DIRECT
 DOMAIN,s3.bytecdn.cn,DIRECT
 DOMAIN,s3a.bytecdn.cn,DIRECT
+DOMAIN,mcs.zijieapi.com,DIRECT
 # Preview media hosts use rotating prefixes, so exact host rules are not stable.
 DOMAIN-SUFFIX,douyinpic.com,DIRECT
 DOMAIN-SUFFIX,douyinvod.com,DIRECT
