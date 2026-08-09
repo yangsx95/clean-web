@@ -323,6 +323,7 @@ pub fn run() {
             subscription_download::import_proxy_payload,
             subscription_download::refresh_subscription,
             subscription_download::refresh_due_subscriptions,
+            subscription_download::refresh_builtin_rule_sources,
             mihomo::get_core_status,
             mihomo::start_protection,
             mihomo::stop_protection,

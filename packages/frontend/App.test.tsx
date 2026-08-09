@@ -934,8 +934,9 @@ describe("management actions", () => {
     expect(screen.getByRole("button", { name: "删除我的规则" })).toBeTruthy();
   });
 
-  it("checks due builtin rule updates without applying when nothing is due", async () => {
-    const refreshDue = vi.spyOn(backend, "refreshDueSubscriptions").mockResolvedValue(0);
+  it("forces builtin rule sources to refresh even when their interval is not due", async () => {
+    const refreshBuiltin = vi.spyOn(backend, "refreshBuiltinRuleSources").mockResolvedValue({checkedCount:2,updatedCount:2,unchangedCount:0,failedCount:0});
+    const coreStatus = vi.spyOn(backend, "getCoreStatus").mockResolvedValue({ running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview" });
     const reload = vi.spyOn(backend, "reloadProtection").mockResolvedValue({ running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview" });
 
     render(<App />);
@@ -944,10 +945,11 @@ describe("management actions", () => {
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     await userEvent.click(screen.getByRole("button", { name: "检查更新" }));
 
-    await screen.findByText("规则来源已是最新");
-    expect(refreshDue).toHaveBeenCalled();
-    expect(reload).not.toHaveBeenCalled();
-    refreshDue.mockRestore();
+    await screen.findByText("已重新下载并应用 2 个规则来源");
+    expect(refreshBuiltin).toHaveBeenCalledWith("browser-preview");
+    expect(reload).toHaveBeenCalled();
+    refreshBuiltin.mockRestore();
+    coreStatus.mockRestore();
     reload.mockRestore();
   });
 

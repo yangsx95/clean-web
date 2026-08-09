@@ -268,6 +268,9 @@ fn initialize_schema(
            enabled INTEGER NOT NULL DEFAULT 1,
            last_updated_at TEXT,
            last_error TEXT,
+           content_sha256 TEXT,
+           http_etag TEXT,
+           http_last_modified TEXT,
            ui_group TEXT,
            ui_order INTEGER,
            toggleable INTEGER NOT NULL DEFAULT 0,
@@ -714,6 +717,9 @@ fn add_subscription_metadata_columns(db: &Connection) -> rusqlite::Result<()> {
         ("ui_order", "INTEGER"),
         ("toggleable", "INTEGER NOT NULL DEFAULT 0"),
         ("description", "TEXT"),
+        ("content_sha256", "TEXT"),
+        ("http_etag", "TEXT"),
+        ("http_last_modified", "TEXT"),
     ];
     for (column, column_type) in columns {
         if !table_has_column(db, "subscriptions", column)? {

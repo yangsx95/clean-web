@@ -1,8 +1,15 @@
 use std::{fs, path::PathBuf, time::Duration};
 
-use reqwest::header::CONTENT_LENGTH;
+use reqwest::{
+    header::{
+        CACHE_CONTROL, CONTENT_LENGTH, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED,
+        PRAGMA,
+    },
+    StatusCode,
+};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
@@ -23,6 +30,31 @@ pub struct RefreshReport {
     pub ignored_count: usize,
     pub proxy_count: usize,
     pub group_count: usize,
+}
+
+#[derive(Debug)]
+struct RefreshOutcome {
+    report: RefreshReport,
+    changed: bool,
+}
+
+#[derive(Debug)]
+enum DownloadOutcome {
+    NotModified,
+    Downloaded {
+        bytes: Vec<u8>,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleSourceRefreshReport {
+    pub checked_count: usize,
+    pub updated_count: usize,
+    pub unchanged_count: usize,
+    pub failed_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,18 +83,21 @@ pub async fn refresh_subscription(
     state: State<'_, AppState>,
 ) -> Result<RefreshReport, String> {
     state.require_session(&session_token)?;
-    refresh_subscription_inner(id, &state, Some(&app)).await
+    Ok(refresh_subscription_inner(id, &state, Some(&app))
+        .await?
+        .report)
 }
 
 async fn refresh_subscription_inner(
     id: String,
     state: &AppState,
     app: Option<&AppHandle>,
-) -> Result<RefreshReport, String> {
-    let (kind, url, configured_format, category) = {
+) -> Result<RefreshOutcome, String> {
+    let (kind, url, configured_format, category, stored_hash, etag, last_modified) = {
         let db = state.db.lock().map_err(|_| "数据库不可用")?;
         db.query_row(
-            "SELECT kind,url,format,COALESCE(category,'custom') FROM subscriptions WHERE id=?1",
+            "SELECT kind,url,format,COALESCE(category,'custom'),content_sha256,http_etag,http_last_modified
+             FROM subscriptions WHERE id=?1",
             params![id],
             |row| {
                 Ok((
@@ -70,26 +105,73 @@ async fn refresh_subscription_inner(
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
         .map_err(|_| "订阅不存在")?
     };
-    let bytes = if kind == "rule" {
+    let downloaded = if kind == "rule" {
         match local_rule_source_path(&url) {
             Ok(Some(path)) => {
                 emit_refresh_progress(app, &id, "downloading", 0, None, "正在读取本地规则");
-                fs::read(&path)
-                    .map_err(|value| format!("读取本地规则失败（{}）：{value}", path.display()))?
+                DownloadOutcome::Downloaded {
+                    bytes: fs::read(&path).map_err(|value| {
+                        format!("读取本地规则失败（{}）：{value}", path.display())
+                    })?,
+                    etag: None,
+                    last_modified: None,
+                }
             }
-            Ok(None) => download_subscription_bytes(&url, app, &id).await?,
+            Ok(None) => {
+                download_subscription_bytes(
+                    &url,
+                    app,
+                    &id,
+                    etag.as_deref(),
+                    last_modified.as_deref(),
+                )
+                .await?
+            }
             Err(reason) => return record_error(state, &id, reason),
         }
     } else {
-        download_subscription_bytes(&url, app, &id).await?
+        download_subscription_bytes(&url, app, &id, etag.as_deref(), last_modified.as_deref())
+            .await?
+    };
+    if matches!(downloaded, DownloadOutcome::NotModified) {
+        mark_subscription_unchanged(state, &id, etag.as_deref(), last_modified.as_deref(), false)?;
+        return Ok(RefreshOutcome {
+            report: cached_refresh_report(state, &id, configured_format.as_deref())?,
+            changed: false,
+        });
+    }
+    let DownloadOutcome::Downloaded {
+        bytes,
+        etag: response_etag,
+        last_modified: response_last_modified,
+    } = downloaded
+    else {
+        unreachable!()
     };
     if bytes.len() > MAX_SUBSCRIPTION_BYTES {
         return record_error(state, &id, "订阅文件超过20MB限制".into());
+    }
+    let content_hash = format!("{:x}", Sha256::digest(&bytes));
+    if stored_hash.as_deref() == Some(content_hash.as_str()) {
+        mark_subscription_unchanged(
+            state,
+            &id,
+            response_etag.as_deref(),
+            response_last_modified.as_deref(),
+            true,
+        )?;
+        return Ok(RefreshOutcome {
+            report: cached_refresh_report(state, &id, configured_format.as_deref())?,
+            changed: false,
+        });
     }
     let byte_len = bytes.len();
     let text = String::from_utf8(bytes).map_err(|_| "订阅不是有效UTF-8文本")?;
@@ -117,9 +199,80 @@ async fn refresh_subscription_inner(
         report
     };
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
-    db.execute("UPDATE subscriptions SET format=?1,last_updated_at=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?2",params![report.detected_format,id]).map_err(error)?;
+    db.execute(
+        "UPDATE subscriptions
+            SET format=?1,last_updated_at=CURRENT_TIMESTAMP,last_error=NULL,
+                content_sha256=?2,http_etag=?3,http_last_modified=?4
+          WHERE id=?5",
+        params![
+            report.detected_format,
+            content_hash,
+            response_etag,
+            response_last_modified,
+            id
+        ],
+    )
+    .map_err(error)?;
     drop(db);
-    Ok(report)
+    Ok(RefreshOutcome {
+        report,
+        changed: true,
+    })
+}
+
+fn mark_subscription_unchanged(
+    state: &AppState,
+    id: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    replace_validators: bool,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    if replace_validators {
+        db.execute(
+            "UPDATE subscriptions
+                SET last_updated_at=CURRENT_TIMESTAMP,last_error=NULL,
+                    http_etag=?1,http_last_modified=?2
+              WHERE id=?3",
+            params![etag, last_modified, id],
+        )
+        .map_err(error)?;
+    } else {
+        db.execute(
+            "UPDATE subscriptions
+                SET last_updated_at=CURRENT_TIMESTAMP,last_error=NULL,
+                    http_etag=COALESCE(?1,http_etag),
+                    http_last_modified=COALESCE(?2,http_last_modified)
+              WHERE id=?3",
+            params![etag, last_modified, id],
+        )
+        .map_err(error)?;
+    }
+    Ok(())
+}
+
+fn cached_refresh_report(
+    state: &AppState,
+    id: &str,
+    configured_format: Option<&str>,
+) -> Result<RefreshReport, String> {
+    let db = state.db.lock().map_err(|_| "数据库不可用")?;
+    let imported_count = db
+        .query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1)
+               + (SELECT COUNT(*) FROM safe_search_mappings WHERE subscription_id=?1)",
+            params![id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(error)? as usize;
+    Ok(RefreshReport {
+        detected_format: configured_format.unwrap_or("auto").to_owned(),
+        imported_count,
+        ignored_count: 0,
+        proxy_count: 0,
+        group_count: 0,
+    })
 }
 
 fn local_rule_source_path(source: &str) -> Result<Option<PathBuf>, String> {
@@ -144,20 +297,44 @@ async fn download_subscription_bytes(
     url: &str,
     app: Option<&AppHandle>,
     id: &str,
-) -> Result<Vec<u8>, String> {
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<DownloadOutcome, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .user_agent("clash-verge/v2.0")
         .build()
         .map_err(error)?;
-    let response = client
+    let mut request = client
         .get(url)
+        .header(CACHE_CONTROL, "no-cache")
+        .header(PRAGMA, "no-cache");
+    if let Some(value) = etag {
+        request = request.header(IF_NONE_MATCH, value);
+    }
+    if let Some(value) = last_modified {
+        request = request.header(IF_MODIFIED_SINCE, value);
+    }
+    let response = request
         .send()
         .await
         .map_err(|value| format!("订阅下载失败：{value}"))?;
+    if response.status() == StatusCode::NOT_MODIFIED {
+        return Ok(DownloadOutcome::NotModified);
+    }
     if !response.status().is_success() {
         return Err(format!("服务器返回 {}", response.status()));
     }
+    let response_etag = response
+        .headers()
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let response_last_modified = response
+        .headers()
+        .get(LAST_MODIFIED)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let total = response
         .headers()
         .get(CONTENT_LENGTH)
@@ -167,7 +344,11 @@ async fn download_subscription_bytes(
         return Err("订阅文件超过20MB限制".into());
     }
     emit_refresh_progress(app, id, "downloading", 0, total, "正在下载规则");
-    read_subscription_bytes(response, app, id).await
+    Ok(DownloadOutcome::Downloaded {
+        bytes: read_subscription_bytes(response, app, id).await?,
+        etag: response_etag,
+        last_modified: response_last_modified,
+    })
 }
 
 async fn read_subscription_bytes(
@@ -317,11 +498,59 @@ pub async fn refresh_due_subscriptions(state: State<'_, AppState>) -> Result<usi
     };
     let mut updated = 0;
     for id in due {
-        if refresh_subscription_inner(id, &state, None).await.is_ok() {
-            updated += 1;
+        if let Ok(outcome) = refresh_subscription_inner(id, &state, None).await {
+            updated += usize::from(outcome.changed);
         }
     }
     Ok(updated)
+}
+
+#[tauri::command]
+pub async fn refresh_builtin_rule_sources(
+    session_token: String,
+    state: State<'_, AppState>,
+) -> Result<RuleSourceRefreshReport, String> {
+    state.require_session(&session_token)?;
+    refresh_builtin_rule_sources_inner(&state).await
+}
+
+async fn refresh_builtin_rule_sources_inner(
+    state: &AppState,
+) -> Result<RuleSourceRefreshReport, String> {
+    let source_ids = {
+        let db = state.db.lock().map_err(|_| "数据库不可用")?;
+        let mut statement = db
+            .prepare(
+                "SELECT id FROM subscriptions
+                  WHERE kind='rule'
+                    AND (id LIKE 'default:%' OR id LIKE 'local:cleanweb:%' OR url LIKE 'builtin://%')
+                  ORDER BY COALESCE(ui_order,999999),created_at",
+            )
+            .map_err(error)?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(error)?;
+        ids
+    };
+    let checked_count = source_ids.len();
+    let mut updated_count = 0;
+    let mut unchanged_count = 0;
+    let mut failed_count = 0;
+    for id in source_ids {
+        match refresh_subscription_inner(id, state, None).await {
+            Ok(outcome) if outcome.changed => updated_count += 1,
+            Ok(_) => unchanged_count += 1,
+            Err(_) => failed_count += 1,
+        }
+    }
+    Ok(RuleSourceRefreshReport {
+        checked_count,
+        updated_count,
+        unchanged_count,
+        failed_count,
+    })
 }
 
 fn refresh_rules(
@@ -704,6 +933,131 @@ mod tests {
             .unwrap();
         assert_eq!(cached, 1, "源文件丢失后必须保留最后一次有效缓存");
     }
+
+    #[test]
+    fn manual_builtin_check_ignores_interval_and_detects_content_hash_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("builtin-rules.clash");
+        std::fs::write(&source_path, "DOMAIN-SUFFIX,first.example,REJECT\n").unwrap();
+        let state = AppState::open(directory.path().join("cleanweb.db")).unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute("DELETE FROM imported_rules", []).unwrap();
+            db.execute("DELETE FROM safe_search_mappings", []).unwrap();
+            db.execute("DELETE FROM subscriptions", []).unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(
+                   id,kind,name,url,format,category,update_interval_hours,enabled,last_updated_at
+                 ) VALUES(
+                   'default:test:forced','rule','Forced check',?1,'clash','custom',24,0,CURRENT_TIMESTAMP
+                 )",
+                params![source_path.to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        let first =
+            tauri::async_runtime::block_on(refresh_builtin_rule_sources_inner(&state)).unwrap();
+        assert_eq!(first.checked_count, 1);
+        assert_eq!(first.updated_count, 1);
+        assert_eq!(first.unchanged_count, 0);
+
+        let unchanged =
+            tauri::async_runtime::block_on(refresh_builtin_rule_sources_inner(&state)).unwrap();
+        assert_eq!(unchanged.updated_count, 0);
+        assert_eq!(unchanged.unchanged_count, 1);
+
+        std::fs::write(&source_path, "DOMAIN-SUFFIX,second.example,REJECT\n").unwrap();
+        let changed =
+            tauri::async_runtime::block_on(refresh_builtin_rule_sources_inner(&state)).unwrap();
+        assert_eq!(changed.updated_count, 1);
+        let current_pattern: String = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT pattern FROM imported_rules WHERE subscription_id='default:test:forced'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(current_pattern, "second.example");
+    }
+
+    #[test]
+    fn http_rule_check_uses_etag_and_accepts_not_modified() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            thread,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(request.contains("cache-control: no-cache"));
+                if request_index == 0 {
+                    let body = "DOMAIN-SUFFIX,etag.example,REJECT\n";
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .unwrap();
+                } else {
+                    assert!(request.contains("if-none-match: \"v1\""));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                }
+            }
+        });
+
+        let state = AppState::open(":memory:").unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.execute("DELETE FROM imported_rules", []).unwrap();
+            db.execute("DELETE FROM safe_search_mappings", []).unwrap();
+            db.execute("DELETE FROM subscriptions", []).unwrap();
+            db.execute(
+                "INSERT INTO subscriptions(
+                   id,kind,name,url,format,category,update_interval_hours,enabled,last_updated_at
+                 ) VALUES(
+                   'default:test:http','rule','HTTP check',?1,'clash','custom',24,1,CURRENT_TIMESTAMP
+                 )",
+                params![format!("http://{address}/rules.clash")],
+            )
+            .unwrap();
+        }
+
+        let first =
+            tauri::async_runtime::block_on(refresh_builtin_rule_sources_inner(&state)).unwrap();
+        assert_eq!(first.updated_count, 1);
+        let second =
+            tauri::async_runtime::block_on(refresh_builtin_rule_sources_inner(&state)).unwrap();
+        assert_eq!(second.updated_count, 0);
+        assert_eq!(second.unchanged_count, 1);
+        server.join().unwrap();
+    }
+
     #[test]
     fn store_proxy_payload_encrypts_payload() {
         let _guard = test_key_env_lock();

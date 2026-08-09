@@ -371,10 +371,17 @@ export function App() {
     if(!sessionToken){setDialog("unlock");return;}
     await runScopedOperation(busyScope.refreshDueSubscriptions, async()=>{
       showPolicyStatus({state:"applying",message:"正在检查规则来源更新…"});
-      const count=await backend.refreshDueSubscriptions();
+      const report=await backend.refreshBuiltinRuleSources(sessionToken);
       setSubscriptions(await backend.listSubscriptions(sessionToken));
-      if(count>0){
-        await reloadRuntime(sessionToken,{applyingMessage:`检测到 ${count} 个来源需要更新，正在应用…`});
+      if(report.updatedCount>0){
+        await reloadRuntime(sessionToken,{applyingMessage:`检测到 ${report.updatedCount} 个来源有更新，正在应用…`});
+      }
+      if(report.failedCount>0){
+        const message=`已更新 ${report.updatedCount} 个规则来源，${report.failedCount} 个检查失败`;
+        showPolicyStatus({state:"failed",message});
+        setRuntimeError({message,detail:"失败来源继续使用最后一次有效规则，请检查网络后重试。"});
+      }else if(report.updatedCount>0){
+        showPolicyStatus({state:"applied",message:`已重新下载并应用 ${report.updatedCount} 个规则来源`});
       }else{
         showPolicyStatus({state:"applied",message:"规则来源已是最新"});
       }

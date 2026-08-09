@@ -17,6 +17,7 @@ export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|
 export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
 export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
+export type RuleSourceRefreshReport = { checkedCount:number; updatedCount:number; unchangedCount:number; failedCount:number };
 export type SubscriptionRefreshProgress = {
   id:string;
   phase:"queued"|"downloading"|"importing"|"applying"|"complete"|"failed";
@@ -322,6 +323,11 @@ export async function refreshSubscription(sessionToken:string,id:string):Promise
   return {detectedFormat:"preview",importedCount:0,ignoredCount:0,proxyCount:0,groupCount:0};
 }
 export async function refreshDueSubscriptions():Promise<number>{return usesDesktopBackend()?invoke("refresh_due_subscriptions"):0;}
+export async function refreshBuiltinRuleSources(sessionToken:string):Promise<RuleSourceRefreshReport>{
+  if(usesDesktopBackend())return invoke("refresh_builtin_rule_sources",{sessionToken});
+  const checkedCount=loadPreviewSubscriptions().filter(item=>item.kind==="rule"&&isBuiltinSubscription(item)).length;
+  return {checkedCount,updatedCount:0,unchangedCount:checkedCount,failedCount:0};
+}
 export async function getCoreStatus():Promise<CoreStatus>{if(usesDesktopBackend())return invoke("get_core_status");if(isMobileTauri())return mobileCoreStatus(await mobileVpnStatus());previewCoreStatus=loadPreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();return mobileCoreStatus(await mobileStartVpn());}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(true)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function autoStartProtection():Promise<CoreStatus>{return usesDesktopBackend()?invoke("auto_start_protection"):getCoreStatus();}
