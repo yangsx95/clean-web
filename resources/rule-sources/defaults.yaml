@@ -1,22 +1,13 @@
 default_rule_sources:
-  - id: default:stevenblack:porn
-    name: StevenBlack · Porn-only Hosts
-    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
-    format: hosts
+  - id: default:oisd:nsfw
+    name: OISD · NSFW
+    url: https://nsfw.oisd.nl/
+    format: adblock
     category: pornography
     update_interval_hours: 24
     ui_group: 色情内容
     ui_order: 10
-    description: StevenBlack 成人内容基础 hosts 列表
-  - id: default:blocklistproject:porn
-    name: The Block List Project · Porn (NL)
-    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
-    format: domain-list
-    category: pornography
-    update_interval_hours: 24
-    ui_group: 色情内容
-    ui_order: 11
-    description: Block List Project 成人内容域名列表
+    description: OISD 聚合维护的色情、成人和冲击内容域名列表
   - id: default:stevenblack:gambling
     name: StevenBlack · Gambling-only Hosts
     url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts
@@ -242,16 +233,11 @@ recommended_rule_sources:
     format: hosts
     category: gambling
     description: Steven Black 赌博分类 hosts 列表
-  - name: 色情内容拦截
-    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts
-    format: hosts
+  - name: OISD · NSFW
+    url: https://nsfw.oisd.nl/
+    format: adblock
     category: pornography
-    description: Steven Black 色情分类 hosts 列表
-  - name: 成人站点扩展
-    url: https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt
-    format: domain-list
-    category: pornography
-    description: BlocklistProject 维护的大体量成人内容域名列表
+    description: OISD 聚合维护的色情、成人和冲击内容域名列表
   - name: 恶意软件域名
     url: https://urlhaus.abuse.ch/downloads/hostfile/
     format: hosts

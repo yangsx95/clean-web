@@ -466,6 +466,7 @@ fn seed_default_rule_subscriptions(
         )?;
     }
     sync_builtin_subscription_names(db, defaults)?;
+    migrate_pornography_sources_to_oisd(db)?;
     db.execute(
         "UPDATE subscriptions
             SET enabled=1
@@ -486,11 +487,52 @@ fn seed_default_rule_subscriptions(
              OR id='default:easylist:privacy'
              OR id='local:cleanweb:entertainment-cdn'
              OR id='default:cleanweb:strict-supplement'
-             OR id='default:cleanweb:strict-platforms'",
+             OR id='default:cleanweb:strict-platforms'
+             OR id='default:stevenblack:porn'
+             OR id='default:blocklistproject:porn'",
         [],
     )?;
     seed_configured_rule_cache(db, rule_source_dir, defaults)?;
     enable_entertainment_sources_by_default_v2(db)?;
+    Ok(())
+}
+
+fn migrate_pornography_sources_to_oisd(db: &Connection) -> rusqlite::Result<()> {
+    let completed = db
+        .query_row(
+            "SELECT value FROM settings WHERE key='migration.pornography_sources_to_oisd_v1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|value| value == "true");
+    if completed {
+        return Ok(());
+    }
+
+    // Keep the previous Block List Project rules as a temporary last-known-good
+    // cache. The next successful OISD refresh atomically replaces these rows.
+    let oisd_rule_count: i64 = db.query_row(
+        "SELECT COUNT(*) FROM imported_rules WHERE subscription_id='default:oisd:nsfw'",
+        [],
+        |row| row.get(0),
+    )?;
+    if oisd_rule_count == 0 {
+        db.execute(
+            "INSERT OR IGNORE INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+             SELECT 'default:oisd:nsfw',
+                    'default:oisd:nsfw:' || source_line,
+                    matcher_kind,pattern,action,category,source_line
+               FROM imported_rules
+              WHERE subscription_id='default:blocklistproject:porn'",
+            [],
+        )?;
+    }
+    db.execute(
+        "INSERT OR REPLACE INTO settings(key,value)
+         VALUES('migration.pornography_sources_to_oisd_v1','true')",
+        [],
+    )?;
     Ok(())
 }
 
@@ -2344,9 +2386,9 @@ mod tests {
         let db = state.db.lock().unwrap();
         db.execute(
             "UPDATE subscriptions
-             SET name='内置规则 · BlocklistProject porn-nl',
-                 url='https://example.test/porn.txt'
-             WHERE id='default:blocklistproject:porn'",
+             SET name='内置规则 · 旧 OISD 名称',
+                 url='https://example.test/nsfw.txt'
+             WHERE id='default:oisd:nsfw'",
             [],
         )
         .unwrap();
@@ -2366,9 +2408,9 @@ mod tests {
         )
         .unwrap();
 
-        let blocklist_name: String = db
+        let oisd_name: String = db
             .query_row(
-                "SELECT name FROM subscriptions WHERE id='default:blocklistproject:porn'",
+                "SELECT name FROM subscriptions WHERE id='default:oisd:nsfw'",
                 [],
                 |row| row.get(0),
             )
@@ -2380,8 +2422,57 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(blocklist_name, "The Block List Project · Porn (NL)");
+        assert_eq!(oisd_name, "OISD · NSFW");
         assert_eq!(cleanweb_name, "CleanWeb · 短视频与直播");
+    }
+
+    #[test]
+    fn migrates_previous_pornography_cache_to_oisd_before_removing_old_sources() {
+        let state = AppState::open(":memory:").unwrap();
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "DELETE FROM settings WHERE key='migration.pornography_sources_to_oisd_v1'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled)
+             VALUES('default:blocklistproject:porn','rule','旧成人源','https://example.test/porn.txt','domain-list','pornography',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
+             VALUES('default:blocklistproject:porn','old:7','Suffix','cached.example','Block','pornography',7)",
+            [],
+        )
+        .unwrap();
+
+        seed_default_rule_subscriptions(
+            &db,
+            &workspace_rule_source_dir(),
+            &load_rule_source_defaults(&workspace_rule_source_dir()).unwrap(),
+        )
+        .unwrap();
+
+        let cached_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules
+                  WHERE subscription_id='default:oisd:nsfw'
+                    AND pattern='cached.example'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let old_source_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM subscriptions WHERE id='default:blocklistproject:porn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cached_count, 1, "升级后应保留上一份有效成人规则缓存");
+        assert_eq!(old_source_count, 0, "旧成人规则源应在迁移后移除");
     }
 
     #[test]
@@ -2436,11 +2527,11 @@ mod tests {
         let db = state.db.lock().unwrap();
         let result = update_subscription_inner(
             &db,
-            "default:stevenblack:porn",
+            "default:oisd:nsfw",
             &UpdateSubscription {
                 name: "不应修改".into(),
                 url: "https://example.test/new".into(),
-                format: Some("hosts".into()),
+                format: Some("adblock".into()),
                 category: Some("pornography".into()),
                 update_interval_hours: Some(24),
             },

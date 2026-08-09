@@ -882,8 +882,7 @@ describe("management actions", () => {
 
   it("does not allow default rule sources to be disabled or deleted", async () => {
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([
-      {id:"default:stevenblack:porn",kind:"rule",name:"StevenBlack · Porn-only Hosts",url:"https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",format:"hosts",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:128,uiGroup:"色情内容",uiOrder:10},
-      {id:"default:blocklistproject:porn",kind:"rule",name:"The Block List Project · Porn (NL)",url:"https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt",format:"domain-list",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:02:00",importedRuleCount:999950,uiGroup:"色情内容",uiOrder:11},
+      {id:"default:oisd:nsfw",kind:"rule",name:"OISD · NSFW",url:"https://nsfw.oisd.nl/",format:"adblock",category:"pornography",updateIntervalHours:24,enabled:true,lastUpdatedAt:"2026-08-01 08:00:00",importedRuleCount:488042,uiGroup:"色情内容",uiOrder:10},
       {id:"local:cleanweb:entertainment-short-video",kind:"rule",name:"CleanWeb · 短视频与直播",url:"https://example.test/cleanweb-entertainment-short-video.txt",format:"clash",category:"entertainment",enabled:true,uiGroup:"短视频与直播",uiOrder:60,toggleable:true,description:"短视频和直播平台"},
       {id:"default:adaway:hosts",kind:"rule",name:"AdAway · Hosts",url:"https://adaway.org/hosts.txt",format:"hosts",category:"ads",enabled:false,importedRuleCount:7124,activeRuleCount:0,uiGroup:"广告与跟踪",uiOrder:70,toggleable:true,description:"AdAway 官方 hosts 广告拦截列表，体量较轻"},
       {id:"custom-source",kind:"rule",name:"我的规则",url:"https://example.test/custom",format:"hosts",category:"custom",enabled:true},
@@ -894,29 +893,24 @@ describe("management actions", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
     expect(screen.getByRole("heading", { name: "内置规则" })).toBeTruthy();
-    expect(screen.getAllByText("1m/1m").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("488k/488k").length).toBeGreaterThan(0);
     expect(screen.queryByRole("progressbar", { name: /下载应用进度/ })).toBeNull();
     expect(screen.queryByRole("heading", { name: "强制保护" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "可选保护" })).toBeNull();
     expect(screen.queryByText("CleanWeb · 短视频与直播")).toBeNull();
-    expect(screen.queryByText("The Block List Project · Porn (NL)")).toBeNull();
-    expect(screen.queryByText("StevenBlack · Porn-only Hosts")).toBeNull();
+    expect(screen.queryByText("OISD · NSFW")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "展开色情内容分类" }));
     expect(screen.getAllByText("已生效").length).toBeGreaterThan(0);
     expect(screen.getAllByText("规则生效").length).toBeGreaterThan(0);
-    expect(screen.getByText("The Block List Project · Porn (NL)")).toBeTruthy();
-    expect(screen.getByText("StevenBlack · Porn-only Hosts")).toBeTruthy();
+    expect(screen.getByText("OISD · NSFW")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "收起色情内容分类" }));
-    expect(screen.queryByText("The Block List Project · Porn (NL)")).toBeNull();
-    expect(screen.queryByText("StevenBlack · Porn-only Hosts")).toBeNull();
+    expect(screen.queryByText("OISD · NSFW")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "展开色情内容分类" }));
-    expect(screen.getByText("The Block List Project · Porn (NL)")).toBeTruthy();
-    expect(screen.getByText("StevenBlack · Porn-only Hosts")).toBeTruthy();
-    expect(screen.queryByText("https://raw.githubusercontent.com/blocklistproject/Lists/master/alt-version/porn-nl.txt")).toBeNull();
-    expect(screen.getByRole("button", { name: "更新StevenBlack · Porn-only Hosts" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "更新The Block List Project · Porn (NL)" })).toBeTruthy();
-    expect(screen.queryByRole("switch", { name: "StevenBlack · Porn-only Hosts订阅" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "删除StevenBlack · Porn-only Hosts" })).toBeNull();
+    expect(screen.getByText("OISD · NSFW")).toBeTruthy();
+    expect(screen.queryByText("https://nsfw.oisd.nl/")).toBeNull();
+    expect(screen.getByRole("button", { name: "更新OISD · NSFW" })).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "OISD · NSFW订阅" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除OISD · NSFW" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "展开短视频与直播分类" }));
     expect(screen.getByText("CleanWeb · 短视频与直播")).toBeTruthy();
     expect(screen.getByRole("switch", { name: "CleanWeb · 短视频与直播规则" })).toBeTruthy();
