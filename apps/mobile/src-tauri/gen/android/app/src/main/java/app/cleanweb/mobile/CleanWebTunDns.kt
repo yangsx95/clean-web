@@ -65,22 +65,39 @@ object CleanWebTunDns {
     return packet
   }
 
-  fun forwardDns(query: Query, protectSocket: (DatagramSocket) -> Boolean): ByteArray? {
-    DatagramSocket().use { socket ->
-      if (!protectSocket(socket)) return null
-      socket.soTimeout = 2000
-      val request = DatagramPacket(
-        query.payload,
-        query.payload.size,
-        InetAddress.getByName("1.1.1.1"),
-        DNS_PORT,
-      )
-      socket.send(request)
-      val buffer = ByteArray(4096)
-      val response = DatagramPacket(buffer, buffer.size)
-      socket.receive(response)
-      return buffer.copyOf(response.length)
+  fun forwardDns(
+    query: Query,
+    upstreams: List<InetAddress>,
+    protectSocket: (DatagramSocket) -> Boolean,
+  ): ByteArray? {
+    for (upstream in upstreams) {
+      try {
+        DatagramSocket().use { socket ->
+          if (!protectSocket(socket)) return null
+          socket.soTimeout = 1200
+          socket.connect(upstream, DNS_PORT)
+          socket.send(DatagramPacket(query.payload, query.payload.size))
+          val buffer = ByteArray(4096)
+          val response = DatagramPacket(buffer, buffer.size)
+          socket.receive(response)
+          if (response.length >= 2 && sameTransaction(query.payload, buffer)) {
+            return buffer.copyOf(response.length)
+          }
+        }
+      } catch (_: Exception) {
+        // Try the next resolver. The caller records one failure only if all fail.
+      }
     }
+    return null
+  }
+
+  fun isNxDomain(payload: ByteArray): Boolean {
+    return payload.size >= 4 && (payload[3].toInt() and 0x0f) == 3
+  }
+
+  private fun sameTransaction(request: ByteArray, response: ByteArray): Boolean {
+    return request.size >= 2 && response.size >= 2 &&
+      request[0] == response[0] && request[1] == response[1]
   }
 
   private fun readU16(packet: ByteArray, offset: Int): Int {

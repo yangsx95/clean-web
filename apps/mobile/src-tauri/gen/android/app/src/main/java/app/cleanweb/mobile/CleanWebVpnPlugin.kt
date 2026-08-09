@@ -49,9 +49,7 @@ class CleanWebVpnPlugin(private val activity: Activity) : Plugin(activity) {
       return
     }
 
-    CleanWebVpnState.stage = "starting"
-    CleanWebVpnState.running = true
-    CleanWebVpnState.lastError = null
+    CleanWebVpnState.markStarting()
     val intent = Intent(activity, CleanWebVpnService::class.java).apply {
       action = CleanWebVpnService.ACTION_START
     }
@@ -65,8 +63,6 @@ class CleanWebVpnPlugin(private val activity: Activity) : Plugin(activity) {
       action = CleanWebVpnService.ACTION_STOP
     }
     activity.startService(intent)
-    CleanWebVpnState.running = false
-    CleanWebVpnState.stage = "stopped"
     invoke.resolve(CleanWebVpnState.status(activity))
   }
 

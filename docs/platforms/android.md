@@ -21,4 +21,6 @@ The Android plugin should expose only narrow operations to the shared Tauri mobi
 - report running, starting, failed, and permission-denied states;
 - expose sanitized diagnostics and local startup logs.
 
+Current implementation is deliberately DNS-only: it routes only the CleanWeb DNS address into `VpnService`, so normal TCP/UDP traffic continues through Android's existing route. The status API must expose this as `dns_only` and must not present it as the desktop-equivalent full tunnel. Allowed DNS is forwarded first to resolvers captured from the active network, which preserves enterprise/VPN split DNS where Android exposes it; public resolvers are fallback only.
+
 Do not place rule parsing, proxy subscription cleaning, category policy, or management UI in Android-specific code. Those belong in shared Rust crates and `packages/frontend`.

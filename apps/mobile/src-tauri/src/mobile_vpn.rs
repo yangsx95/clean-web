@@ -16,7 +16,14 @@ pub struct MobileVpnStatus {
     pub running: bool,
     pub stage: String,
     pub data_plane_ready: bool,
+    pub data_plane_mode: String,
     pub last_error: Option<String>,
+    pub last_policy_updated_at: Option<u64>,
+    pub last_started_at: Option<u64>,
+    pub last_dns_activity_at: Option<u64>,
+    pub dns_query_count: u64,
+    pub blocked_dns_query_count: u64,
+    pub upstream_failure_count: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -42,6 +49,7 @@ pub struct MobileRefreshReport {
     pub ignored_count: usize,
     pub proxy_count: usize,
     pub group_count: usize,
+    pub updated: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -207,7 +215,7 @@ async fn refresh_mobile_subscription(
         if report.mappings.is_empty() {
             return Err("安全搜索规则没有可用映射，继续使用最后一次有效缓存".into());
         }
-        mobile_subscription_store::write_safe_search_mappings(
+        let updated = mobile_subscription_store::replace_safe_search_mappings(
             &store_dir,
             &payload.id,
             report
@@ -225,6 +233,7 @@ async fn refresh_mobile_subscription(
             ignored_count: report.ignored.len(),
             proxy_count: 0,
             group_count: 0,
+            updated,
         });
     }
     let imported = import_text(format, &text, &payload.id, &payload.url, category);
@@ -248,18 +257,15 @@ async fn refresh_mobile_subscription(
             if !matches!(item.rule.action, Action::Block | Action::Allow) {
                 return None;
             }
-            item.rule.priority = if matches!(item.rule.action, Action::Allow) {
-                30
-            } else {
-                70
-            };
+            item.rule.priority = mobile_rule_priority(item.rule.action, category);
             Some(StoredSubscriptionRule::from(item.rule))
         })
         .collect::<Vec<_>>();
     if rules.is_empty() {
         return Err("规则文件没有可用条目，继续使用最后一次有效缓存".into());
     }
-    mobile_subscription_store::write_subscription_rules(&store_dir, &payload.id, rules)?;
+    let updated =
+        mobile_subscription_store::replace_subscription_rules(&store_dir, &payload.id, rules)?;
     let imported_count =
         mobile_subscription_store::read_subscription_rules(&store_dir, &payload.id)?.len();
     Ok(MobileRefreshReport {
@@ -268,7 +274,21 @@ async fn refresh_mobile_subscription(
         ignored_count,
         proxy_count: 0,
         group_count: 0,
+        updated,
     })
+}
+
+#[cfg(target_os = "android")]
+fn mobile_rule_priority(action: Action, category: &str) -> u16 {
+    if matches!(category, "fraud" | "phishing" | "malware") && action == Action::Block {
+        10
+    } else if action == Action::Block {
+        50
+    } else if action == Action::Allow {
+        70
+    } else {
+        80
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -398,6 +418,13 @@ fn unsupported_status() -> MobileVpnStatus {
         running: false,
         stage: "unsupported".into(),
         data_plane_ready: false,
+        data_plane_mode: "unsupported".into(),
         last_error: Some("Android VPN is only available in the Android mobile app".into()),
+        last_policy_updated_at: None,
+        last_started_at: None,
+        last_dns_activity_at: None,
+        dns_query_count: 0,
+        blocked_dns_query_count: 0,
+        upstream_failure_count: 0,
     }
 }

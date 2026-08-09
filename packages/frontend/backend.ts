@@ -16,7 +16,7 @@ export type Subscription = { id:string; kind:"rule"|"proxy"; name:string; url:st
 export type NewSubscription = Omit<Subscription, "id"|"enabled"|"lastUpdatedAt"|"lastError"|"importedRuleCount">;
 export type UpdateSubscription = Omit<NewSubscription, "kind">;
 export type ManualProxyImport = { name:string; content:string };
-export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number };
+export type RefreshReport = { detectedFormat:string; importedCount:number; ignoredCount:number; proxyCount:number; groupCount:number; updated?:boolean };
 export type RuleSourceRefreshReport = { checkedCount:number; updatedCount:number; unchangedCount:number; failedCount:number };
 export type SubscriptionRefreshProgress = {
   id:string;
@@ -29,7 +29,22 @@ export type SubscriptionRefreshProgress = {
 export type CoreComponentStatus = { id:string; label:string; status:"ready"|"warning"|"stopped"; detail:string };
 export type CoreStatus = { running:boolean; pid?:number; controller:string; configPath:string; components?:CoreComponentStatus[] };
 export type RuntimeProgress = { operation:string; phase:string; percent:number; message:string; components:CoreComponentStatus[] };
-export type MobileVpnStatus = { supported:boolean; prepared:boolean; running:boolean; stage:string; dataPlaneReady:boolean; lastError?:string|null };
+export type MobileVpnStatus = {
+  supported:boolean;
+  prepared:boolean;
+  running:boolean;
+  stage:string;
+  dataPlaneReady:boolean;
+  dataPlaneMode:string;
+  lastError?:string|null;
+  lastPolicyUpdatedAt?:number|null;
+  lastStartedAt?:number|null;
+  lastDnsActivityAt?:number|null;
+  dnsQueryCount:number;
+  blockedDnsQueryCount:number;
+  upstreamFailureCount:number;
+};
+type MobileDnsLog = { id:string; observedAtMs:number; domain:string; decision:"allow"|"block"; rule?:string|null; category?:string|null };
 export type AccessLog={id:string;observedAt:string;domain?:string;targetIp?:string;targetPort?:number;decision:"allow"|"block"|"warning";rule?:string;category?:string;processName?:string;operatingSystem:string;systemUser:string;sourceIp?:string;route?:string;proxyGroup?:string;error?:string;repeatCount?:number};
 export type AccessLogStats={block:number;allow:number;warning:number;total:number;todayBlock:number;todayAllow:number;todayWarning:number;todayTotal:number};
 export type AccessLogDailyStats={date:string;label:string;block:number;allow:number;warning:number;total:number};
@@ -75,9 +90,10 @@ const mobileCoreStatus = (status: MobileVpnStatus): CoreStatus => ({
   controller: status.supported ? `android-vpn:${status.stage}` : "android-vpn:unsupported",
   configPath: status.dataPlaneReady ? "android-vpn" : "android-vpn-shell",
   components: [
-    { id:"mobile-vpn", label:"移动 VPN", status:status.running?"ready":status.supported?"stopped":"warning", detail:status.supported ? status.stage : "当前平台暂不支持" },
-    { id:"mobile-policy", label:"策略载入", status:status.prepared?"ready":"stopped", detail:status.prepared ? "VPN 权限已准备" : "等待系统授权" },
-    { id:"mobile-data-plane", label:"数据通道", status:status.dataPlaneReady?"ready":"stopped", detail:status.dataPlaneReady ? "VPN 数据面正常" : "数据面未就绪" },
+    { id:"mobile-vpn", label:"移动 VPN", status:status.running?"ready":status.stage==="failed"?"warning":status.supported?"stopped":"warning", detail:status.lastError??(status.supported ? status.stage : "当前平台暂不支持") },
+    { id:"mobile-policy", label:"策略载入", status:status.lastPolicyUpdatedAt?"ready":status.prepared?"warning":"stopped", detail:status.lastPolicyUpdatedAt ? `策略已加载 · ${new Date(status.lastPolicyUpdatedAt).toLocaleString()}` : status.prepared ? "VPN 已授权，等待加载策略" : "等待系统授权" },
+    { id:"mobile-data-plane", label:"DNS 数据通道", status:status.dataPlaneReady?"ready":"stopped", detail:status.dataPlaneReady ? `DNS-only · 已处理 ${status.dnsQueryCount} 次，拦截 ${status.blockedDnsQueryCount} 次` : "DNS 数据面未就绪" },
+    { id:"mobile-upstream", label:"上游 DNS", status:status.upstreamFailureCount>0?"warning":status.dataPlaneReady?"ready":"stopped", detail:status.upstreamFailureCount>0 ? `累计失败 ${status.upstreamFailureCount} 次，已自动尝试备用解析器` : status.dataPlaneReady ? "优先沿用当前网络的系统 DNS" : "等待数据面启动" },
   ],
 });
 const mobileVpnStatus = async () => invoke<MobileVpnStatus>("mobile_vpn_status");
@@ -86,6 +102,17 @@ const mobileStartVpn = async () => invoke<MobileVpnStatus>("mobile_start_vpn");
 const mobileStopVpn = async () => invoke<MobileVpnStatus>("mobile_stop_vpn");
 const mobileUpdatePolicy = async (policyJson: string) => invoke<MobileVpnStatus>("mobile_update_policy", { payload:{ policyJson } });
 const mobileRefreshSubscription = async (payload: { id:string; url:string; format?:string; category?:string }) => invoke<RefreshReport>("mobile_refresh_subscription", { payload });
+const waitForMobileVpn = async (accept:(status:MobileVpnStatus)=>boolean, timeoutMs=10_000) => {
+  const deadline=Date.now()+timeoutMs;
+  let status=await mobileVpnStatus();
+  while(!accept(status)){
+    if(status.stage==="failed"||status.stage==="permission_denied"||status.stage==="policy_failed")throw new Error(status.lastError??`Android VPN ${status.stage}`);
+    if(Date.now()>=deadline)throw new Error(`Android VPN 状态等待超时：${status.stage}`);
+    await new Promise(resolve=>window.setTimeout(resolve,150));
+    status=await mobileVpnStatus();
+  }
+  return status;
+};
 async function mobilePolicyPayload(){
   defaults=loadPreviewSettings();
   previewParentRules=loadPreviewParentRules();
@@ -324,13 +351,33 @@ export async function refreshSubscription(sessionToken:string,id:string):Promise
 export async function refreshDueSubscriptions():Promise<number>{return usesDesktopBackend()?invoke("refresh_due_subscriptions"):0;}
 export async function refreshBuiltinRuleSources(sessionToken:string):Promise<RuleSourceRefreshReport>{
   if(usesDesktopBackend())return invoke("refresh_builtin_rule_sources",{sessionToken});
+  if(isMobileTauri()){
+    previewSubscriptions=loadPreviewSubscriptions();
+    const sources=previewSubscriptions.filter(item=>item.kind==="rule"&&isBuiltinSubscription(item));
+    let updatedCount=0;
+    let unchangedCount=0;
+    let failedCount=0;
+    for(const item of sources){
+      try{
+        const report=await mobileRefreshSubscription({id:item.id,url:item.url,format:item.format,category:item.category});
+        if(report.updated)updatedCount+=1;else unchangedCount+=1;
+        Object.assign(item,{lastError:undefined,importedRuleCount:report.importedCount,activeRuleCount:item.enabled?report.importedCount:0});
+        if(report.updated)item.lastUpdatedAt=new Date().toISOString();
+      }catch(reason){
+        failedCount+=1;
+        item.lastError=reason instanceof Error?reason.message:String(reason);
+      }
+    }
+    savePreviewSubscriptions();
+    return{checkedCount:sources.length,updatedCount,unchangedCount,failedCount};
+  }
   const checkedCount=loadPreviewSubscriptions().filter(item=>item.kind==="rule"&&isBuiltinSubscription(item)).length;
   return {checkedCount,updatedCount:0,unchangedCount:checkedCount,failedCount:0};
 }
 export async function getCoreStatus():Promise<CoreStatus>{if(usesDesktopBackend())return invoke("get_core_status");if(isMobileTauri())return mobileCoreStatus(await mobileVpnStatus());previewCoreStatus=loadPreviewCoreStatus();return structuredClone(previewCoreStatus);}
-export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();return mobileCoreStatus(await mobileStartVpn());}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(true)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
+export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();await mobileStartVpn();return mobileCoreStatus(await waitForMobileVpn(status=>status.running&&status.dataPlaneReady));}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(true)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function autoStartProtection():Promise<CoreStatus>{return usesDesktopBackend()?invoke("auto_start_protection"):getCoreStatus();}
-export async function stopProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("stop_protection",{sessionToken});if(isMobileTauri())return mobileCoreStatus(await mobileStopVpn());previewCoreStatus={running:false,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(false)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
+export async function stopProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("stop_protection",{sessionToken});if(isMobileTauri()){await mobileStopVpn();return mobileCoreStatus(await waitForMobileVpn(status=>!status.running&&!status.dataPlaneReady));}previewCoreStatus={running:false,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(false)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("reload_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));return mobileCoreStatus(await mobileVpnStatus());}return getCoreStatus();}
 export async function testProxyGroup(sessionToken:string,group="CleanWeb"):Promise<number>{if(!usesDesktopBackend())return 0;const value=await invoke<{delay:number}>("test_proxy_group",{sessionToken,group});return value.delay;}
 export type ProxyNode={name:string;nodeType:string;delay?:number|null};
@@ -356,7 +403,18 @@ export async function testProxyConnectivity(sessionToken:string,target:string,gr
   return{url,group,delay:128};
 }
 export async function syncAccessLogs():Promise<number>{return usesDesktopBackend()?invoke("sync_access_logs"):0;}
-export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{return usesDesktopBackend()?invoke("list_access_logs",{sessionToken,decision,search,limit}):[];}
+export async function listAccessLogs(sessionToken:string,decision?:string,search?:string,limit=500):Promise<AccessLog[]>{
+  if(usesDesktopBackend())return invoke("list_access_logs",{sessionToken,decision,search,limit});
+  if(isMobileTauri()){
+    const logs=await invoke<MobileDnsLog[]>("mobile_list_dns_logs",{limit});
+    const normalizedSearch=search?.trim().toLocaleLowerCase();
+    return logs
+      .filter(item=>!decision||item.decision===decision)
+      .filter(item=>!normalizedSearch||item.domain.toLocaleLowerCase().includes(normalizedSearch)||(item.rule??"").toLocaleLowerCase().includes(normalizedSearch))
+      .map(item=>({id:item.id,observedAt:new Date(item.observedAtMs).toISOString(),domain:item.domain,decision:item.decision,rule:item.rule??undefined,category:item.category??undefined,operatingSystem:"Android",systemUser:"本机用户",route:"system-dns"}));
+  }
+  return[];
+}
 export async function getAccessLogStats(sessionToken:string):Promise<AccessLogStats>{
   if(usesDesktopBackend())return invoke("access_log_stats",{sessionToken});
   const logs=await listAccessLogs(sessionToken,undefined,undefined,5000);
@@ -396,8 +454,13 @@ function previewAccessLogDailyStats():AccessLogDailyStats[]{
     return {date:date.toISOString().slice(0,10),label:formatter.format(date),allow,block,warning,total:allow+block+warning};
   });
 }
-export async function clearAccessLogs(sessionToken:string):Promise<number>{return usesDesktopBackend()?invoke("clear_access_logs",{sessionToken}):0;}
-export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{return usesDesktopBackend()?invoke("export_access_logs_csv",{sessionToken}):"\ufefftime,domain\n";}
+export async function clearAccessLogs(sessionToken:string):Promise<number>{if(usesDesktopBackend())return invoke("clear_access_logs",{sessionToken});if(isMobileTauri())return invoke("mobile_clear_dns_logs");return 0;}
+export async function exportAccessLogsCsv(sessionToken:string):Promise<string>{
+  if(usesDesktopBackend())return invoke("export_access_logs_csv",{sessionToken});
+  const quote=(value:unknown)=>`"${String(value??"").replaceAll('"','""')}"`;
+  const logs=await listAccessLogs(sessionToken,undefined,undefined,2000);
+  return `\ufefftime,domain,decision,rule,category,route\n${logs.map(item=>[item.observedAt,item.domain,item.decision,item.rule,item.category,item.route].map(quote).join(",")).join("\n")}${logs.length?"\n":""}`;
+}
 export async function saveAccessLogsCsv(sessionToken:string):Promise<string|null>{
   if(!usesDesktopBackend()){
     const csv=await exportAccessLogsCsv(sessionToken);

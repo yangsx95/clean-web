@@ -12,7 +12,9 @@ pub fn run() {
             mobile_vpn::mobile_stop_vpn,
             mobile_vpn::mobile_vpn_status,
             mobile_vpn::mobile_update_policy,
-            mobile_vpn::mobile_refresh_subscription
+            mobile_vpn::mobile_refresh_subscription,
+            mobile_dns::mobile_list_dns_logs,
+            mobile_dns::mobile_clear_dns_logs
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CleanWeb mobile app");

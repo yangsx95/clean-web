@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -73,11 +73,11 @@ pub fn safe_search_mappings_path(store_dir: &Path, id: &str) -> PathBuf {
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub fn write_subscription_rules(
+pub fn replace_subscription_rules(
     store_dir: &Path,
     id: &str,
     rules: impl IntoIterator<Item = StoredSubscriptionRule>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     fs::create_dir_all(store_dir).map_err(error)?;
     let path = subscription_rules_path(store_dir, id);
     let tmp = path.with_extension("rules.jsonl.tmp");
@@ -87,16 +87,15 @@ pub fn write_subscription_rules(
         file.write_all(b"\n").map_err(error)?;
     }
     file.sync_all().map_err(error)?;
-    fs::rename(tmp, path).map_err(error)?;
-    Ok(())
+    replace_if_changed(&tmp, &path)
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub fn write_safe_search_mappings(
+pub fn replace_safe_search_mappings(
     store_dir: &Path,
     id: &str,
     mappings: impl IntoIterator<Item = StoredSafeSearchMapping>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     fs::create_dir_all(store_dir).map_err(error)?;
     let path = safe_search_mappings_path(store_dir, id);
     let tmp = path.with_extension("safe-search.jsonl.tmp");
@@ -106,8 +105,7 @@ pub fn write_safe_search_mappings(
         file.write_all(b"\n").map_err(error)?;
     }
     file.sync_all().map_err(error)?;
-    fs::rename(tmp, path).map_err(error)?;
-    Ok(())
+    replace_if_changed(&tmp, &path)
 }
 
 pub fn read_subscription_rules(store_dir: &Path, id: &str) -> Result<Vec<RuleInput>, String> {
@@ -160,6 +158,69 @@ fn safe_file_stem(id: &str) -> String {
         .collect()
 }
 
+fn replace_if_changed(candidate: &Path, current: &Path) -> Result<bool, String> {
+    if current.exists() && files_equal(candidate, current)? {
+        fs::remove_file(candidate).map_err(error)?;
+        return Ok(false);
+    }
+    fs::rename(candidate, current).map_err(error)?;
+    Ok(true)
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool, String> {
+    if fs::metadata(left).map_err(error)?.len() != fs::metadata(right).map_err(error)?.len() {
+        return Ok(false);
+    }
+    let mut left = BufReader::new(File::open(left).map_err(error)?);
+    let mut right = BufReader::new(File::open(right).map_err(error)?);
+    let mut left_buffer = [0_u8; 32 * 1024];
+    let mut right_buffer = [0_u8; 32 * 1024];
+    loop {
+        let left_length = left.read(&mut left_buffer).map_err(error)?;
+        let right_length = right.read(&mut right_buffer).map_err(error)?;
+        if left_length != right_length || left_buffer[..left_length] != right_buffer[..right_length]
+        {
+            return Ok(false);
+        }
+        if left_length == 0 {
+            return Ok(true);
+        }
+    }
+}
+
 fn error(value: impl std::fmt::Display) -> String {
     value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(pattern: &str) -> StoredSubscriptionRule {
+        StoredSubscriptionRule {
+            id: format!("test:{pattern}"),
+            action: Action::Block,
+            priority: 50,
+            kind: MatcherKind::Exact,
+            pattern: pattern.into(),
+            category: "test".into(),
+        }
+    }
+
+    #[test]
+    fn atomic_replacement_reports_real_content_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            replace_subscription_rules(directory.path(), "source", [rule("one.example")]).unwrap()
+        );
+        assert!(
+            !replace_subscription_rules(directory.path(), "source", [rule("one.example")]).unwrap()
+        );
+        assert!(
+            replace_subscription_rules(directory.path(), "source", [rule("two.example")]).unwrap()
+        );
+        let stored = read_subscription_rules(directory.path(), "source").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].pattern, "two.example");
+    }
 }

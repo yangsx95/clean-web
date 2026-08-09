@@ -1,8 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::Path,
     sync::{LazyLock, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cleanweb_rules::{Action, MatcherKind, RuleInput, RuleSet};
@@ -11,19 +12,34 @@ use jni::{
     sys::{jbyteArray, jstring},
     JNIEnv,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::mobile_subscription_store;
 
 static DNS_ENGINE: LazyLock<Mutex<MobileDnsEngine>> =
     LazyLock::new(|| Mutex::new(MobileDnsEngine::default()));
 const SAFE_SEARCH_CNAME_TTL: u32 = 300;
+const MAX_DNS_LOGS: usize = 2_000;
 
 #[derive(Default)]
 struct MobileDnsEngine {
     rules: RuleSet,
     safe_search_enabled: bool,
     safe_search_mappings: HashMap<String, String>,
+    access_logging_enabled: bool,
+    logs: VecDeque<MobileDnsLog>,
+    next_log_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileDnsLog {
+    id: String,
+    observed_at_ms: u64,
+    domain: String,
+    decision: String,
+    rule: Option<String>,
+    category: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -41,6 +57,7 @@ struct MobileSettings {
     safe_search_enabled: Option<bool>,
     strict_mode_enabled: Option<bool>,
     categories: Option<HashMap<String, bool>>,
+    access_logging_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,36 +81,99 @@ impl MobileDnsEngine {
     fn update_policy(&mut self, policy_json: &str) -> Result<(), String> {
         let policy: MobilePolicy = serde_json::from_str(policy_json)
             .map_err(|value| format!("Android DNS policy payload is invalid JSON: {value}"))?;
-        self.rules = RuleSet::compile(policy_rules(&policy)?).map_err(|value| value.to_string())?;
-        self.safe_search_enabled = policy
+        let rules = RuleSet::compile(policy_rules(&policy)?).map_err(|value| value.to_string())?;
+        let safe_search_enabled = policy
             .settings
             .as_ref()
             .and_then(|settings| settings.safe_search_enabled)
             .unwrap_or(true);
-        self.safe_search_mappings = if self.safe_search_enabled {
+        let safe_search_mappings = if safe_search_enabled {
             safe_search_mappings(&policy)?
         } else {
             HashMap::new()
         };
+        let access_logging_enabled = policy
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.access_logging_enabled)
+            .unwrap_or(true);
+        self.rules = rules;
+        self.safe_search_enabled = safe_search_enabled;
+        self.safe_search_mappings = safe_search_mappings;
+        self.access_logging_enabled = access_logging_enabled;
         Ok(())
     }
 
-    fn handle_dns_query(&self, packet: &[u8]) -> Option<Vec<u8>> {
+    fn handle_dns_query(&mut self, packet: &[u8]) -> Option<Vec<u8>> {
         let query = DnsQuestion::parse(packet)?;
-        if self
-            .rules
-            .decide(Some(&query.domain), None)
-            .is_some_and(|decision| decision.action == Action::Block)
+        let decision = self.rules.decide(Some(&query.domain), None).map(|value| {
+            (
+                value.action,
+                value.rule_id.to_owned(),
+                value.category.to_owned(),
+            )
+        });
+        if decision
+            .as_ref()
+            .is_some_and(|value| value.0 == Action::Block)
         {
+            self.record_log(&query.domain, "block", decision.as_ref());
             return Some(blocked_response(packet, query.question_end));
         }
         if self.safe_search_enabled {
             if let Some(target) = self.safe_search_mappings.get(&query.domain) {
-                return safe_search_response(packet, &query, target);
+                let response = safe_search_response(packet, &query, target);
+                self.record_log(&query.domain, "allow", decision.as_ref());
+                return response;
             }
         }
+        self.record_log(&query.domain, "allow", decision.as_ref());
         None
     }
+
+    fn record_log(
+        &mut self,
+        domain: &str,
+        result: &str,
+        decision: Option<&(Action, String, String)>,
+    ) {
+        if !self.access_logging_enabled {
+            return;
+        }
+        self.next_log_id = self.next_log_id.wrapping_add(1);
+        if self.logs.len() == MAX_DNS_LOGS {
+            self.logs.pop_front();
+        }
+        self.logs.push_back(MobileDnsLog {
+            id: format!("android-dns-{}", self.next_log_id),
+            observed_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |value| value.as_millis() as u64),
+            domain: domain.to_owned(),
+            decision: result.to_owned(),
+            rule: decision.map(|value| value.1.clone()),
+            category: decision.map(|value| value.2.clone()),
+        });
+    }
+}
+
+#[tauri::command]
+pub fn mobile_list_dns_logs(limit: Option<usize>) -> Result<Vec<MobileDnsLog>, String> {
+    let engine = DNS_ENGINE
+        .lock()
+        .map_err(|_| "Android DNS engine lock is unavailable".to_string())?;
+    let limit = limit.unwrap_or(500).min(MAX_DNS_LOGS);
+    Ok(engine.logs.iter().rev().take(limit).cloned().collect())
+}
+
+#[tauri::command]
+pub fn mobile_clear_dns_logs() -> Result<usize, String> {
+    let mut engine = DNS_ENGINE
+        .lock()
+        .map_err(|_| "Android DNS engine lock is unavailable".to_string())?;
+    let removed = engine.logs.len();
+    engine.logs.clear();
+    Ok(removed)
 }
 
 fn policy_rules(policy: &MobilePolicy) -> Result<Vec<RuleInput>, String> {
@@ -112,7 +192,12 @@ fn policy_rules(policy: &MobilePolicy) -> Result<Vec<RuleInput>, String> {
             rules.push(RuleInput {
                 id: format!("mobile:parent:{index}"),
                 action,
-                priority: if action == Action::Block { 20 } else { 30 },
+                priority: match action {
+                    Action::Block => 20,
+                    Action::Allow => 30,
+                    Action::Proxy => 80,
+                    Action::SystemRoute => 81,
+                },
                 kind,
                 pattern: rule.pattern.clone(),
                 category: rule.category.clone(),
@@ -160,6 +245,7 @@ fn append_stored_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) -> Res
             if let Some(category) = &subscription.category {
                 rule.category = category.clone();
             }
+            rule.priority = imported_rule_priority(rule.action, &rule.category);
             rules.push(rule);
         }
     }
@@ -179,7 +265,10 @@ fn safe_search_mappings(policy: &MobilePolicy) -> Result<HashMap<String, String>
             for mapping in
                 mobile_subscription_store::read_safe_search_mappings(store_dir, &subscription.id)?
             {
-                mappings.insert(mapping.domain, mapping.target);
+                mappings.insert(
+                    mapping.domain.trim_end_matches('.').to_ascii_lowercase(),
+                    mapping.target,
+                );
             }
         }
     }
@@ -202,6 +291,18 @@ fn action(value: &str) -> Option<Action> {
         "block" => Some(Action::Block),
         "allow" => Some(Action::Allow),
         _ => None,
+    }
+}
+
+fn imported_rule_priority(action: Action, category: &str) -> u16 {
+    if matches!(category, "fraud" | "phishing" | "malware") && action == Action::Block {
+        10
+    } else if action == Action::Block {
+        50
+    } else if action == Action::Allow {
+        70
+    } else {
+        80
     }
 }
 
@@ -400,7 +501,7 @@ mod tests {
 
     fn engine_with_safe_search_cache() -> MobileDnsEngine {
         let directory = tempfile::tempdir().unwrap();
-        mobile_subscription_store::write_safe_search_mappings(
+        mobile_subscription_store::replace_safe_search_mappings(
             directory.path(),
             "default:cleanweb:safe-search",
             [
@@ -474,7 +575,7 @@ mod tests {
 
     #[test]
     fn safe_search_domains_return_cname_answers() {
-        let engine = engine_with_safe_search_cache();
+        let mut engine = engine_with_safe_search_cache();
         let response = engine.handle_dns_query(&query("www.google.com")).unwrap();
         assert_eq!(response[0..2], [0x12, 0x34]);
         assert_eq!(read_u16(&response, 6).unwrap(), 1);
@@ -489,7 +590,7 @@ mod tests {
 
     #[test]
     fn safe_search_ip_targets_return_address_answers() {
-        let engine = engine_with_safe_search_cache();
+        let mut engine = engine_with_safe_search_cache();
         let response = engine.handle_dns_query(&query("yandex.com")).unwrap();
         assert_eq!(read_u16(&response, 6).unwrap(), 1);
         assert_eq!(
@@ -500,5 +601,66 @@ mod tests {
         assert!(engine
             .handle_dns_query(&typed_query("yandex.com", 28))
             .is_none());
+    }
+
+    #[test]
+    fn security_subscription_blocks_override_manual_allows() {
+        let directory = tempfile::tempdir().unwrap();
+        mobile_subscription_store::replace_subscription_rules(
+            directory.path(),
+            "security",
+            [mobile_subscription_store::StoredSubscriptionRule {
+                id: "security:1".into(),
+                action: Action::Block,
+                priority: 70,
+                kind: MatcherKind::Exact,
+                pattern: "danger.example".into(),
+                category: "phishing".into(),
+            }],
+        )
+        .unwrap();
+        let mut engine = MobileDnsEngine::default();
+        engine
+            .update_policy(&format!(
+                r#"{{"parentRules":[{{"action":"allow","kind":"exact","pattern":"danger.example","category":"custom","enabled":true}}],"subscriptionStoreDir":{},"subscriptions":[{{"id":"security","format":"domain-list","category":"phishing","enabled":true}}]}}"#,
+                serde_json::to_string(&directory.path().to_string_lossy()).unwrap()
+            ))
+            .unwrap();
+        let response = engine.handle_dns_query(&query("danger.example")).unwrap();
+        assert_eq!(read_u16(&response, 2).unwrap() & 0x000f, 3);
+    }
+
+    #[test]
+    fn invalid_policy_keeps_last_valid_rules_active() {
+        let mut engine = MobileDnsEngine::default();
+        engine
+            .update_policy(
+                r#"{"parentRules":[{"action":"block","kind":"exact","pattern":"blocked.example","category":"test","enabled":true}]}"#,
+            )
+            .unwrap();
+        assert!(engine.update_policy("{").is_err());
+        let response = engine.handle_dns_query(&query("blocked.example")).unwrap();
+        assert_eq!(read_u16(&response, 2).unwrap() & 0x000f, 3);
+    }
+
+    #[test]
+    fn dns_logs_respect_access_logging_setting() {
+        let mut engine = MobileDnsEngine::default();
+        engine
+            .update_policy(
+                r#"{"settings":{"accessLoggingEnabled":true},"parentRules":[{"action":"block","kind":"exact","pattern":"blocked.example","category":"test","enabled":true}]}"#,
+            )
+            .unwrap();
+        engine.handle_dns_query(&query("blocked.example"));
+        engine.handle_dns_query(&query("allowed.example"));
+        assert_eq!(engine.logs.len(), 2);
+        assert_eq!(engine.logs[0].decision, "block");
+        assert_eq!(engine.logs[1].decision, "allow");
+
+        engine
+            .update_policy(r#"{"settings":{"accessLoggingEnabled":false}}"#)
+            .unwrap();
+        engine.handle_dns_query(&query("not-recorded.example"));
+        assert_eq!(engine.logs.len(), 2);
     }
 }

@@ -50,7 +50,7 @@ Validation:
 
 ## Milestone 2: policy and rule payload
 
-Status: partially implemented for DNS-only filtering. The mobile frontend now sends a policy snapshot with settings, manual parent rules, and rule subscription enabled states. Android persists and applies this policy through the native VPN plugin.
+Status: implemented for the DNS-only data plane. The mobile frontend sends a policy snapshot with settings, manual parent rules, and rule subscription enabled states. Android validates before replacement, persists the last valid policy, applies updates without reacquiring VPN permission, and reports the last policy update time.
 
 Deliverables:
 
@@ -66,7 +66,7 @@ Validation:
 
 ## Milestone 3: DNS filtering data path
 
-Status: partially implemented. Android `VpnService` now routes system DNS to the VPN interface, reads IPv4 UDP DNS packets from TUN, asks the Rust DNS engine for block decisions, returns NXDOMAIN for blocked domains, and forwards allowed DNS through a protected upstream socket. The DNS data path covers manual domain rules, bundled CleanWeb rule files, Android-local rule subscription download/storage/refresh, and SafeSearch DNS mapping answers.
+Status: implemented for IPv4 UDP DNS, pending real-device release validation. Android `VpnService` routes system DNS to the VPN interface, reads DNS packets from TUN, asks the Rust DNS engine for block decisions, returns NXDOMAIN for blocked domains, and forwards allowed DNS through a protected upstream socket. It preserves the active network's DNS resolvers with bounded fallback, validates DNS transaction IDs, applies desktop-equivalent security/manual/content priority, records a bounded local DNS access log, and reports query/block/upstream-failure counters. The data path covers manual domain rules, Android-local rule subscription download/storage/refresh, and SafeSearch DNS mapping answers.
 
 Deliverables:
 
