@@ -1,0 +1,15 @@
+# CleanWeb strict-mode high-risk TLD rules.
+# This is intentionally aggressive and remains disabled by default.
+# Administrators can add exact allow rules for legitimate sites such as arduino.cc.
+DOMAIN-SUFFIX,cc,REJECT
+DOMAIN-SUFFIX,top,REJECT
+DOMAIN-SUFFIX,xyz,REJECT
+DOMAIN-SUFFIX,online,REJECT
+DOMAIN-SUFFIX,sbs,REJECT
+DOMAIN-SUFFIX,site,REJECT
+DOMAIN-SUFFIX,cfd,REJECT
+DOMAIN-SUFFIX,cyou,REJECT
+DOMAIN-SUFFIX,qpon,REJECT
+DOMAIN-SUFFIX,fun,REJECT
+DOMAIN-SUFFIX,click,REJECT
+DOMAIN-SUFFIX,icu,REJECT

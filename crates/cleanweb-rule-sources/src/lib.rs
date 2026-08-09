@@ -6,7 +6,7 @@ pub struct DefaultRuleSource {
     pub name: String,
     pub url: String,
     #[serde(default)]
-    pub legacy_urls: Vec<String>,
+    pub fallback: Option<String>,
     pub format: String,
     pub category: String,
     pub update_interval_hours: Option<i64>,
@@ -43,17 +43,47 @@ pub struct RuleSourceDefaults {
 }
 
 pub fn parse_rule_source_defaults(text: &str) -> Result<RuleSourceDefaults, String> {
-    serde_yaml::from_str(text).map_err(|value| value.to_string())
+    let defaults: RuleSourceDefaults =
+        serde_yaml::from_str(text).map_err(|value| value.to_string())?;
+    for source in defaults
+        .default_rule_sources
+        .iter()
+        .chain(defaults.rule_packs.iter())
+    {
+        validate_rule_source(&source.url, &source.id)?;
+        if let Some(fallback) = source.fallback.as_deref() {
+            validate_rule_source(fallback, &format!("{} fallback", source.id))?;
+        }
+    }
+    for source in &defaults.recommended_rule_sources {
+        validate_rule_source(&source.url, &source.name)?;
+    }
+    Ok(defaults)
 }
 
 impl RuleSourceDefaults {
-    pub fn bundled_rule_sources(&self) -> Vec<DefaultRuleSource> {
+    pub fn all_rule_sources(&self) -> Vec<DefaultRuleSource> {
         self.default_rule_sources
             .iter()
             .chain(self.rule_packs.iter())
             .cloned()
             .collect()
     }
+}
+
+pub fn validate_rule_source(value: &str, label: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("rule source {label} is empty"));
+    }
+    if let Some((scheme, _)) = value.split_once("://") {
+        if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "file") {
+            return Err(format!(
+                "rule source {label} must be a local path, file URL, or HTTP(S) URL"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -80,8 +110,6 @@ rule_packs:
   - id: default:test:pack
     name: Test Pack
     url: https://example.test/pack.txt
-    legacy_urls:
-      - builtin://test/pack
     format: clash
     category: strict
 recommended_rule_sources:
@@ -94,15 +122,45 @@ recommended_rule_sources:
         )
         .unwrap();
 
-        let bundled = parsed.bundled_rule_sources();
-        assert_eq!(bundled.len(), 2);
-        assert_eq!(bundled[0].id, "default:test:source");
-        assert_eq!(bundled[0].ui_group.as_deref(), Some("隐私与广告"));
-        assert_eq!(bundled[0].ui_order, Some(10));
-        assert!(bundled[0].toggleable);
-        assert_eq!(bundled[0].enabled_by_default, Some(false));
-        assert_eq!(bundled[0].description.as_deref(), Some("Optional ads source"));
-        assert_eq!(bundled[1].id, "default:test:pack");
+        let sources = parsed.all_rule_sources();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].id, "default:test:source");
+        assert_eq!(sources[0].ui_group.as_deref(), Some("隐私与广告"));
+        assert_eq!(sources[0].ui_order, Some(10));
+        assert!(sources[0].toggleable);
+        assert_eq!(sources[0].enabled_by_default, Some(false));
+        assert_eq!(sources[0].description.as_deref(), Some("Optional ads source"));
+        assert_eq!(sources[1].id, "default:test:pack");
         assert_eq!(parsed.recommended_rule_sources.len(), 1);
+    }
+
+    #[test]
+    fn accepts_local_and_remote_rule_sources() {
+        for source in [
+            "/opt/cleanweb/rules.clash",
+            "./rules/rules.clash",
+            "file:///opt/cleanweb/rules.clash",
+            "http://127.0.0.1:8080/rules.clash",
+            "https://example.test/rules.clash",
+        ] {
+            validate_rule_source(source, "test").unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_rule_source_schemes() {
+        let error = parse_rule_source_defaults(
+            r#"
+default_rule_sources:
+  - id: default:test:source
+    name: Test Source
+    url: builtin://test/source
+    format: clash
+    category: custom
+"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("must be a local path, file URL, or HTTP(S) URL"));
     }
 }

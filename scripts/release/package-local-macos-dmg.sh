@@ -73,6 +73,7 @@ codesign --remove-signature "$APP" 2>/dev/null || true
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 test -f "$APP/Contents/_CodeSignature/CodeResources"
+"$(dirname "$0")/verify-macos-app-resources.sh" "$APP"
 
 README="$STAGING/README-LOCAL-TESTING.txt"
 cat > "$README" <<'TXT'

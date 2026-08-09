@@ -1588,10 +1588,27 @@ mod tests {
                 [],
             )
             .unwrap();
+            db.execute(
+                "UPDATE subscriptions SET enabled=1 WHERE id IN ('default:cleanweb:strict-restricted-platforms','default:cleanweb:strict-risky-tlds')",
+                [],
+            )
+            .unwrap();
             let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
             assert!(config
                 .domain_index
                 .decide("www.strict.example")
+                .is_some_and(|decision| decision.blocked));
+            assert!(config
+                .domain_index
+                .decide("search.yandex.com")
+                .is_some_and(|decision| decision.blocked));
+            assert!(config
+                .domain_index
+                .decide("example.cc")
+                .is_some_and(|decision| decision.blocked));
+            assert!(config
+                .domain_index
+                .decide("example.top")
                 .is_some_and(|decision| decision.blocked));
         }
     }
@@ -1634,47 +1651,6 @@ mod tests {
                 .decide("www.game.example")
                 .is_some_and(|decision| decision.blocked));
         }
-    }
-
-    #[test]
-    fn builtin_creator_allow_rules_do_not_allow_douyin_consumer_domains() {
-        let state = AppState::open(":memory:").unwrap();
-        {
-            let db = state.db.lock().unwrap();
-            db.execute(
-                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled)
-                 VALUES('douyin','rule','douyin','https://x/douyin.txt','clash','entertainment',1)",
-                [],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
-                 VALUES('douyin','1','Suffix','douyin.com','Block','entertainment',1),
-                       ('douyin','2','Suffix','douyinvod.com','Block','entertainment',2)",
-                [],
-            )
-            .unwrap();
-            db.execute(
-                "UPDATE settings SET value='true' WHERE key='category.entertainment'",
-                [],
-            )
-            .unwrap();
-        }
-
-        let db = state.db.lock().unwrap();
-        let config = build_dns_filter_config(&db, &state.data_dir).unwrap();
-        assert!(config
-            .domain_index
-            .decide("creator.douyin.com")
-            .is_some_and(|decision| !decision.blocked));
-        assert!(config
-            .domain_index
-            .decide("video.douyinvod.com")
-            .is_some_and(|decision| decision.blocked));
-        assert!(config
-            .domain_index
-            .decide("www.douyin.com")
-            .is_some_and(|decision| decision.blocked));
     }
 
     #[test]

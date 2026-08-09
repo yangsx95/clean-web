@@ -19,3 +19,6 @@ tauri = { version = "2", features = [] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"

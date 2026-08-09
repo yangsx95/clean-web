@@ -44,6 +44,7 @@ APP="$(find "$MOUNT_POINT" -maxdepth 1 -type d -name "*.app" -print -quit)"
 
 echo "Verifying code signature: $APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
+"$(dirname "$0")/verify-macos-app-resources.sh" "$APP"
 
 echo "Assessing app with Gatekeeper: $APP"
 spctl --assess --type execute --verbose=4 "$APP"

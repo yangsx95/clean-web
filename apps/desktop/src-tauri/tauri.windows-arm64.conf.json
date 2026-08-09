@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/mihomo/mihomo-windows-arm64-v1.19.28.gz": "resources/mihomo/mihomo-windows-arm64-v1.19.28.gz"
+    }
+  }
+}

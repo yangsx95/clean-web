@@ -22,6 +22,9 @@
     ],
     "shortDescription": "家庭网络净化与代理管理工具",
     "longDescription": "CleanWeb 帮助家长通过域名、IP 和订阅规则管理家庭电脑的网络访问。",
-    "resources": ["resources/mihomo/*.gz"]
+    "resources": {
+      "../../../resources/rule-sources": "rule-sources",
+      "../../../resources/rules": "rules"
+    }
   }
 }

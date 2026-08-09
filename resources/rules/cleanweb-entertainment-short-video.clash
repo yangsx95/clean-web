@@ -4,8 +4,15 @@ DOMAIN,creator.douyin.com,DIRECT
 DOMAIN,lf-zt.douyin.com,DIRECT
 DOMAIN,sso.douyin.com,DIRECT
 DOMAIN,renzheng.douyin.com,DIRECT
+DOMAIN,p0-creator-media-private.douyin.com,DIRECT
+DOMAIN,creator.amemv.com,DIRECT
+DOMAIN,lf-douyin-security-h5.amemv.com,DIRECT
+DOMAIN,lf-fe-douyin-account.amemv.com,DIRECT
 DOMAIN,s3.bytecdn.cn,DIRECT
 DOMAIN,s3a.bytecdn.cn,DIRECT
+# Preview media hosts use rotating prefixes, so exact host rules are not stable.
+DOMAIN-SUFFIX,douyinpic.com,DIRECT
+DOMAIN-SUFFIX,douyinvod.com,DIRECT
 DOMAIN-SUFFIX,douyin.com,REJECT
 DOMAIN-SUFFIX,douyinpic.com,REJECT
 DOMAIN-SUFFIX,douyincdn.com,REJECT

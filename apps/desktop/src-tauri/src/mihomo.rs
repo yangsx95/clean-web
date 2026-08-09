@@ -2260,6 +2260,20 @@ mod tests {
                 "strict mode must not block broad TLDs that commonly host normal infrastructure"
             );
         }
+
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE subscriptions SET enabled=1 WHERE id IN ('default:cleanweb:strict-restricted-platforms','default:cleanweb:strict-risky-tlds')",
+                [],
+            )
+            .unwrap();
+        }
+        let aggressive_config = build_config(&state, "secret", true).unwrap();
+        assert!(aggressive_config.contains("DOMAIN-SUFFIX,yandex.com,REJECT"));
+        assert!(aggressive_config.contains("DOMAIN-SUFFIX,cc,REJECT"));
+        assert!(aggressive_config.contains("DOMAIN-SUFFIX,top,REJECT"));
+        assert!(aggressive_config.contains("DOMAIN-SUFFIX,sbs,REJECT"));
         assert!(
             !strict_config.contains("DOMAIN-KEYWORD,91,REJECT"),
             "strict mode must not block short numeric fragments"
@@ -2339,7 +2353,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_creator_allow_rules_precede_douyin_entertainment_blocks() {
+    fn builtin_creator_preview_rules_precede_douyin_entertainment_blocks() {
         let state = AppState::open(":memory:").unwrap();
         {
             let db = state.db.lock().unwrap();
@@ -2354,7 +2368,14 @@ mod tests {
         let creator_allow = config.find("DOMAIN,creator.douyin.com,DIRECT").unwrap();
         let douyin_block = config.find("DOMAIN-SUFFIX,douyin.com,REJECT").unwrap();
         assert!(creator_allow < douyin_block);
-        assert!(!config.contains("DOMAIN-SUFFIX,douyinvod.com,DIRECT"));
+        let preview_image_allow = config.find("DOMAIN-SUFFIX,douyinpic.com,DIRECT").unwrap();
+        let preview_image_block = config.find("DOMAIN-SUFFIX,douyinpic.com,REJECT").unwrap();
+        assert!(preview_image_allow < preview_image_block);
+        let preview_video_allow = config.find("DOMAIN-SUFFIX,douyinvod.com,DIRECT").unwrap();
+        let preview_video_block = config.find("DOMAIN-SUFFIX,douyinvod.com,REJECT").unwrap();
+        assert!(preview_video_allow < preview_video_block);
+        assert!(config.contains("DOMAIN,p0-creator-media-private.douyin.com,DIRECT"));
+        assert!(config.contains("DOMAIN,creator.amemv.com,DIRECT"));
         assert!(!config.contains("DOMAIN,www.douyin.com,DIRECT"));
     }
 

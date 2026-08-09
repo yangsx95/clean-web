@@ -11,7 +11,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use cleanweb_rule_sources::{parse_rule_source_defaults, DefaultRuleSource, RuleSourceDefaults};
+use cleanweb_rule_sources::{parse_rule_source_defaults, RuleSourceDefaults};
 use ipnet::IpNet;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -26,10 +26,12 @@ use crate::proxy_crypto::migrate_legacy_keychain_payloads_to_debug_key;
 use crate::rules::{Action, CompiledRule, MatcherKind, RuleInput};
 pub use cleanweb_rule_sources::RecommendedSource;
 
-const DEFAULT_RULE_SOURCES_YAML: &str =
-    include_str!("../../../../resources/rule-sources/defaults.yaml");
 const RULE_DIAGNOSTIC_CANDIDATE_LIMIT: usize = 50;
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60); // 24 小时
+
+fn workspace_rule_source_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../resources/rule-sources")
+}
 
 pub struct AppState {
     pub(crate) db: Mutex<Connection>,
@@ -42,6 +44,7 @@ pub struct AppState {
     pub(crate) protection_start_in_progress: AtomicBool,
     pub(crate) reload_in_progress: AtomicBool,
     pub(crate) protection_health_failures: Mutex<u32>,
+    rule_source_defaults: RuleSourceDefaults,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,20 +118,37 @@ pub struct UpdateSubscription {
 
 /// 返回内置推荐规则源列表，供用户在添加订阅时快速选择
 pub fn get_recommended_rule_sources() -> Vec<RecommendedSource> {
-    recommended_rule_sources()
+    load_rule_source_defaults(&workspace_rule_source_dir())
+        .expect("workspace rule source defaults are valid")
+        .recommended_rule_sources
 }
 
-fn default_rule_sources() -> Vec<DefaultRuleSource> {
-    rule_source_defaults().bundled_rule_sources()
+fn load_rule_source_defaults(config_dir: &Path) -> Result<RuleSourceDefaults, String> {
+    let path = config_dir.join("defaults.yaml");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读取规则源配置失败（{}）：{error}", path.display()))?;
+    let mut defaults = parse_rule_source_defaults(&text)?;
+    for source in defaults
+        .default_rule_sources
+        .iter_mut()
+        .chain(defaults.rule_packs.iter_mut())
+    {
+        source.url = resolve_configured_local_source(config_dir, &source.url);
+    }
+    for source in &mut defaults.recommended_rule_sources {
+        source.url = resolve_configured_local_source(config_dir, &source.url);
+    }
+    Ok(defaults)
 }
 
-fn recommended_rule_sources() -> Vec<RecommendedSource> {
-    rule_source_defaults().recommended_rule_sources
-}
-
-fn rule_source_defaults() -> RuleSourceDefaults {
-    parse_rule_source_defaults(DEFAULT_RULE_SOURCES_YAML)
-        .expect("bundled rule source defaults are valid")
+fn resolve_configured_local_source(config_dir: &Path, source: &str) -> String {
+    if source.contains("://") || Path::new(source).is_absolute() {
+        return source.to_owned();
+    }
+    config_dir
+        .join(source.strip_prefix("./").unwrap_or(source))
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[derive(Debug, Serialize)]
@@ -178,9 +198,19 @@ pub struct NewParentRule {
 
 impl AppState {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_rule_source_dir(path, workspace_rule_source_dir())
+    }
+
+    pub fn open_with_rule_source_dir(
+        path: impl AsRef<Path>,
+        rule_source_dir: impl AsRef<Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let path = path.as_ref();
+        let rule_source_dir = rule_source_dir.as_ref();
+        let rule_source_defaults =
+            load_rule_source_defaults(rule_source_dir).map_err(std::io::Error::other)?;
         let mut connection = Connection::open(path)?;
-        initialize_schema(&connection)?;
+        initialize_schema(&connection, rule_source_dir, &rule_source_defaults)?;
         #[cfg(debug_assertions)]
         migrate_legacy_keychain_payloads_to_debug_key(&mut connection)
             .map_err(std::io::Error::other)?;
@@ -199,6 +229,7 @@ impl AppState {
             protection_start_in_progress: AtomicBool::new(false),
             reload_in_progress: AtomicBool::new(false),
             protection_health_failures: Mutex::new(0),
+            rule_source_defaults,
         })
     }
 
@@ -216,7 +247,11 @@ impl AppState {
     }
 }
 
-fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
+fn initialize_schema(
+    db: &Connection,
+    rule_source_dir: &Path,
+    rule_source_defaults: &RuleSourceDefaults,
+) -> rusqlite::Result<()> {
     db.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
@@ -344,7 +379,7 @@ fn initialize_schema(db: &Connection) -> rusqlite::Result<()> {
             params![key, value],
         )?;
     }
-    seed_default_rule_subscriptions(db)?;
+    seed_default_rule_subscriptions(db, rule_source_dir, rule_source_defaults)?;
     Ok(())
 }
 
@@ -403,8 +438,12 @@ fn migrate_adblock_dns_parser_v2(db: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
-    for source in default_rule_sources() {
+fn seed_default_rule_subscriptions(
+    db: &Connection,
+    rule_source_dir: &Path,
+    defaults: &RuleSourceDefaults,
+) -> rusqlite::Result<()> {
+    for source in defaults.all_rule_sources() {
         db.execute(
             "INSERT OR IGNORE INTO subscriptions(id,kind,name,url,format,category,update_interval_hours,enabled,ui_group,ui_order,toggleable,description)
              VALUES(?1,'rule',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -423,7 +462,7 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
             ],
         )?;
     }
-    sync_builtin_subscription_names(db)?;
+    sync_builtin_subscription_names(db, defaults)?;
     db.execute(
         "UPDATE subscriptions
             SET enabled=1
@@ -443,11 +482,84 @@ fn seed_default_rule_subscriptions(db: &Connection) -> rusqlite::Result<()> {
              OR id='default:easylist:ads'
              OR id='default:easylist:privacy'
              OR id='local:cleanweb:entertainment-cdn'
-             OR id='default:cleanweb:strict-supplement'",
+             OR id='default:cleanweb:strict-supplement'
+             OR id='default:cleanweb:strict-platforms'",
         [],
     )?;
-    seed_bundled_rule_fallbacks(db)?;
+    seed_configured_rule_cache(db, rule_source_dir, defaults)?;
     enable_entertainment_sources_by_default_v2(db)?;
+    Ok(())
+}
+
+fn seed_configured_rule_cache(
+    db: &Connection,
+    config_dir: &Path,
+    defaults: &RuleSourceDefaults,
+) -> rusqlite::Result<()> {
+    for source in defaults.all_rule_sources() {
+        let Some(fallback) = source.fallback.as_deref() else {
+            continue;
+        };
+        let imported_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1",
+            params![source.id],
+            |row| row.get(0),
+        )?;
+        let safe_search_count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM safe_search_mappings WHERE subscription_id=?1",
+            params![source.id],
+            |row| row.get(0),
+        )?;
+        if imported_count > 0 || safe_search_count > 0 {
+            continue;
+        }
+        let path = {
+            let path = PathBuf::from(fallback);
+            if path.is_absolute() {
+                path
+            } else {
+                config_dir.join(path)
+            }
+        };
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!(
+                "failed to read configured rule fallback {}: {error}",
+                path.display()
+            ))))
+        })?;
+        if source.format == "safe-search" {
+            let report =
+                cleanweb_subscriptions::import_safe_search_mappings(&text).map_err(|reason| {
+                    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(reason)))
+                })?;
+            for mapping in report.mappings {
+                db.execute(
+                    "INSERT INTO safe_search_mappings(subscription_id,domain,target,source_line) VALUES(?1,?2,?3,?4)",
+                    params![source.id, mapping.domain, mapping.target, mapping.source_line as i64],
+                )?;
+            }
+            continue;
+        }
+        let format = match source.format.as_str() {
+            "clash" => cleanweb_subscriptions::SubscriptionFormat::Clash,
+            "hosts" => cleanweb_subscriptions::SubscriptionFormat::Hosts,
+            "domain-list" => cleanweb_subscriptions::SubscriptionFormat::DomainList,
+            _ => continue,
+        };
+        let report = cleanweb_subscriptions::import_text(
+            format,
+            &text,
+            &source.id,
+            &source.url,
+            &source.category,
+        );
+        for item in report.rules {
+            db.execute(
+                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![source.id, item.rule.id, format!("{:?}", item.rule.kind), item.rule.pattern, format!("{:?}", item.rule.action), item.rule.category, item.source.source_line as i64],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -479,54 +591,11 @@ fn enable_entertainment_sources_by_default_v2(db: &Connection) -> rusqlite::Resu
     Ok(())
 }
 
-fn seed_bundled_rule_fallbacks(db: &Connection) -> rusqlite::Result<()> {
-    for bundled in crate::rules::bundled_rule_sources() {
-        let source = db
-            .query_row(
-                "SELECT url,category FROM subscriptions WHERE id=?1 AND kind='rule'",
-                params![bundled.id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        let Some((url, category)) = source else {
-            continue;
-        };
-        let imported_count: i64 = db.query_row(
-            "SELECT COUNT(*) FROM imported_rules WHERE subscription_id=?1",
-            params![bundled.id],
-            |row| row.get(0),
-        )?;
-        if imported_count > 0 {
-            continue;
-        }
-        let imported = cleanweb_subscriptions::import_text(
-            cleanweb_subscriptions::SubscriptionFormat::Clash,
-            bundled.content,
-            bundled.id,
-            &url,
-            &category,
-        );
-        for item in imported.rules {
-            db.execute(
-                "INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![
-                    bundled.id,
-                    item.rule.id,
-                    format!("{:?}", item.rule.kind),
-                    item.rule.pattern,
-                    format!("{:?}", item.rule.action),
-                    item.rule.category,
-                    item.source.source_line as i64
-                ],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn sync_builtin_subscription_names(db: &Connection) -> rusqlite::Result<()> {
-    for source in default_rule_sources() {
+fn sync_builtin_subscription_names(
+    db: &Connection,
+    defaults: &RuleSourceDefaults,
+) -> rusqlite::Result<()> {
+    for source in defaults.all_rule_sources() {
         db.execute(
             "UPDATE subscriptions
              SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=?6,ui_group=?7,ui_order=?8,toggleable=?9,description=?10
@@ -1017,6 +1086,7 @@ fn list_subscriptions_inner(
 }
 
 fn validate_subscription_fields(
+    kind: &str,
     name: &str,
     url: &str,
     update_interval_hours: Option<i64>,
@@ -1024,9 +1094,13 @@ fn validate_subscription_fields(
     if name.trim().is_empty() || name.chars().count() > 80 {
         return Err("订阅名称无效".into());
     }
-    let url = url.parse::<tauri::Url>().map_err(|_| "订阅地址无效")?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("订阅仅支持 HTTP 或 HTTPS 地址".into());
+    if kind == "rule" {
+        cleanweb_rule_sources::validate_rule_source(url, name)?;
+    } else {
+        let url = url.parse::<tauri::Url>().map_err(|_| "订阅地址无效")?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("代理订阅仅支持 HTTP 或 HTTPS 地址".into());
+        }
     }
     if !matches!(update_interval_hours, None | Some(6 | 12 | 24 | 168)) {
         return Err("更新周期无效".into());
@@ -1086,7 +1160,12 @@ pub fn create_subscription(
     if !matches!(input.kind.as_str(), "rule" | "proxy") {
         return Err("订阅类型无效".into());
     }
-    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
+    validate_subscription_fields(
+        &input.kind,
+        &input.name,
+        &input.url,
+        input.update_interval_hours,
+    )?;
     let id = Uuid::new_v4().to_string();
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     db.execute("INSERT INTO subscriptions(id,kind,name,url,format,category,update_interval_hours) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![id, input.kind, input.name.trim(), input.url, input.format, input.category, input.update_interval_hours]).map_err(error)?;
@@ -1107,7 +1186,14 @@ pub fn update_subscription(
     state.require_session(&session_token)?;
     let db = state.db.lock().map_err(|_| "数据库不可用")?;
     require_mutable_subscription(&db, &id)?;
-    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
+    let kind: String = db
+        .query_row(
+            "SELECT kind FROM subscriptions WHERE id=?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(error)?;
+    validate_subscription_fields(&kind, &input.name, &input.url, input.update_interval_hours)?;
     let kind = update_subscription_inner(&db, &id, &input)?;
     drop(db);
     list_subscriptions_inner(Some(kind), &state)?
@@ -1122,7 +1208,6 @@ fn update_subscription_inner(
     input: &UpdateSubscription,
 ) -> Result<String, String> {
     require_mutable_subscription(db, id)?;
-    validate_subscription_fields(&input.name, &input.url, input.update_interval_hours)?;
     let kind: String = db
         .query_row(
             "SELECT kind FROM subscriptions WHERE id=?1",
@@ -1132,6 +1217,7 @@ fn update_subscription_inner(
         .optional()
         .map_err(error)?
         .ok_or_else(|| "订阅不存在".to_string())?;
+    validate_subscription_fields(&kind, &input.name, &input.url, input.update_interval_hours)?;
     if db
         .execute(
             "UPDATE subscriptions SET name=?2,url=?3,format=?4,category=?5,update_interval_hours=?6,last_error=NULL WHERE id=?1",
@@ -1254,8 +1340,8 @@ fn delete_subscription_inner(db: &Connection, id: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_recommended_sources() -> Vec<RecommendedSource> {
-    get_recommended_rule_sources()
+pub fn get_recommended_sources(state: State<'_, AppState>) -> Vec<RecommendedSource> {
+    state.rule_source_defaults.recommended_rule_sources.clone()
 }
 
 #[tauri::command]
@@ -1843,6 +1929,57 @@ mod tests {
     }
 
     #[test]
+    fn loads_rule_metadata_and_fallback_from_external_config_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_dir = directory.path().join("rule-sources");
+        let rules_dir = directory.path().join("rules");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("custom.clash"),
+            "DOMAIN-SUFFIX,external-config.example,REJECT\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.join("defaults.yaml"),
+            r#"default_rule_sources:
+  - id: default:test:external
+    name: External config
+    url: ./remote-cache.clash
+    fallback: ../rules/custom.clash
+    format: clash
+    category: custom
+    enabled_by_default: true
+"#,
+        )
+        .unwrap();
+
+        let state =
+            AppState::open_with_rule_source_dir(directory.path().join("cleanweb.db"), &config_dir)
+                .unwrap();
+        let db = state.db.lock().unwrap();
+        let configured_url: String = db
+            .query_row(
+                "SELECT url FROM subscriptions WHERE id='default:test:external'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            configured_url,
+            config_dir.join("remote-cache.clash").to_string_lossy()
+        );
+        let cached: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id='default:test:external' AND pattern='external-config.example'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cached, 1);
+    }
+
+    #[test]
     fn validates_password_and_setting_allowlist() {
         assert!(validate_password("short").is_err());
         assert!(validate_password("long-enough").is_ok());
@@ -1917,7 +2054,7 @@ mod tests {
     }
 
     #[test]
-    fn seeds_builtin_rule_metadata_and_offline_entertainment_fallback() {
+    fn seeds_rule_metadata_and_configured_external_fallback_cache() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cleanweb.db");
         let state = AppState::open(&path).unwrap();
@@ -2002,7 +2139,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(safe_search_count, 0, "SafeSearch 正文必须通过订阅刷新导入");
+        assert!(
+            safe_search_count > 0,
+            "SafeSearch 外置 fallback 必须导入首次启动缓存"
+        );
     }
 
     #[test]
@@ -2174,7 +2314,12 @@ mod tests {
             [],
         )
         .unwrap();
-        seed_default_rule_subscriptions(&db).unwrap();
+        seed_default_rule_subscriptions(
+            &db,
+            &workspace_rule_source_dir(),
+            &load_rule_source_defaults(&workspace_rule_source_dir()).unwrap(),
+        )
+        .unwrap();
         let (url, enabled): (String, i64) = db
             .query_row(
                 "SELECT url,enabled FROM subscriptions WHERE id='default:legacy:source'",
@@ -2208,7 +2353,12 @@ mod tests {
         )
         .unwrap();
 
-        seed_default_rule_subscriptions(&db).unwrap();
+        seed_default_rule_subscriptions(
+            &db,
+            &workspace_rule_source_dir(),
+            &load_rule_source_defaults(&workspace_rule_source_dir()).unwrap(),
+        )
+        .unwrap();
 
         let blocklist_name: String = db
             .query_row(
@@ -2326,15 +2476,20 @@ mod tests {
         let db = state.db.lock().unwrap();
         db.execute("DELETE FROM subscriptions WHERE id LIKE 'default:%'", [])
             .unwrap();
-        seed_default_rule_subscriptions(&db).unwrap();
+        seed_default_rule_subscriptions(
+            &db,
+            &workspace_rule_source_dir(),
+            &load_rule_source_defaults(&workspace_rule_source_dir()).unwrap(),
+        )
+        .unwrap();
         let exists: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-adult-keywords','default:cleanweb:strict-gambling-keywords','default:cleanweb:strict-platforms')",
+                "SELECT COUNT(*) FROM subscriptions WHERE id IN ('default:cleanweb:safe-search','default:cleanweb:strict-adult-keywords','default:cleanweb:strict-gambling-keywords','default:cleanweb:strict-restricted-platforms','default:cleanweb:strict-risky-tlds')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(exists, 4, "内置能力订阅初始化时必须恢复");
+        assert_eq!(exists, 5, "内置能力订阅初始化时必须恢复");
     }
 
     #[test]
@@ -2361,7 +2516,12 @@ mod tests {
         )
         .unwrap();
 
-        initialize_schema(&db).unwrap();
+        initialize_schema(
+            &db,
+            &workspace_rule_source_dir(),
+            &load_rule_source_defaults(&workspace_rule_source_dir()).unwrap(),
+        )
+        .unwrap();
 
         let adblock_rules: i64 = db
             .query_row(
@@ -2404,7 +2564,12 @@ mod tests {
         )
         .unwrap();
 
-        seed_default_rule_subscriptions(&db).unwrap();
+        seed_default_rule_subscriptions(
+            &db,
+            &workspace_rule_source_dir(),
+            &load_rule_source_defaults(&workspace_rule_source_dir()).unwrap(),
+        )
+        .unwrap();
 
         let (url, category, interval): (String, String, Option<i64>) = db
             .query_row(

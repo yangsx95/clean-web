@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fs, path::PathBuf, time::Duration};
 
 use reqwest::header::CONTENT_LENGTH;
 use rusqlite::params;
@@ -75,46 +75,18 @@ async fn refresh_subscription_inner(
         )
         .map_err(|_| "订阅不存在")?
     };
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("clash-verge/v2.0")
-        .build()
-        .map_err(error)?;
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|value| format!("订阅下载失败：{value}"))?;
-    if !response.status().is_success() {
-        return record_error(state, &id, format!("服务器返回 {}", response.status()));
-    }
-    if response
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-        .is_some_and(|size| size > MAX_SUBSCRIPTION_BYTES)
-    {
-        return record_error(state, &id, "订阅文件超过20MB限制".into());
-    }
-    emit_refresh_progress(
-        app,
-        &id,
-        "downloading",
-        0,
-        response
-            .headers()
-            .get(CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<usize>().ok()),
-        "正在下载规则",
-    );
-    let bytes = match read_subscription_bytes(response, app, &id).await {
-        Ok(bytes) => bytes,
-        Err(reason) if reason == "订阅文件超过20MB限制" => {
-            return record_error(state, &id, reason);
+    let bytes = if kind == "rule" {
+        match local_rule_source_path(&url) {
+            Ok(Some(path)) => {
+                emit_refresh_progress(app, &id, "downloading", 0, None, "正在读取本地规则");
+                fs::read(&path)
+                    .map_err(|value| format!("读取本地规则失败（{}）：{value}", path.display()))?
+            }
+            Ok(None) => download_subscription_bytes(&url, app, &id).await?,
+            Err(reason) => return record_error(state, &id, reason),
         }
-        Err(reason) => return Err(reason),
+    } else {
+        download_subscription_bytes(&url, app, &id).await?
     };
     if bytes.len() > MAX_SUBSCRIPTION_BYTES {
         return record_error(state, &id, "订阅文件超过20MB限制".into());
@@ -148,6 +120,54 @@ async fn refresh_subscription_inner(
     db.execute("UPDATE subscriptions SET format=?1,last_updated_at=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?2",params![report.detected_format,id]).map_err(error)?;
     drop(db);
     Ok(report)
+}
+
+fn local_rule_source_path(source: &str) -> Result<Option<PathBuf>, String> {
+    let source = source.trim();
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return Ok(None);
+    }
+    if source.starts_with("file://") {
+        let url = url::Url::parse(source).map_err(|_| "本地规则 file URL 无效")?;
+        return url
+            .to_file_path()
+            .map(Some)
+            .map_err(|_| "本地规则 file URL 无法转换为文件路径".into());
+    }
+    if source.contains("://") {
+        return Err("规则源必须是本地文件路径、file URL 或 HTTP(S) URL".into());
+    }
+    Ok(Some(PathBuf::from(source)))
+}
+
+async fn download_subscription_bytes(
+    url: &str,
+    app: Option<&AppHandle>,
+    id: &str,
+) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("clash-verge/v2.0")
+        .build()
+        .map_err(error)?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|value| format!("订阅下载失败：{value}"))?;
+    if !response.status().is_success() {
+        return Err(format!("服务器返回 {}", response.status()));
+    }
+    let total = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if total.is_some_and(|size| size > MAX_SUBSCRIPTION_BYTES) {
+        return Err("订阅文件超过20MB限制".into());
+    }
+    emit_refresh_progress(app, id, "downloading", 0, total, "正在下载规则");
+    read_subscription_bytes(response, app, id).await
 }
 
 async fn read_subscription_bytes(
@@ -550,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn refreshed_rule_subscription_replaces_packaged_fallback() {
+    fn refreshed_rule_subscription_replaces_configured_fallback_cache() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cleanweb.db");
         let source_id = "local:cleanweb:entertainment-short-video";
@@ -640,6 +660,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn local_rule_source_is_cached_after_source_file_is_deleted() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("local-rules.clash");
+        std::fs::write(&source_path, "DOMAIN-SUFFIX,cached-local.example,REJECT\n").unwrap();
+        let state = AppState::open(directory.path().join("cleanweb.db")).unwrap();
+        state
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO subscriptions(id,kind,name,url,format,category,enabled) VALUES('local-file','rule','Local file',?1,'clash','custom',1)",
+                params![source_path.to_string_lossy()],
+            )
+            .unwrap();
+
+        tauri::async_runtime::block_on(refresh_subscription_inner(
+            "local-file".into(),
+            &state,
+            None,
+        ))
+        .unwrap();
+        std::fs::remove_file(&source_path).unwrap();
+        assert!(tauri::async_runtime::block_on(refresh_subscription_inner(
+            "local-file".into(),
+            &state,
+            None,
+        ))
+        .is_err());
+
+        let cached: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM imported_rules WHERE subscription_id='local-file' AND pattern='cached-local.example'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cached, 1, "源文件丢失后必须保留最后一次有效缓存");
     }
     #[test]
     fn store_proxy_payload_encrypts_payload() {

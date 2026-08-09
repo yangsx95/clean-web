@@ -1,0 +1,9 @@
+# CleanWeb strict-mode restricted platforms.
+# Keep platform restrictions separate from adult and gambling keyword rules.
+DOMAIN-SUFFIX,yandex.com,REJECT
+DOMAIN-SUFFIX,yandex.ru,REJECT
+DOMAIN-SUFFIX,yandex.net,REJECT
+DOMAIN-SUFFIX,ya.ru,REJECT
+DOMAIN-SUFFIX,yastatic.net,REJECT
+DOMAIN-SUFFIX,yandexcloud.net,REJECT
+DOMAIN-SUFFIX,yadi.sk,REJECT

@@ -65,8 +65,7 @@ default_rule_sources:
   - id: default:cleanweb:adult-supplement
     name: CleanWeb · Adult Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-adult-supplement.clash
-    legacy_urls:
-      - builtin://cleanweb/adult-supplement
+    fallback: ../rules/cleanweb-adult-supplement.clash
     format: clash
     category: pornography
     update_interval_hours: 24
@@ -76,8 +75,7 @@ default_rule_sources:
   - id: default:cleanweb:security-supplement
     name: CleanWeb · Security Supplement
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-security-supplement.clash
-    legacy_urls:
-      - builtin://cleanweb/security-supplement
+    fallback: ../rules/cleanweb-security-supplement.clash
     format: clash
     category: phishing
     update_interval_hours: 24
@@ -87,6 +85,7 @@ default_rule_sources:
   - id: default:cleanweb:safe-search
     name: CleanWeb · SafeSearch DNS Mappings
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-safe-search.yaml
+    fallback: ../rules/cleanweb-safe-search.yaml
     format: safe-search
     category: custom
     update_interval_hours: 24
@@ -97,6 +96,7 @@ default_rule_sources:
   - id: local:cleanweb:entertainment-short-video
     name: CleanWeb · 短视频与直播
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-short-video.clash
+    fallback: ../rules/cleanweb-entertainment-short-video.clash
     format: clash
     category: entertainment
     update_interval_hours: 24
@@ -108,6 +108,7 @@ default_rule_sources:
   - id: local:cleanweb:entertainment-social
     name: CleanWeb · 社交社区
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-social.clash
+    fallback: ../rules/cleanweb-entertainment-social.clash
     format: clash
     category: entertainment
     update_interval_hours: 24
@@ -119,6 +120,7 @@ default_rule_sources:
   - id: local:cleanweb:entertainment-games
     name: CleanWeb · 游戏内容
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-entertainment-games.clash
+    fallback: ../rules/cleanweb-entertainment-games.clash
     format: clash
     category: entertainment
     update_interval_hours: 24
@@ -174,37 +176,51 @@ rule_packs:
   - id: default:cleanweb:strict-adult-keywords
     name: CleanWeb · 严格成人关键词
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-adult-keywords.clash
+    fallback: ../rules/cleanweb-strict-adult-keywords.clash
     format: clash
     category: strict
     update_interval_hours: 24
-    ui_group: 色情内容
-    ui_order: 13
+    ui_group: 高风险域名与平台
+    ui_order: 80
     toggleable: true
     enabled_by_default: false
     description: 严格模式成人内容关键词规则
   - id: default:cleanweb:strict-gambling-keywords
     name: CleanWeb · 严格赌博关键词
     url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-gambling-keywords.clash
+    fallback: ../rules/cleanweb-strict-gambling-keywords.clash
     format: clash
     category: strict
     update_interval_hours: 24
-    ui_group: 赌博内容
-    ui_order: 21
+    ui_group: 高风险域名与平台
+    ui_order: 81
     toggleable: true
     enabled_by_default: false
     description: 严格模式赌博关键词规则
-  - id: default:cleanweb:strict-platforms
-    name: CleanWeb · 严格平台限制
-    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-platforms.clash
+  - id: default:cleanweb:strict-restricted-platforms
+    name: CleanWeb · 受限平台
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-restricted-platforms.clash
+    fallback: ../rules/cleanweb-strict-restricted-platforms.clash
     format: clash
     category: strict
     update_interval_hours: 24
-    ui_group: 严格模式
-    ui_order: 90
+    ui_group: 高风险域名与平台
+    ui_order: 82
     toggleable: true
     enabled_by_default: false
-    description: 严格模式下额外拦截低价值或高干扰平台
-
+    description: 严格模式下限制 Yandex 等指定平台
+  - id: default:cleanweb:strict-risky-tlds
+    name: CleanWeb · 高风险域名后缀
+    url: https://raw.githubusercontent.com/yangsx95/clean-web/main/resources/rules/cleanweb-strict-risky-tlds.clash
+    fallback: ../rules/cleanweb-strict-risky-tlds.clash
+    format: clash
+    category: strict
+    update_interval_hours: 24
+    ui_group: 高风险域名与平台
+    ui_order: 83
+    toggleable: true
+    enabled_by_default: false
+    description: 激进拦截 .cc、.top、.xyz 等高滥用风险后缀，可能误伤正规网站
 recommended_rule_sources:
   - name: AdAway · Hosts
     url: https://adaway.org/hosts.txt

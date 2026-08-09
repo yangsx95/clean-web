@@ -15,8 +15,9 @@
     "release:preflight": "scripts/release/preflight.sh",
     "release:macos:local-dmg": "scripts/release/package-local-macos-dmg.sh",
     "release:macos:verify": "scripts/release/verify-macos-dmg.sh",
+    "install:macos:latest": "scripts/install-latest-macos.sh",
     "release:tag": "scripts/release/tag-release.sh",
-    "tauri": "cd apps/desktop && tauri",
+    "tauri": "node scripts/build/tauri-desktop.mjs",
     "tauri:mobile": "cd apps/mobile && tauri"
   },
   "dependencies": {

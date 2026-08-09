@@ -1,6 +1,6 @@
 # CleanWeb 规则维护
 
-这些文件是 CleanWeb 官方规则订阅的唯一内容入口。应用首次安装时使用安装包中的副本作为离线兜底；之后按 `resources/rule-sources/defaults.yaml` 中的地址和周期在线刷新。刷新成功会原子替换旧版本，失败则继续使用最后一次有效规则。
+这些文件是 CleanWeb 官方规则订阅的唯一内容入口。所有规则源都必须在 `resources/rule-sources/defaults.yaml` 中声明，可以使用本地文件路径、`file://` 或 `http/https` 地址。应用首次安装时从配置声明的外置 `fallback` 文件生成缓存；刷新成功会原子替换缓存，源文件丢失或网络刷新失败时继续使用最后一次有效缓存。
 
 ## 常用格式
 
@@ -19,7 +19,7 @@ DOMAIN-SUFFIX,example.com,REJECT
 - `REJECT` 表示拦截。
 - 精确例外放在宽泛后缀规则之前，便于 Mihomo 按顺序优先命中。
 - 优先添加精确域名；确认服务确实会在整个后缀下动态分配主机后，再使用 `DOMAIN-SUFFIX`。
-- 不要把厂商域名写进 Rust 或前端代码。
+- 不要把规则内容或厂商域名写进 Rust、前端代码；只在规则文件和规则源配置中维护。
 
 ## 更新流程
 

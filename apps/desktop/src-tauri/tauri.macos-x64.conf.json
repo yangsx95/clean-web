@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/mihomo/mihomo-darwin-amd64-compatible-v1.19.28.gz": "resources/mihomo/mihomo-darwin-amd64-compatible-v1.19.28.gz"
+    }
+  }
+}

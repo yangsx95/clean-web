@@ -6,7 +6,6 @@ use std::{
 };
 
 use cleanweb_rules::{Action, MatcherKind, RuleInput, RuleSet};
-use cleanweb_subscriptions::{import_safe_search_mappings, import_text, SubscriptionFormat};
 use jni::{
     objects::{JByteArray, JObject, JString},
     sys::{jbyteArray, jstring},
@@ -121,63 +120,8 @@ fn policy_rules(policy: &MobilePolicy) -> Result<Vec<RuleInput>, String> {
         }
     }
 
-    append_bundled_rules(policy, &mut rules);
     append_stored_rules(policy, &mut rules)?;
     Ok(rules)
-}
-
-fn append_bundled_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) {
-    let strict_enabled = policy
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.strict_mode_enabled)
-        .unwrap_or(false);
-    let categories = policy
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.categories.as_ref());
-
-    for source in bundled_sources() {
-        if source.strict_only && !strict_enabled {
-            continue;
-        }
-        if categories
-            .and_then(|values| values.get(source.category))
-            .is_some_and(|enabled| !enabled)
-        {
-            continue;
-        }
-        if !subscription_enabled(policy, source.subscription_id, source.category) {
-            continue;
-        }
-        let report = import_text(
-            SubscriptionFormat::Clash,
-            source.text,
-            source.subscription_id,
-            source.url,
-            source.category,
-        );
-        for imported in report.rules {
-            if matches!(
-                imported.rule.kind,
-                MatcherKind::Exact
-                    | MatcherKind::Suffix
-                    | MatcherKind::Contains
-                    | MatcherKind::Wildcard
-                    | MatcherKind::Regex
-            ) && imported.rule.action == Action::Block
-            {
-                rules.push(RuleInput {
-                    priority: if is_security_category(source.category) {
-                        10
-                    } else {
-                        70
-                    },
-                    ..imported.rule
-                });
-            }
-        }
-    }
 }
 
 fn append_stored_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) -> Result<(), String> {
@@ -191,6 +135,25 @@ fn append_stored_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) -> Res
         .iter()
         .filter(|item| item.enabled && item.format.as_deref() != Some("safe-search"))
     {
+        let category = subscription.category.as_deref().unwrap_or("custom");
+        if category == "strict"
+            && !policy
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.strict_mode_enabled)
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        if policy
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.categories.as_ref())
+            .and_then(|categories| categories.get(category))
+            .is_some_and(|enabled| !enabled)
+        {
+            continue;
+        }
         for mut rule in
             mobile_subscription_store::read_subscription_rules(store_dir, &subscription.id)?
         {
@@ -205,14 +168,6 @@ fn append_stored_rules(policy: &MobilePolicy, rules: &mut Vec<RuleInput>) -> Res
 
 fn safe_search_mappings(policy: &MobilePolicy) -> Result<HashMap<String, String>, String> {
     let mut mappings = HashMap::new();
-    if subscription_enabled(policy, "default:cleanweb:safe-search", "custom") {
-        let report = import_safe_search_mappings(include_str!(
-            "../../../../resources/rules/cleanweb-safe-search.yaml"
-        ))?;
-        for mapping in report.mappings {
-            mappings.insert(mapping.domain, mapping.target);
-        }
-    }
     if let Some(store_dir) = policy.subscription_store_dir.as_deref().map(Path::new) {
         for subscription in policy
             .subscriptions
@@ -229,94 +184,6 @@ fn safe_search_mappings(policy: &MobilePolicy) -> Result<HashMap<String, String>
         }
     }
     Ok(mappings)
-}
-
-fn subscription_enabled(policy: &MobilePolicy, id: &str, category: &str) -> bool {
-    policy
-        .subscriptions
-        .as_ref()
-        .and_then(|items| items.iter().find(|item| item.id == id))
-        .map(|item| {
-            item.enabled
-                && item
-                    .category
-                    .as_deref()
-                    .is_none_or(|value| value == category || value == "strict")
-        })
-        .unwrap_or(true)
-}
-
-struct BundledSource {
-    subscription_id: &'static str,
-    category: &'static str,
-    url: &'static str,
-    text: &'static str,
-    strict_only: bool,
-}
-
-fn bundled_sources() -> Vec<BundledSource> {
-    vec![
-        BundledSource {
-            subscription_id: "default:cleanweb:adult-supplement",
-            category: "pornography",
-            url: "bundled://cleanweb-adult-supplement.clash",
-            text: include_str!("../../../../resources/rules/cleanweb-adult-supplement.clash"),
-            strict_only: false,
-        },
-        BundledSource {
-            subscription_id: "default:cleanweb:security-supplement",
-            category: "phishing",
-            url: "bundled://cleanweb-security-supplement.clash",
-            text: include_str!("../../../../resources/rules/cleanweb-security-supplement.clash"),
-            strict_only: false,
-        },
-        BundledSource {
-            subscription_id: "default:cleanweb:strict-adult-keywords",
-            category: "strict",
-            url: "bundled://cleanweb-strict-adult-keywords.clash",
-            text: include_str!("../../../../resources/rules/cleanweb-strict-adult-keywords.clash"),
-            strict_only: true,
-        },
-        BundledSource {
-            subscription_id: "default:cleanweb:strict-gambling-keywords",
-            category: "strict",
-            url: "bundled://cleanweb-strict-gambling-keywords.clash",
-            text: include_str!(
-                "../../../../resources/rules/cleanweb-strict-gambling-keywords.clash"
-            ),
-            strict_only: true,
-        },
-        BundledSource {
-            subscription_id: "default:cleanweb:strict-platforms",
-            category: "strict",
-            url: "bundled://cleanweb-strict-platforms.clash",
-            text: include_str!("../../../../resources/rules/cleanweb-strict-platforms.clash"),
-            strict_only: true,
-        },
-        BundledSource {
-            subscription_id: "local:cleanweb:entertainment-short-video",
-            category: "entertainment",
-            url: "bundled://cleanweb-entertainment-short-video.clash",
-            text: include_str!(
-                "../../../../resources/rules/cleanweb-entertainment-short-video.clash"
-            ),
-            strict_only: false,
-        },
-        BundledSource {
-            subscription_id: "local:cleanweb:entertainment-social",
-            category: "entertainment",
-            url: "bundled://cleanweb-entertainment-social.clash",
-            text: include_str!("../../../../resources/rules/cleanweb-entertainment-social.clash"),
-            strict_only: false,
-        },
-        BundledSource {
-            subscription_id: "local:cleanweb:entertainment-games",
-            category: "entertainment",
-            url: "bundled://cleanweb-entertainment-games.clash",
-            text: include_str!("../../../../resources/rules/cleanweb-entertainment-games.clash"),
-            strict_only: false,
-        },
-    ]
 }
 
 fn matcher_kind(value: &str) -> Option<MatcherKind> {
@@ -336,10 +203,6 @@ fn action(value: &str) -> Option<Action> {
         "allow" => Some(Action::Allow),
         _ => None,
     }
-}
-
-fn is_security_category(category: &str) -> bool {
-    matches!(category, "fraud" | "phishing" | "malware")
 }
 
 struct DnsQuestion {
@@ -535,6 +398,33 @@ fn jni_string(env: &mut JNIEnv<'_>, value: &str) -> jstring {
 mod tests {
     use super::*;
 
+    fn engine_with_safe_search_cache() -> MobileDnsEngine {
+        let directory = tempfile::tempdir().unwrap();
+        mobile_subscription_store::write_safe_search_mappings(
+            directory.path(),
+            "default:cleanweb:safe-search",
+            [
+                mobile_subscription_store::StoredSafeSearchMapping {
+                    domain: "www.google.com".into(),
+                    target: "forcesafesearch.google.com".into(),
+                },
+                mobile_subscription_store::StoredSafeSearchMapping {
+                    domain: "yandex.com".into(),
+                    target: "213.180.193.56".into(),
+                },
+            ],
+        )
+        .unwrap();
+        let mut engine = MobileDnsEngine::default();
+        engine
+            .update_policy(&format!(
+                r#"{{"settings":{{"safeSearchEnabled":true}},"subscriptionStoreDir":{},"subscriptions":[{{"id":"default:cleanweb:safe-search","format":"safe-search","enabled":true}}]}}"#,
+                serde_json::to_string(&directory.path().to_string_lossy()).unwrap()
+            ))
+            .unwrap();
+        engine
+    }
+
     fn query(domain: &str) -> Vec<u8> {
         typed_query(domain, 1)
     }
@@ -584,10 +474,7 @@ mod tests {
 
     #[test]
     fn safe_search_domains_return_cname_answers() {
-        let mut engine = MobileDnsEngine::default();
-        engine
-            .update_policy(r#"{"settings":{"safeSearchEnabled":true}}"#)
-            .unwrap();
+        let engine = engine_with_safe_search_cache();
         let response = engine.handle_dns_query(&query("www.google.com")).unwrap();
         assert_eq!(response[0..2], [0x12, 0x34]);
         assert_eq!(read_u16(&response, 6).unwrap(), 1);
@@ -602,10 +489,7 @@ mod tests {
 
     #[test]
     fn safe_search_ip_targets_return_address_answers() {
-        let mut engine = MobileDnsEngine::default();
-        engine
-            .update_policy(r#"{"settings":{"safeSearchEnabled":true}}"#)
-            .unwrap();
+        let engine = engine_with_safe_search_cache();
         let response = engine.handle_dns_query(&query("yandex.com")).unwrap();
         assert_eq!(read_u16(&response, 6).unwrap(), 1);
         assert_eq!(

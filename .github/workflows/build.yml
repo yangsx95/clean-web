@@ -322,17 +322,6 @@ jobs:
           key: desktop-windows-${{ matrix.arch }}
           save-if: false
 
-      - name: Keep Windows desktop resources only
-        if: steps.package.outputs.should_build == 'true'
-        shell: pwsh
-        run: |
-          Remove-Item apps/desktop/src-tauri/resources/mihomo/mihomo-darwin-*.gz -Force -ErrorAction SilentlyContinue
-          if ("${{ matrix.arch }}" -eq "x64") {
-            Remove-Item apps/desktop/src-tauri/resources/mihomo/mihomo-windows-arm64-*.gz -Force -ErrorAction SilentlyContinue
-          } else {
-            Remove-Item apps/desktop/src-tauri/resources/mihomo/mihomo-windows-amd64-*.gz -Force -ErrorAction SilentlyContinue
-          }
-
       - name: Install frontend dependencies
         if: steps.package.outputs.should_build == 'true'
         run: npm ci
@@ -420,16 +409,6 @@ jobs:
           workspaces: apps/desktop/src-tauri -> target
           key: desktop-macos-${{ matrix.package }}
           save-if: false
-
-      - name: Keep macOS desktop resources only
-        if: steps.package.outputs.should_build == 'true'
-        run: |
-          rm -f apps/desktop/src-tauri/resources/mihomo/mihomo-windows-*.gz
-          if [[ "${{ matrix.package }}" == "arm64" ]]; then
-            rm -f apps/desktop/src-tauri/resources/mihomo/mihomo-darwin-amd64-*.gz
-          elif [[ "${{ matrix.package }}" == "x64" ]]; then
-            rm -f apps/desktop/src-tauri/resources/mihomo/mihomo-darwin-arm64-*.gz
-          fi
 
       - name: Install frontend dependencies
         if: steps.package.outputs.should_build == 'true'

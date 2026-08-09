@@ -231,11 +231,15 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             append_startup_log(&data_dir, "setup: data directory ready");
-            let state =
-                storage::AppState::open(data_dir.join("cleanweb.db")).map_err(|reason| {
-                    append_startup_log(&data_dir, format!("setup: storage failed: {reason}"));
-                    reason
-                })?;
+            let rule_source_dir = app.path().resource_dir()?.join("rule-sources");
+            let state = storage::AppState::open_with_rule_source_dir(
+                data_dir.join("cleanweb.db"),
+                rule_source_dir,
+            )
+            .map_err(|reason| {
+                append_startup_log(&data_dir, format!("setup: storage failed: {reason}"));
+                reason
+            })?;
             app.manage(state);
             append_startup_log(&data_dir, "setup: storage ready");
             access_logs::start_access_log_collector(app.handle().clone());

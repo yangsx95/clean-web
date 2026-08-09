@@ -1,5 +1,5 @@
-# CleanWeb strict-mode adult keyword supplement.
-# Keep this file keyword-only; platform domains belong to category-specific rules.
+# CleanWeb strict-mode adult supplement.
+# Includes high-risk adult keywords only; platform restrictions have their own rule source.
 DOMAIN-KEYWORD,porn,REJECT
 DOMAIN-KEYWORD,sex,REJECT
 DOMAIN-KEYWORD,xxx,REJECT

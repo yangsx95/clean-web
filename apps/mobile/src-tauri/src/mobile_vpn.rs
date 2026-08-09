@@ -198,22 +198,15 @@ async fn refresh_mobile_subscription(
     app: &tauri::AppHandle,
     payload: MobileSubscriptionRefreshPayload,
 ) -> Result<MobileRefreshReport, String> {
-    if !payload.url.starts_with("https://") {
-        return Err("Android 规则订阅只支持 HTTPS 地址".into());
-    }
-    let text = reqwest::get(&payload.url)
-        .await
-        .map_err(|error| format!("下载规则订阅失败：{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("下载规则订阅失败：{error}"))?
-        .text()
-        .await
-        .map_err(|error| format!("读取规则订阅失败：{error}"))?;
+    let text = read_mobile_rule_source(&payload.url).await?;
     let format = subscription_format(payload.format.as_deref(), &text)?;
     let category = payload.category.as_deref().unwrap_or("custom");
     let store_dir = subscription_store_dir(app)?;
     if format == SubscriptionFormat::SafeSearch {
         let report = import_safe_search_mappings(&text)?;
+        if report.mappings.is_empty() {
+            return Err("安全搜索规则没有可用映射，继续使用最后一次有效缓存".into());
+        }
         mobile_subscription_store::write_safe_search_mappings(
             &store_dir,
             &payload.id,
@@ -236,29 +229,36 @@ async fn refresh_mobile_subscription(
     }
     let imported = import_text(format, &text, &payload.id, &payload.url, category);
     let ignored_count = imported.ignored.len();
-    let rules = imported.rules.into_iter().filter_map(|mut item| {
-        if !matches!(
-            item.rule.kind,
-            MatcherKind::Exact
-                | MatcherKind::Suffix
-                | MatcherKind::Contains
-                | MatcherKind::Wildcard
-                | MatcherKind::Regex
-                | MatcherKind::Ip
-                | MatcherKind::Cidr
-        ) {
-            return None;
-        }
-        if !matches!(item.rule.action, Action::Block | Action::Allow) {
-            return None;
-        }
-        item.rule.priority = if matches!(item.rule.action, Action::Allow) {
-            30
-        } else {
-            70
-        };
-        Some(StoredSubscriptionRule::from(item.rule))
-    });
+    let rules = imported
+        .rules
+        .into_iter()
+        .filter_map(|mut item| {
+            if !matches!(
+                item.rule.kind,
+                MatcherKind::Exact
+                    | MatcherKind::Suffix
+                    | MatcherKind::Contains
+                    | MatcherKind::Wildcard
+                    | MatcherKind::Regex
+                    | MatcherKind::Ip
+                    | MatcherKind::Cidr
+            ) {
+                return None;
+            }
+            if !matches!(item.rule.action, Action::Block | Action::Allow) {
+                return None;
+            }
+            item.rule.priority = if matches!(item.rule.action, Action::Allow) {
+                30
+            } else {
+                70
+            };
+            Some(StoredSubscriptionRule::from(item.rule))
+        })
+        .collect::<Vec<_>>();
+    if rules.is_empty() {
+        return Err("规则文件没有可用条目，继续使用最后一次有效缓存".into());
+    }
     mobile_subscription_store::write_subscription_rules(&store_dir, &payload.id, rules)?;
     let imported_count =
         mobile_subscription_store::read_subscription_rules(&store_dir, &payload.id)?.len();
@@ -269,6 +269,46 @@ async fn refresh_mobile_subscription(
         proxy_count: 0,
         group_count: 0,
     })
+}
+
+#[cfg(target_os = "android")]
+async fn read_mobile_rule_source(source: &str) -> Result<String, String> {
+    const MAX_RULE_SOURCE_BYTES: usize = 20 * 1024 * 1024;
+    let source = source.trim();
+    let bytes = if source.starts_with("http://") || source.starts_with("https://") {
+        let response = reqwest::get(source)
+            .await
+            .map_err(|error| format!("下载规则订阅失败：{error}"))?
+            .error_for_status()
+            .map_err(|error| format!("下载规则订阅失败：{error}"))?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| format!("读取规则订阅失败：{error}"))?;
+        if bytes.len() > MAX_RULE_SOURCE_BYTES {
+            return Err("规则文件超过20MB限制".into());
+        }
+        bytes.to_vec()
+    } else {
+        let path = if source.starts_with("file://") {
+            reqwest::Url::parse(source)
+                .map_err(|_| "本地规则 file URL 无效")?
+                .to_file_path()
+                .map_err(|_| "本地规则 file URL 无法转换为文件路径")?
+        } else if source.contains("://") {
+            return Err("规则源必须是本地文件路径、file URL 或 HTTP(S) URL".into());
+        } else {
+            std::path::PathBuf::from(source)
+        };
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| format!("读取本地规则失败（{}）：{error}", path.display()))?;
+        if metadata.len() > MAX_RULE_SOURCE_BYTES as u64 {
+            return Err("规则文件超过20MB限制".into());
+        }
+        std::fs::read(&path)
+            .map_err(|error| format!("读取本地规则失败（{}）：{error}", path.display()))?
+    };
+    String::from_utf8(bytes).map_err(|_| "规则文件不是有效UTF-8文本".into())
 }
 
 #[cfg(target_os = "android")]
