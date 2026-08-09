@@ -28,15 +28,6 @@ on:
         options:
           - "true"
           - "false"
-      macos_packages:
-        description: "macOS CPU packages to build"
-        required: true
-        type: choice
-        default: "all"
-        options:
-          - "arm64"
-          - "x64"
-          - "all"
       build_android:
         description: "Build Android packages"
         required: true
@@ -361,49 +352,24 @@ jobs:
             rust_target: aarch64-apple-darwin
             artifact_suffix: arm64
             bundle_path: apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - package: x64
-            rust_target: x86_64-apple-darwin
-            artifact_suffix: x64
-            bundle_path: apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Resolve macOS package selection
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-          selected="all"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            selected="${{ inputs.macos_packages }}"
-          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            selected="all"
-          fi
-          if [[ "$selected" == "all" || "$selected" == "${{ matrix.package }}" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Node
-        if: steps.package.outputs.should_build == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
 
       - name: Setup Rust
-        if: steps.package.outputs.should_build == 'true'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Rust targets
-        if: steps.package.outputs.should_build == 'true'
-        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - name: Install Rust target
+        run: rustup target add aarch64-apple-darwin
 
       - name: Cache Rust
-        if: steps.package.outputs.should_build == 'true'
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
@@ -411,12 +377,10 @@ jobs:
           save-if: false
 
       - name: Install frontend dependencies
-        if: steps.package.outputs.should_build == 'true'
         run: npm ci
 
       - name: Detect macOS signing credentials
         id: macos_signing
-        if: steps.package.outputs.should_build == 'true'
         shell: bash
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -444,7 +408,7 @@ jobs:
           fi
 
       - name: Import macOS Developer ID certificate
-        if: steps.package.outputs.should_build == 'true' && steps.macos_signing.outputs.mode == 'signed-notarized'
+        if: steps.macos_signing.outputs.mode == 'signed-notarized'
         shell: bash
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -467,11 +431,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
 
       - name: Build Tauri DMG
-        if: steps.package.outputs.should_build == 'true'
         run: npm run tauri -- build --target ${{ matrix.rust_target }} --bundles dmg
 
       - name: Package macOS DMGs
-        if: steps.package.outputs.should_build == 'true'
         shell: bash
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -504,7 +466,6 @@ jobs:
           test "$(find macos-artifacts -name '*.dmg' | wc -l | tr -d ' ')" != "0"
 
       - name: Upload macOS artifacts
-        if: steps.package.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: cleanweb-macos-${{ matrix.artifact_suffix }}

@@ -68,18 +68,15 @@ mise run rust-lint
 
 GitHub Actions 的 `Build` workflow 默认保持快速发布路径：
 
-- macOS 默认构建 `cleanweb-macos-arm64-unsigned-local-testing-only` 和 `cleanweb-macos-x64-unsigned-local-testing-only`，对应 Apple Silicon 和 Intel 两个 DMG。这些产物只用于本机测试，浏览器下载后会被 macOS Gatekeeper 拒绝，可能显示“CleanWeb 已损坏，无法打开”。
+- macOS 只自动构建 `cleanweb-macos-arm64-unsigned-local-testing-only`，对应 Apple Silicon DMG。Intel x64 已停止自动发布，但构建配置仍保留，可在确有需要时手动构建。该产物只用于本机测试，浏览器下载后会被 macOS Gatekeeper 拒绝，可能显示“CleanWeb 已损坏，无法打开”。
 - Windows 默认构建 x64 和 ARM64，每个 CPU 各产出 NSIS `.exe` 和 MSI `.msi`。
 
-手动触发 workflow 时可以选择更多 CPU 包：
+手动触发 workflow 时可以选择 Windows CPU 包：
 
-- `macos_packages=arm64`：只构建 Apple Silicon DMG。
-- `macos_packages=x64`：只构建 Intel DMG。
-- `macos_packages=all`：同时构建 Apple Silicon 和 Intel DMG。
 - `windows_packages=arm64`：只构建 Windows ARM64 的 NSIS `.exe` 和 MSI `.msi`。
 - `windows_packages=all`：同时构建 Windows x64 和 ARM64，每个 CPU 各产出 NSIS `.exe` 和 MSI `.msi`。
 
-推送 `v*` 标签时，桌面端会自动构建全量矩阵。除移动端外，正式桌面发布应有 6 个安装文件：Windows x64 `.exe`、Windows x64 `.msi`、Windows ARM64 `.exe`、Windows ARM64 `.msi`、macOS Apple Silicon `.dmg`、macOS Intel `.dmg`。发布页面应把 macOS Apple Silicon 和 Windows x64 放在默认下载位置，其余 CPU 专用包放在“其他版本”或“高级下载”区域。
+推送 `v*` 标签时，桌面端会自动构建当前发布矩阵。除移动端外，正式桌面发布应有 5 个安装文件：Windows x64 `.exe`、Windows x64 `.msi`、Windows ARM64 `.exe`、Windows ARM64 `.msi`、macOS Apple Silicon `.dmg`。发布页面应把 macOS Apple Silicon 和 Windows x64 放在默认下载位置，其余 CPU 专用包放在“其他版本”或“高级下载”区域。
 
 当前 CI 只产出 unsigned macOS DMG，因此 workflow 会拒绝把 macOS DMG 发布到 GitHub Release。正式发布 macOS 前必须接入 Developer ID 签名和 Apple 公证，并让 DMG 通过：
 
