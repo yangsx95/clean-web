@@ -30,6 +30,7 @@ pub struct RefreshReport {
     pub ignored_count: usize,
     pub proxy_count: usize,
     pub group_count: usize,
+    pub updated: bool,
 }
 
 #[derive(Debug)]
@@ -83,9 +84,10 @@ pub async fn refresh_subscription(
     state: State<'_, AppState>,
 ) -> Result<RefreshReport, String> {
     state.require_session(&session_token)?;
-    Ok(refresh_subscription_inner(id, &state, Some(&app))
-        .await?
-        .report)
+    let outcome = refresh_subscription_inner(id, &state, Some(&app)).await?;
+    let mut report = outcome.report;
+    report.updated = outcome.changed;
+    Ok(report)
 }
 
 async fn refresh_subscription_inner(
@@ -272,6 +274,7 @@ fn cached_refresh_report(
         ignored_count: 0,
         proxy_count: 0,
         group_count: 0,
+        updated: false,
     })
 }
 
@@ -594,6 +597,7 @@ fn refresh_rules(
         ignored_count: imported.ignored.len(),
         proxy_count: 0,
         group_count: 0,
+        updated: true,
     })
 }
 
@@ -640,6 +644,7 @@ fn refresh_safe_search_rules(
         ignored_count,
         proxy_count: 0,
         group_count: 0,
+        updated: true,
     })
 }
 
@@ -652,6 +657,7 @@ fn parse_proxy_payload(text: &str) -> Result<(RefreshReport, String), String> {
             ignored_count: 0,
             proxy_count: imported.report.proxy_count,
             group_count: imported.report.group_count,
+            updated: true,
         },
         imported.payload,
     ))

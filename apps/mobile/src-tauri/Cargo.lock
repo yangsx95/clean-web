@@ -342,6 +342,7 @@ dependencies = [
 name = "cleanweb-mobile"
 version = "0.1.0"
 dependencies = [
+ "cleanweb-proxy-import",
  "cleanweb-rules",
  "cleanweb-subscriptions",
  "ipnet",
@@ -349,9 +350,19 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tauri",
  "tauri-build",
  "tempfile",
+]
+
+[[package]]
+name = "cleanweb-proxy-import"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 describe("browser preview persistence", () => {
   beforeEach(() => {
@@ -25,6 +26,8 @@ describe("browser preview persistence", () => {
     });
     window.localStorage.clear();
     window.sessionStorage.clear();
+    delete (window as typeof window & { __CLEANWEB_TARGET__?: string }).__CLEANWEB_TARGET__;
+    clearMocks();
     vi.resetModules();
   });
 
@@ -74,6 +77,82 @@ describe("browser preview persistence", () => {
         }),
       ]),
     );
+  });
+
+  it("uses mobile commands when the mobile shell marks the target even if the user agent is generic", async () => {
+    (window as typeof window & { __CLEANWEB_TARGET__?: string }).__CLEANWEB_TARGET__ = "mobile";
+    const invoked: string[] = [];
+    mockIPC((command) => {
+      invoked.push(command);
+      if (command === "mobile_vpn_status") {
+        return {
+          supported: true,
+          prepared: true,
+          running: true,
+          stage: "running",
+          dataPlaneReady: true,
+          dataPlaneMode: "dns_only",
+          lastError: null,
+          lastPolicyUpdatedAt: Date.now(),
+          lastStartedAt: Date.now(),
+          lastDnsActivityAt: null,
+          dnsQueryCount: 3,
+          blockedDnsQueryCount: 1,
+          upstreamFailureCount: 0,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const backend = await import("./backend");
+
+    await expect(backend.getCoreStatus()).resolves.toMatchObject({
+      running: true,
+      controller: "android-vpn:running",
+    });
+    expect(invoked).toEqual(["mobile_vpn_status"]);
+  });
+
+  it("loads imported proxy nodes through mobile commands", async () => {
+    (window as typeof window & { __CLEANWEB_TARGET__?: string }).__CLEANWEB_TARGET__ = "mobile";
+    const calls: string[] = [];
+    mockIPC((command, args) => {
+      calls.push(command);
+      if (command === "mobile_import_proxy_payload") {
+        expect(args).toMatchObject({ payload: { content: expect.stringContaining("node-a") } });
+        return {
+          detectedFormat: "clash",
+          importedCount: 0,
+          ignoredCount: 0,
+          proxyCount: 1,
+          groupCount: 1,
+          updated: true,
+        };
+      }
+      if (command === "mobile_get_subscription_proxies") {
+        expect(args).toMatchObject({ subscriptionId: expect.any(String) });
+        return {
+          proxies: [{ name: "node-a", nodeType: "ss" }],
+          groups: [{ name: "auto", groupType: "url-test", members: ["node-a"] }],
+          payloadReady: true,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const backend = await import("./backend");
+    const subscription = await backend.importProxyPayload("browser-preview", {
+      name: "mobile proxy",
+      content: "proxies:\n  - {name: node-a, type: ss, server: x, port: 1, cipher: aes-128-gcm, password: p}\nproxy-groups:\n  - {name: auto, type: url-test, proxies: [node-a]}\n",
+    });
+
+    await expect(backend.getSubscriptionProxies("browser-preview", subscription.id)).resolves.toEqual({
+      proxies: [{ name: "node-a", nodeType: "ss" }],
+      groups: [{ name: "auto", groupType: "url-test", members: ["node-a"] }],
+      payloadReady: true,
+    });
+    expect(subscription.importedRuleCount).toBe(1);
+    expect(calls).toEqual(["mobile_import_proxy_payload", "mobile_get_subscription_proxies"]);
   });
 
   it("keeps the unlocked backend session across a page reload", async () => {

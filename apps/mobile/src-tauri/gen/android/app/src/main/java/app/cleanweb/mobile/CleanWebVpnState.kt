@@ -3,6 +3,7 @@ package app.cleanweb.mobile
 import android.content.Context
 import android.net.VpnService
 import app.tauri.plugin.JSObject
+import org.json.JSONObject
 
 object CleanWebVpnState {
   private const val PREFS = "cleanweb_vpn"
@@ -39,6 +40,15 @@ object CleanWebVpnState {
   @Volatile
   var upstreamFailureCount: Long = 0
 
+  @Volatile
+  var mihomoEnabled: Boolean = false
+
+  @Volatile
+  var mihomoConfigPath: String? = null
+
+  @Volatile
+  var dataPlaneMode: String = "dns_only"
+
   fun prepared(context: Context): Boolean = VpnService.prepare(context) == null
 
   fun updatePolicy(context: Context, policyJson: String) {
@@ -55,6 +65,7 @@ object CleanWebVpnState {
       .commit()
     if (!saved) throw IllegalStateException("Android policy could not be persisted")
     lastPolicyUpdatedAt = updatedAt
+    updateRuntimePolicyFields(policyJson)
     lastError = null
   }
 
@@ -65,9 +76,10 @@ object CleanWebVpnState {
     lastError = null
   }
 
-  fun markRunning() {
+  fun markRunning(mode: String = dataPlaneMode) {
     running = true
     dataPlaneReady = true
+    dataPlaneMode = mode
     stage = "running"
     lastStartedAt = System.currentTimeMillis()
     lastError = null
@@ -104,7 +116,7 @@ object CleanWebVpnState {
       put("running", running)
       put("stage", stage)
       put("dataPlaneReady", dataPlaneReady)
-      put("dataPlaneMode", "dns_only")
+      put("dataPlaneMode", dataPlaneMode)
       put("lastError", lastError)
       put("lastPolicyUpdatedAt", lastPolicyUpdatedAt.takeIf { it > 0 })
       put("lastStartedAt", lastStartedAt.takeIf { it > 0 })
@@ -119,11 +131,25 @@ object CleanWebVpnState {
     val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     val policyJson = preferences.getString(POLICY_JSON, "{}") ?: "{}"
     lastPolicyUpdatedAt = preferences.getLong(LAST_POLICY_UPDATED_AT, 0)
+    updateRuntimePolicyFields(policyJson)
     val error = CleanWebDnsEngine.updatePolicy(policyJson)
     if (error != null) {
       stage = "policy_failed"
       lastError = error
       throw IllegalArgumentException(error)
+    }
+  }
+
+  private fun updateRuntimePolicyFields(policyJson: String) {
+    try {
+      val json = JSONObject(policyJson)
+      mihomoEnabled = json.optBoolean("mihomoEnabled", false)
+      mihomoConfigPath = json.optString("mihomoConfigPath", "").takeIf { it.isNotBlank() }
+      dataPlaneMode = if (mihomoEnabled) "full_tunnel" else "dns_only"
+    } catch (_: Exception) {
+      mihomoEnabled = false
+      mihomoConfigPath = null
+      dataPlaneMode = "dns_only"
     }
   }
 }

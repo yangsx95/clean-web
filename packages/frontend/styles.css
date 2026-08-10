@@ -3520,6 +3520,7 @@ h1 {
 .sub-proxy-delay.testing { color: var(--color-warning); background: #fffbeb; }
 
 .sub-proxy-empty { padding: 20px; text-align: center; color: var(--color-text-muted); font-size: 12px; }
+.sub-proxy-empty.warning { color: var(--color-danger); background: #fef2f2; border-radius: var(--radius-md); margin-bottom: var(--spacing-sm); }
 
 /* ===== MODAL ===== */
 .modal-backdrop {

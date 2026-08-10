@@ -9,22 +9,32 @@ import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.Os
+import android.system.OsConstants
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.File
 import java.net.DatagramSocket
 import java.net.InetAddress
 
 class CleanWebVpnService : VpnService() {
   private var vpnInterface: ParcelFileDescriptor? = null
+  private var mihomoProcess: Process? = null
   @Volatile
   private var packetLoopRunning = false
+  @Volatile
+  private var stopping = false
   private var packetThread: Thread? = null
+  private var mihomoLogThread: Thread? = null
   private var upstreamDnsServers: List<InetAddress> = emptyList()
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_STOP -> stopVpn()
-      else -> startVpn()
+      else -> {
+        startForeground(NOTIFICATION_ID, buildNotification("Starting DNS filtering protection"))
+        startVpn()
+      }
     }
     return START_STICKY
   }
@@ -46,39 +56,58 @@ class CleanWebVpnService : VpnService() {
     }
 
     try {
+      stopping = false
       CleanWebVpnState.markStarting()
       CleanWebVpnState.loadPolicy(this)
       upstreamDnsServers = captureUpstreamDnsServers()
-      startForeground(NOTIFICATION_ID, buildNotification())
+      startForeground(NOTIFICATION_ID, buildNotification("DNS filtering protection is running"))
 
       val builder = Builder()
         .setSession("CleanWeb")
         .setMtu(1500)
         .addAddress("10.255.0.2", 32)
-        .addDnsServer(CLEANWEB_DNS_ADDRESS)
-        .addRoute("10.255.0.1", 32)
+        .addDnsServer(if (CleanWebVpnState.mihomoEnabled) "1.1.1.1" else CLEANWEB_DNS_ADDRESS)
+        .addRoute(if (CleanWebVpnState.mihomoEnabled) "0.0.0.0" else CLEANWEB_DNS_ADDRESS, if (CleanWebVpnState.mihomoEnabled) 0 else 32)
         .setConfigureIntent(configureIntent())
+
+      if (CleanWebVpnState.mihomoEnabled) {
+        try {
+          builder.addDisallowedApplication(packageName)
+        } catch (error: Exception) {
+          throw IllegalStateException("CleanWeb app could not be excluded from Android VPN loop: ${error.message}")
+        }
+      }
 
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         builder.setMetered(false)
       }
 
       vpnInterface = builder.establish() ?: throw IllegalStateException("Android VPN interface was not established")
-      startPacketLoop(vpnInterface!!)
-      CleanWebVpnState.markRunning()
+      if (CleanWebVpnState.mihomoEnabled) {
+        startMihomo(vpnInterface!!)
+        CleanWebVpnState.markRunning("full_tunnel")
+      } else {
+        startPacketLoop(vpnInterface!!)
+        CleanWebVpnState.markRunning("dns_only")
+      }
     } catch (error: Exception) {
       CleanWebVpnState.markFailed(error.message ?: error.javaClass.simpleName)
-      stopSelf()
+      stopVpn(stopService = true, markStopped = false)
     }
   }
 
-  private fun stopVpn(stopService: Boolean = true) {
+  private fun stopVpn(stopService: Boolean = true, markStopped: Boolean = true) {
+    stopping = true
     packetLoopRunning = false
     packetThread?.interrupt()
     packetThread = null
+    mihomoLogThread?.interrupt()
+    mihomoLogThread = null
+    mihomoProcess?.destroy()
+    mihomoProcess = null
     vpnInterface?.close()
     vpnInterface = null
-    CleanWebVpnState.markStopped()
+    if (markStopped) CleanWebVpnState.markStopped()
     stopForeground(STOP_FOREGROUND_REMOVE)
     if (stopService) stopSelf()
   }
@@ -128,6 +157,68 @@ class CleanWebVpnService : VpnService() {
     packetThread?.start()
   }
 
+  private fun startMihomo(descriptor: ParcelFileDescriptor) {
+    val configPath = CleanWebVpnState.mihomoConfigPath
+      ?: throw IllegalStateException("Android Mihomo config is not prepared")
+    val sourceConfig = File(configPath)
+    if (!sourceConfig.exists()) throw IllegalStateException("Android Mihomo config does not exist: $configPath")
+    val executable = ensureMihomoExecutable()
+    val runtimeDir = File(filesDir, "mihomo")
+    runtimeDir.mkdirs()
+    val activeConfig = File(runtimeDir, "active-config.yaml")
+    activeConfig.writeText(sourceConfig.readText().replace("file-descriptor: 3", "file-descriptor: ${descriptor.fd}"))
+    clearCloseOnExec(descriptor)
+    val processBuilder = ProcessBuilder(executable.absolutePath, "-d", runtimeDir.absolutePath, "-f", activeConfig.absolutePath)
+      .redirectErrorStream(true)
+      .directory(runtimeDir)
+    processBuilder.environment()["HOME"] = filesDir.absolutePath
+    processBuilder.environment()["XDG_CONFIG_HOME"] = runtimeDir.absolutePath
+    val process = processBuilder.start()
+    mihomoProcess = process
+    mihomoLogThread = Thread({
+      var lastLine: String? = null
+      process.inputStream.bufferedReader().useLines { lines ->
+        lines.forEach { line ->
+          lastLine = line.take(300)
+          if (line.contains("error", ignoreCase = true) || line.contains("fail", ignoreCase = true)) {
+            CleanWebVpnState.lastError = lastLine
+          }
+        }
+      }
+      val exitCode = process.waitFor()
+      if (!stopping && mihomoProcess == process) {
+        mihomoProcess = null
+        CleanWebVpnState.markFailed("Android Mihomo exited with code $exitCode${lastLine?.let { ": $it" } ?: ""}")
+        vpnInterface?.close()
+        vpnInterface = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+      }
+    }, "cleanweb-mihomo-log")
+    mihomoLogThread?.start()
+  }
+
+  private fun ensureMihomoExecutable(): File {
+    val abi = Build.SUPPORTED_ABIS.firstOrNull()
+      ?: throw IllegalStateException("Android ABI is unavailable")
+    val libraryName = when {
+      abi == "arm64-v8a" -> "libmihomo.so"
+      else -> throw IllegalStateException("当前 Android ABI 暂未打包 Mihomo 核心：$abi")
+    }
+    val executable = File(applicationInfo.nativeLibraryDir, libraryName)
+    if (!executable.exists()) throw IllegalStateException("Android Mihomo 核心不存在：${executable.absolutePath}")
+    return executable
+  }
+
+  private fun clearCloseOnExec(descriptor: ParcelFileDescriptor) {
+    try {
+      val flags = Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_GETFD, 0)
+      Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_SETFD, flags and OsConstants.FD_CLOEXEC.inv())
+    } catch (error: Exception) {
+      throw IllegalStateException("Android VPN fd could not be inherited by Mihomo: ${error.message}")
+    }
+  }
+
   private fun captureUpstreamDnsServers(): List<InetAddress> {
     val manager = getSystemService(ConnectivityManager::class.java)
     val systemResolvers = manager.activeNetwork
@@ -140,7 +231,7 @@ class CleanWebVpnService : VpnService() {
     return FALLBACK_DNS_ADDRESSES.map(InetAddress::getByName)
   }
 
-  private fun buildNotification(): Notification {
+  private fun buildNotification(contentText: String): Notification {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val manager = getSystemService(NotificationManager::class.java)
       val channel = NotificationChannel(
@@ -161,7 +252,7 @@ class CleanWebVpnService : VpnService() {
     return builder
       .setSmallIcon(R.mipmap.ic_launcher)
       .setContentTitle("CleanWeb")
-      .setContentText("DNS filtering protection is running")
+      .setContentText(contentText)
       .setOngoing(true)
       .setContentIntent(configureIntent())
       .build()

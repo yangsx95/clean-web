@@ -24,6 +24,28 @@ pub struct StoredSafeSearchMapping {
     pub target: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredProxyNode {
+    pub name: String,
+    pub node_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredProxyGroup {
+    pub name: String,
+    pub group_type: String,
+    pub members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredProxyInfo {
+    pub proxies: Vec<StoredProxyNode>,
+    pub groups: Vec<StoredProxyGroup>,
+}
+
 impl From<RuleInput> for StoredSubscriptionRule {
     fn from(value: RuleInput) -> Self {
         Self {
@@ -70,6 +92,14 @@ pub fn subscription_rules_path(store_dir: &Path, id: &str) -> PathBuf {
 
 pub fn safe_search_mappings_path(store_dir: &Path, id: &str) -> PathBuf {
     store_dir.join(format!("{}.safe-search.jsonl", safe_file_stem(id)))
+}
+
+pub fn proxy_info_path(store_dir: &Path, id: &str) -> PathBuf {
+    store_dir.join(format!("{}.proxy.json", safe_file_stem(id)))
+}
+
+pub fn proxy_payload_path(store_dir: &Path, id: &str) -> PathBuf {
+    store_dir.join(format!("{}.proxy.yaml", safe_file_stem(id)))
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -144,6 +174,55 @@ pub fn read_safe_search_mappings(
         mappings.push(serde_json::from_str(&line).map_err(error)?);
     }
     Ok(mappings)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn replace_proxy_info(
+    store_dir: &Path,
+    id: &str,
+    info: &StoredProxyInfo,
+) -> Result<bool, String> {
+    fs::create_dir_all(store_dir).map_err(error)?;
+    let path = proxy_info_path(store_dir, id);
+    let tmp = path.with_extension("proxy.json.tmp");
+    let mut file = File::create(&tmp).map_err(error)?;
+    serde_json::to_writer(&mut file, info).map_err(error)?;
+    file.write_all(b"\n").map_err(error)?;
+    file.sync_all().map_err(error)?;
+    replace_if_changed(&tmp, &path)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn read_proxy_info(store_dir: &Path, id: &str) -> Result<StoredProxyInfo, String> {
+    let path = proxy_info_path(store_dir, id);
+    if !path.exists() {
+        return Ok(StoredProxyInfo {
+            proxies: Vec::new(),
+            groups: Vec::new(),
+        });
+    }
+    let file = File::open(path).map_err(error)?;
+    serde_json::from_reader(file).map_err(error)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn replace_proxy_payload(store_dir: &Path, id: &str, payload: &str) -> Result<bool, String> {
+    fs::create_dir_all(store_dir).map_err(error)?;
+    let path = proxy_payload_path(store_dir, id);
+    let tmp = path.with_extension("proxy.yaml.tmp");
+    let mut file = File::create(&tmp).map_err(error)?;
+    file.write_all(payload.as_bytes()).map_err(error)?;
+    file.sync_all().map_err(error)?;
+    replace_if_changed(&tmp, &path)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn read_proxy_payload(store_dir: &Path, id: &str) -> Result<Option<String>, String> {
+    let path = proxy_payload_path(store_dir, id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(path).map(Some).map_err(error)
 }
 
 fn safe_file_stem(id: &str) -> String {
@@ -222,5 +301,39 @@ mod tests {
         let stored = read_subscription_rules(directory.path(), "source").unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].pattern, "two.example");
+    }
+
+    #[test]
+    fn stores_proxy_info_for_mobile_node_preview() {
+        let directory = tempfile::tempdir().unwrap();
+        let info = StoredProxyInfo {
+            proxies: vec![StoredProxyNode {
+                name: "node-a".into(),
+                node_type: "ss".into(),
+            }],
+            groups: vec![StoredProxyGroup {
+                name: "auto".into(),
+                group_type: "url-test".into(),
+                members: vec!["node-a".into()],
+            }],
+        };
+        assert!(replace_proxy_info(directory.path(), "proxy/source", &info).unwrap());
+        assert!(!replace_proxy_info(directory.path(), "proxy/source", &info).unwrap());
+        assert_eq!(
+            read_proxy_info(directory.path(), "proxy/source").unwrap(),
+            info
+        );
+    }
+
+    #[test]
+    fn stores_proxy_payload_for_mobile_mihomo_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let payload = "proxies:\n  - name: node-a\n    type: direct\n";
+        assert!(replace_proxy_payload(directory.path(), "proxy/source", payload).unwrap());
+        assert!(!replace_proxy_payload(directory.path(), "proxy/source", payload).unwrap());
+        assert_eq!(
+            read_proxy_payload(directory.path(), "proxy/source").unwrap(),
+            Some(payload.into())
+        );
     }
 }

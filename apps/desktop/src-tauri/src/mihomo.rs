@@ -523,7 +523,7 @@ pub async fn reload_protection(
 fn reload_protection_inner(
     app: &AppHandle,
     state: &AppState,
-    _status: CoreStatus,
+    status: CoreStatus,
 ) -> Result<CoreStatus, String> {
     // Mihomo 控制器可用不代表系统 TUN fd 仍然健康。热更新后曾出现
     // "batch read packet: bad file descriptor"：代理测速和控制 API 正常，
@@ -535,6 +535,9 @@ fn reload_protection_inner(
     let secret = controller_secret(state)?;
     let new_config = build_config(state, &secret, true)?;
     let config_path = runtime.join("config.yaml");
+    if active_config_matches(&runtime.join("active-config"), status.pid, &new_config) {
+        return core_status(state);
+    }
     atomic_write(&config_path, new_config.as_bytes()).map_err(error)?;
     let validation = Command::new(binary)
         .args(["-t", "-f"])
@@ -556,7 +559,6 @@ fn config_hash(config: &str) -> String {
     format!("{:x}", Sha256::digest(config.as_bytes()))
 }
 
-#[cfg(test)]
 fn active_config_matches(path: &Path, running_pid: Option<u32>, config: &str) -> bool {
     let Some(running_pid) = running_pid else {
         return false;
@@ -1537,6 +1539,9 @@ fn append_imported_rules(
         {
             continue;
         }
+        if imported_domain_block_is_handled_by_cleanweb_dns(&kind, &action) {
+            continue;
+        }
         let target = match action.as_str() {
             "Allow" => "DIRECT",
             "Proxy" => "CleanWeb",
@@ -1549,6 +1554,10 @@ fn append_imported_rules(
         }
     }
     Ok(())
+}
+
+fn imported_domain_block_is_handled_by_cleanweb_dns(kind: &str, action: &str) -> bool {
+    action == "Block" && matches!(kind, "Exact" | "Suffix")
 }
 
 fn mihomo_rule(kind: &str, pattern: &str, target: &str) -> Option<String> {
@@ -2001,8 +2010,8 @@ mod tests {
         assert!(!config.contains("fake-ip-range"));
         assert!(!config.contains("fake-ip-filter"));
         assert!(
-            config.contains("DOMAIN-SUFFIX,bad.example,REJECT"),
-            "导入的域名拦截必须进入 Mihomo，兼容模式保留系统 DNS 时仍要由 TUN 侧拦截"
+            !config.contains("DOMAIN-SUFFIX,bad.example,REJECT"),
+            "导入的 Exact/Suffix 域名拦截由 CleanWeb DNS/FST 执行，不能再写入 Mihomo 规则造成大配置"
         );
         assert!(
             !config.contains("DOMAIN-SUFFIX,baidu.com,DIRECT"),
@@ -2226,6 +2235,7 @@ mod tests {
             )
             .unwrap();
             db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('strict-source','strict-1','Suffix','strict.example','Block','strict',1)",[]).unwrap();
+            db.execute("INSERT INTO imported_rules(subscription_id,rule_id,matcher_kind,pattern,action,category,source_line) VALUES('strict-source','strict-2','Contains','adult-keyword','Block','strict',2)",[]).unwrap();
         }
         let default_config = build_config(&state, "secret", true).unwrap();
         assert!(!default_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"));
@@ -2243,8 +2253,12 @@ mod tests {
         }
         let strict_config = build_config(&state, "secret", true).unwrap();
         assert!(
-            strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"),
-            "导入的 Exact/Suffix 拦截规则也必须进入 Mihomo，兼容模式保留系统 DNS 时仍要拦截"
+            !strict_config.contains("DOMAIN-SUFFIX,strict.example,REJECT"),
+            "导入的 Exact/Suffix 拦截规则由 CleanWeb DNS/FST 执行，避免 Mihomo 配置膨胀"
+        );
+        assert!(
+            strict_config.contains("DOMAIN-KEYWORD,adult-keyword,REJECT"),
+            "DNS/FST 尚不支持的关键词规则仍必须保留在 Mihomo"
         );
         assert!(
             !strict_config.contains("DOMAIN-REGEX,(^|[.])[a-z0-9-]{20}[a-z0-9-]*([.]|$),REJECT"),
@@ -2270,10 +2284,10 @@ mod tests {
             .unwrap();
         }
         let aggressive_config = build_config(&state, "secret", true).unwrap();
-        assert!(aggressive_config.contains("DOMAIN-SUFFIX,yandex.com,REJECT"));
-        assert!(aggressive_config.contains("DOMAIN-SUFFIX,cc,REJECT"));
-        assert!(aggressive_config.contains("DOMAIN-SUFFIX,top,REJECT"));
-        assert!(aggressive_config.contains("DOMAIN-SUFFIX,sbs,REJECT"));
+        assert!(!aggressive_config.contains("DOMAIN-SUFFIX,yandex.com,REJECT"));
+        assert!(!aggressive_config.contains("DOMAIN-SUFFIX,cc,REJECT"));
+        assert!(!aggressive_config.contains("DOMAIN-SUFFIX,top,REJECT"));
+        assert!(!aggressive_config.contains("DOMAIN-SUFFIX,sbs,REJECT"));
         assert!(
             !strict_config.contains("DOMAIN-KEYWORD,91,REJECT"),
             "strict mode must not block short numeric fragments"
@@ -2319,36 +2333,25 @@ mod tests {
             .unwrap();
         }
         let enabled_config = build_config(&state, "secret", true).unwrap();
-        assert!(enabled_config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
-        assert!(enabled_config.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"));
-        assert!(enabled_config.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"));
-        assert!(enabled_config.contains("DOMAIN-SUFFIX,roblox.com,REJECT"));
+        assert!(!enabled_config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
+        assert!(!enabled_config.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"));
+        assert!(!enabled_config.contains("DOMAIN-SUFFIX,bilivideo.cn,REJECT"));
+        assert!(!enabled_config.contains("DOMAIN-SUFFIX,roblox.com,REJECT"));
         assert!(
-            enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"),
-            "导入的 Exact/Suffix 拦截规则也必须进入 Mihomo，兼容模式保留系统 DNS 时仍要拦截"
+            !enabled_config.contains("DOMAIN-SUFFIX,game.example,REJECT"),
+            "导入的 Exact/Suffix 拦截规则由 CleanWeb DNS/FST 执行，避免 Mihomo 配置膨胀"
         );
-        let allow_douyin = enabled_config.find("DOMAIN,douyin.com,DIRECT").unwrap();
-        let reject_douyin = enabled_config
-            .find("DOMAIN-SUFFIX,douyin.com,REJECT")
-            .unwrap();
         assert!(
-            allow_douyin < reject_douyin,
-            "手动放行必须先于可选娱乐分类，才能处理误杀"
+            enabled_config.contains("DOMAIN,douyin.com,DIRECT"),
+            "手动放行仍保留在 Mihomo，用于 TUN 路由层显式直连"
         );
-        let reject_roblox = enabled_config
-            .find("DOMAIN-SUFFIX,roblox.com,REJECT")
-            .unwrap();
         let proxy_roblox = enabled_config
             .find("DOMAIN-SUFFIX,roblox.com,CleanWeb")
             .unwrap();
-        assert!(
-            reject_roblox < proxy_roblox,
-            "路由规则必须晚于内容过滤，避免走代理绕过拦截"
-        );
         let system_route = enabled_config.find("IP-CIDR,10.8.0.0/24,DIRECT").unwrap();
         assert!(
-            reject_roblox < system_route,
-            "系统路由规则也必须晚于内容过滤，避免绕过拦截"
+            proxy_roblox < system_route,
+            "显式代理路由和系统路由仍由 Mihomo TUN 层处理"
         );
     }
 
@@ -2366,14 +2369,13 @@ mod tests {
 
         let config = build_config(&state, "secret", true).unwrap();
         let creator_allow = config.find("DOMAIN,creator.douyin.com,DIRECT").unwrap();
-        let douyin_block = config.find("DOMAIN-SUFFIX,douyin.com,REJECT").unwrap();
-        assert!(creator_allow < douyin_block);
+        assert!(!config.contains("DOMAIN-SUFFIX,douyin.com,REJECT"));
         let preview_image_allow = config.find("DOMAIN-SUFFIX,douyinpic.com,DIRECT").unwrap();
-        let preview_image_block = config.find("DOMAIN-SUFFIX,douyinpic.com,REJECT").unwrap();
-        assert!(preview_image_allow < preview_image_block);
         let preview_video_allow = config.find("DOMAIN-SUFFIX,douyinvod.com,DIRECT").unwrap();
-        let preview_video_block = config.find("DOMAIN-SUFFIX,douyinvod.com,REJECT").unwrap();
-        assert!(preview_video_allow < preview_video_block);
+        assert!(!config.contains("DOMAIN-SUFFIX,douyinpic.com,REJECT"));
+        assert!(!config.contains("DOMAIN-SUFFIX,douyinvod.com,REJECT"));
+        assert!(creator_allow < preview_image_allow);
+        assert!(preview_image_allow < preview_video_allow);
         assert!(config.contains("DOMAIN,p0-creator-media-private.douyin.com,DIRECT"));
         assert!(config.contains("DOMAIN,creator.amemv.com,DIRECT"));
         assert!(!config.contains("DOMAIN,www.douyin.com,DIRECT"));

@@ -59,9 +59,13 @@ const previewSettingsKey = "cleanweb.preview.settings";
 const previewCoreStatusKey = "cleanweb.preview.coreStatus";
 const previewParentRulesKey = "cleanweb.preview.parentRules";
 const previewSubscriptionsKey = "cleanweb.preview.subscriptions";
+const previewProxySelectionKey = "cleanweb.preview.proxySelection";
 const sessionTokenKey = "cleanweb.sessionToken";
 let previewParentRules:ParentRule[] = loadPreviewParentRules();
 let previewSubscriptions: Subscription[] = [];
+
+type CleanWebWindow = typeof window & { __CLEANWEB_TARGET__?: string };
+type TauriWindow = typeof window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
 
 export const defaultSettings: Settings = {
   protectionEnabled: false,
@@ -79,8 +83,11 @@ const defaultCoreStatus: CoreStatus = { running: false, controller: "127.0.0.1:1
 let defaults: Settings = loadPreviewSettings();
 let previewCoreStatus: CoreStatus = loadPreviewCoreStatus();
 
-const isTauri = () => "__TAURI_INTERNALS__" in window;
-const isMobileTauri = () => isTauri() && /Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent);
+const isTauri = () => typeof (window as TauriWindow).__TAURI_INTERNALS__?.invoke === "function";
+const isMobileTauri = () =>
+  isTauri() &&
+  (((window as CleanWebWindow).__CLEANWEB_TARGET__ === "mobile") ||
+    /Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent));
 const usesDesktopBackend = () => isTauri() && !isMobileTauri();
 const previewSession = (password: string) => password.length < 8
   ? (() => { throw new Error("管理密码错误"); })()
@@ -92,7 +99,7 @@ const mobileCoreStatus = (status: MobileVpnStatus): CoreStatus => ({
   components: [
     { id:"mobile-vpn", label:"移动 VPN", status:status.running?"ready":status.stage==="failed"?"warning":status.supported?"stopped":"warning", detail:status.lastError??(status.supported ? status.stage : "当前平台暂不支持") },
     { id:"mobile-policy", label:"策略载入", status:status.lastPolicyUpdatedAt?"ready":status.prepared?"warning":"stopped", detail:status.lastPolicyUpdatedAt ? `策略已加载 · ${new Date(status.lastPolicyUpdatedAt).toLocaleString()}` : status.prepared ? "VPN 已授权，等待加载策略" : "等待系统授权" },
-    { id:"mobile-data-plane", label:"DNS 数据通道", status:status.dataPlaneReady?"ready":"stopped", detail:status.dataPlaneReady ? `DNS-only · 已处理 ${status.dnsQueryCount} 次，拦截 ${status.blockedDnsQueryCount} 次` : "DNS 数据面未就绪" },
+    { id:"mobile-data-plane", label:status.dataPlaneMode==="full_tunnel"?"全流量代理通道":"DNS 数据通道", status:status.dataPlaneReady?"ready":"stopped", detail:status.dataPlaneReady ? status.dataPlaneMode==="full_tunnel" ? `Full tunnel · 已接入 Android VPN 和代理出口` : `DNS-only · 已处理 ${status.dnsQueryCount} 次，拦截 ${status.blockedDnsQueryCount} 次` : "数据面未就绪" },
     { id:"mobile-upstream", label:"上游 DNS", status:status.upstreamFailureCount>0?"warning":status.dataPlaneReady?"ready":"stopped", detail:status.upstreamFailureCount>0 ? `累计失败 ${status.upstreamFailureCount} 次，已自动尝试备用解析器` : status.dataPlaneReady ? "优先沿用当前网络的系统 DNS" : "等待数据面启动" },
   ],
 });
@@ -102,6 +109,9 @@ const mobileStartVpn = async () => invoke<MobileVpnStatus>("mobile_start_vpn");
 const mobileStopVpn = async () => invoke<MobileVpnStatus>("mobile_stop_vpn");
 const mobileUpdatePolicy = async (policyJson: string) => invoke<MobileVpnStatus>("mobile_update_policy", { payload:{ policyJson } });
 const mobileRefreshSubscription = async (payload: { id:string; url:string; format?:string; category?:string }) => invoke<RefreshReport>("mobile_refresh_subscription", { payload });
+const mobileRefreshProxySubscription = async (payload: { id:string; url:string; format?:string; category?:string }) => invoke<RefreshReport>("mobile_refresh_proxy_subscription", { payload });
+const mobileImportProxyPayload = async (payload: { id:string; content:string }) => invoke<RefreshReport>("mobile_import_proxy_payload", { payload });
+const mobileGetSubscriptionProxies = async (subscriptionId: string) => invoke<SubscriptionProxyInfo>("mobile_get_subscription_proxies", { subscriptionId });
 const waitForMobileVpn = async (accept:(status:MobileVpnStatus)=>boolean, timeoutMs=10_000) => {
   const deadline=Date.now()+timeoutMs;
   let status=await mobileVpnStatus();
@@ -120,7 +130,8 @@ async function mobilePolicyPayload(){
   return {
     settings: defaults,
     parentRules: previewParentRules,
-    subscriptions: previewSubscriptions.filter(item=>item.kind==="rule").map(item=>({id:item.id,url:item.url,category:item.category,format:item.format,enabled:item.enabled})),
+    subscriptions: previewSubscriptions.map(item=>({id:item.id,kind:item.kind,url:item.url,category:item.category,format:item.format,enabled:item.enabled})),
+    proxySelection: window.localStorage.getItem(previewProxySelectionKey) ?? undefined,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -185,6 +196,19 @@ function previewCoreComponents(running:boolean): CoreComponentStatus[] {
 }
 function savePreviewCoreStatus() {
   try { window.localStorage.setItem(previewCoreStatusKey, JSON.stringify(previewCoreStatus)); } catch {}
+}
+function clientId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  const random = new Uint8Array(16);
+  cryptoApi?.getRandomValues?.(random);
+  if (random.some((value) => value !== 0)) {
+    random[6] = (random[6] & 0x0f) | 0x40;
+    random[8] = (random[8] & 0x3f) | 0x80;
+    const hex = Array.from(random, (value) => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 function loadPreviewParentRules(): ParentRule[] {
   try {
@@ -286,7 +310,17 @@ export async function listSubscriptions(sessionToken:string,kind?: "rule"|"proxy
 }
 export async function createSubscription(sessionToken: string, input: NewSubscription): Promise<Subscription> {
   if (usesDesktopBackend()) return invoke("create_subscription", { sessionToken, input });
-  const item: Subscription = { ...input, id: crypto.randomUUID(), enabled: true }; previewSubscriptions.unshift(item); savePreviewSubscriptions(); return item;
+  const item: Subscription = { ...input, id: clientId(), enabled: true }; previewSubscriptions.unshift(item); savePreviewSubscriptions();
+  if (isMobileTauri() && input.kind === "proxy") {
+    try {
+      const report = await mobileRefreshProxySubscription({ id:item.id, url:item.url, format:item.format, category:item.category });
+      Object.assign(item, { lastUpdatedAt:new Date().toISOString(), lastError:undefined, importedRuleCount:report.proxyCount });
+    } catch (reason) {
+      item.lastError = reason instanceof Error ? reason.message : String(reason);
+    }
+    savePreviewSubscriptions();
+  }
+  return item;
 }
 export async function updateSubscription(sessionToken: string, id: string, input: UpdateSubscription): Promise<Subscription> {
   if (usesDesktopBackend()) return invoke("update_subscription", { sessionToken, id, input });
@@ -299,7 +333,15 @@ export async function updateSubscription(sessionToken: string, id: string, input
 }
 export async function importProxyPayload(sessionToken: string, input: ManualProxyImport): Promise<Subscription> {
   if (usesDesktopBackend()) return invoke("import_proxy_payload", { sessionToken, input });
-  const item: Subscription = { id: crypto.randomUUID(), kind: "proxy", name: input.name, url: "manual://preview", format: "clash", enabled: true, lastUpdatedAt: new Date().toISOString() };
+  const id = clientId();
+  if (isMobileTauri()) {
+    const report = await mobileImportProxyPayload({ id, content: input.content });
+    const item: Subscription = { id, kind: "proxy", name: input.name, url: `manual://proxy/${id}`, format: report.detectedFormat, enabled: true, lastUpdatedAt: new Date().toISOString(), importedRuleCount: report.proxyCount };
+    previewSubscriptions.unshift(item);
+    savePreviewSubscriptions();
+    return item;
+  }
+  const item: Subscription = { id, kind: "proxy", name: input.name, url: "manual://preview", format: "clash", enabled: true, lastUpdatedAt: new Date().toISOString() };
   previewSubscriptions.unshift(item);
   savePreviewSubscriptions();
   return item;
@@ -341,8 +383,10 @@ export async function refreshSubscription(sessionToken:string,id:string):Promise
     previewSubscriptions=loadPreviewSubscriptions();
     const item=previewSubscriptions.find(value=>value.id===id);
     if(!item)throw new Error("订阅不存在");
-    const report=await mobileRefreshSubscription({id:item.id,url:item.url,format:item.format,category:item.category});
-    Object.assign(item,{lastUpdatedAt:new Date().toISOString(),lastError:undefined,importedRuleCount:report.importedCount,activeRuleCount:item.enabled?report.importedCount:0});
+    const report=item.kind==="proxy"
+      ? await mobileRefreshProxySubscription({id:item.id,url:item.url,format:item.format,category:item.category})
+      : await mobileRefreshSubscription({id:item.id,url:item.url,format:item.format,category:item.category});
+    Object.assign(item,{lastUpdatedAt:new Date().toISOString(),lastError:undefined,importedRuleCount:item.kind==="proxy"?report.proxyCount:report.importedCount,activeRuleCount:item.enabled?(item.kind==="proxy"?report.proxyCount:report.importedCount):0});
     savePreviewSubscriptions();
     return report;
   }
@@ -378,27 +422,29 @@ export async function getCoreStatus():Promise<CoreStatus>{if(usesDesktopBackend(
 export async function startProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("start_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));await mobilePrepareVpn();await mobileStartVpn();return mobileCoreStatus(await waitForMobileVpn(status=>status.running&&status.dataPlaneReady));}previewCoreStatus={running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(true)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
 export async function autoStartProtection():Promise<CoreStatus>{return usesDesktopBackend()?invoke("auto_start_protection"):getCoreStatus();}
 export async function stopProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("stop_protection",{sessionToken});if(isMobileTauri()){await mobileStopVpn();return mobileCoreStatus(await waitForMobileVpn(status=>!status.running&&!status.dataPlaneReady));}previewCoreStatus={running:false,controller:"127.0.0.1:19090",configPath:"preview",components:previewCoreComponents(false)};savePreviewCoreStatus();return structuredClone(previewCoreStatus);}
-export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("reload_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));return mobileCoreStatus(await mobileVpnStatus());}return getCoreStatus();}
+export async function reloadProtection(sessionToken:string):Promise<CoreStatus>{if(usesDesktopBackend())return invoke("reload_protection",{sessionToken});if(isMobileTauri()){await mobileUpdatePolicy(JSON.stringify(await mobilePolicyPayload()));const status=await mobileVpnStatus();if(status.running){await mobileStopVpn();await waitForMobileVpn(value=>!value.running&&!value.dataPlaneReady);await mobileStartVpn();return mobileCoreStatus(await waitForMobileVpn(value=>value.running&&value.dataPlaneReady));}return mobileCoreStatus(status);}return getCoreStatus();}
 export async function testProxyGroup(sessionToken:string,group="CleanWeb"):Promise<number>{if(!usesDesktopBackend())return 0;const value=await invoke<{delay:number}>("test_proxy_group",{sessionToken,group});return value.delay;}
 export type ProxyNode={name:string;nodeType:string;delay?:number|null};
 export type ProxyGroup={name:string;groupType:string;now:string;nodes:ProxyNode[]};
 export type SubscriptionProxyNode={name:string;nodeType:string};
 export type SubscriptionProxyGroup={name:string;groupType:string;members:string[]};
-export type SubscriptionProxyInfo={proxies:SubscriptionProxyNode[];groups:SubscriptionProxyGroup[]};
+export type SubscriptionProxyInfo={proxies:SubscriptionProxyNode[];groups:SubscriptionProxyGroup[];payloadReady?:boolean};
 export type ProxyDelayResult={delays:Record<string,number>};
 export type ProxySelectionResult={requiresReload:boolean};
 export type ProxyConnectivityResult={url:string;group:string;delay:number};
 export async function getProxies(sessionToken:string):Promise<ProxyGroup[]>{return usesDesktopBackend()?invoke<ProxyGroup[]>("get_proxies",{sessionToken}):[];}
-export async function getSavedProxySelection(sessionToken:string):Promise<string|undefined>{return usesDesktopBackend()?invoke<string|null>("get_saved_proxy_selection",{sessionToken}).then(value=>value??undefined):undefined;}
-export async function getSubscriptionProxies(sessionToken:string,subscriptionId:string):Promise<SubscriptionProxyInfo>{if(usesDesktopBackend())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{sessionToken,subscriptionId});return{proxies:[],groups:[]};}
+export async function getSavedProxySelection(sessionToken:string):Promise<string|undefined>{return usesDesktopBackend()?invoke<string|null>("get_saved_proxy_selection",{sessionToken}).then(value=>value??undefined):(window.localStorage.getItem(previewProxySelectionKey)??undefined);}
+export async function getSubscriptionProxies(sessionToken:string,subscriptionId:string):Promise<SubscriptionProxyInfo>{if(usesDesktopBackend())return invoke<SubscriptionProxyInfo>("get_subscription_proxies",{sessionToken,subscriptionId});if(isMobileTauri())return mobileGetSubscriptionProxies(subscriptionId);return{proxies:[],groups:[]};}
 export async function selectProxy(sessionToken:string,group:string,name:string):Promise<ProxySelectionResult>{
+  if(isMobileTauri()){window.localStorage.setItem(previewProxySelectionKey,name);defaults.automaticNodeSelection=false;savePreviewSettings();return{requiresReload:true};}
   if(!usesDesktopBackend())return{requiresReload:false};
   const result=await invoke<ProxySelectionResult|null>("select_proxy",{sessionToken,group,name});
   return result??{requiresReload:false};
 }
-export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(usesDesktopBackend())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});return{delays:{}};}
+export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(usesDesktopBackend())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});if(isMobileTauri())throw new Error("Android 当前是 DNS-only 模式，暂不能检测代理出口延迟");return{delays:{}};}
 export async function testProxyConnectivity(sessionToken:string,target:string,group="CleanWeb"):Promise<ProxyConnectivityResult>{
   if(usesDesktopBackend())return invoke<ProxyConnectivityResult>("test_proxy_connectivity",{sessionToken,target,group});
+  if(isMobileTauri())throw new Error("Android 当前是 DNS-only 模式，暂不能检测代理出口连通性");
   const url=target.includes("://")?target:`https://${target}`;
   return{url,group,delay:128};
 }
@@ -514,7 +560,7 @@ export async function confirmedQuit(password:string):Promise<void>{
   else await verifyPassword(password);
 }
 export async function listParentRules(sessionToken:string):Promise<ParentRule[]>{if(usesDesktopBackend())return invoke("list_parent_rules",{sessionToken});previewParentRules=loadPreviewParentRules();return structuredClone(previewParentRules);}
-export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(usesDesktopBackend())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:crypto.randomUUID(),enabled:true};previewParentRules.unshift(item);savePreviewParentRules();return item;}
+export async function createParentRule(sessionToken:string,input:NewParentRule):Promise<ParentRule>{if(usesDesktopBackend())return invoke("create_parent_rule",{sessionToken,input});const item={...input,id:clientId(),enabled:true};previewParentRules.unshift(item);savePreviewParentRules();return item;}
 export async function setParentRuleEnabled(sessionToken:string,id:string,enabled:boolean):Promise<void>{if(usesDesktopBackend())return invoke("set_parent_rule_enabled",{sessionToken,id,enabled});const item=previewParentRules.find(value=>value.id===id);if(item){item.enabled=enabled;savePreviewParentRules();}}
 export async function deleteParentRule(sessionToken:string,id:string):Promise<void>{if(usesDesktopBackend())return invoke("delete_parent_rule",{sessionToken,id});const index=previewParentRules.findIndex(value=>value.id===id);if(index>=0){previewParentRules.splice(index,1);savePreviewParentRules();}}
 export async function diagnoseRuleMatch(sessionToken:string,query:string):Promise<RuleDiagnosticResult>{

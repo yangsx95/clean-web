@@ -13,6 +13,9 @@ pub fn run() {
             mobile_vpn::mobile_vpn_status,
             mobile_vpn::mobile_update_policy,
             mobile_vpn::mobile_refresh_subscription,
+            mobile_vpn::mobile_refresh_proxy_subscription,
+            mobile_vpn::mobile_import_proxy_payload,
+            mobile_vpn::mobile_get_subscription_proxies,
             mobile_dns::mobile_list_dns_logs,
             mobile_dns::mobile_clear_dns_logs
         ])

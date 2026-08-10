@@ -947,6 +947,31 @@ describe("management actions", () => {
     reload.mockRestore();
   });
 
+  it("does not reload the runtime when a refreshed subscription is unchanged", async () => {
+    const refresh = vi.spyOn(backend, "refreshSubscription").mockResolvedValue({
+      detectedFormat: "hosts",
+      importedCount: 488765,
+      ignoredCount: 0,
+      proxyCount: 0,
+      groupCount: 0,
+      updated: false,
+    });
+    const reload = vi.spyOn(backend, "reloadProtection").mockResolvedValue({ running:true,pid:1234,controller:"127.0.0.1:19090",configPath:"preview" });
+
+    render(<App />);
+    await unlockManagement();
+    await userEvent.click(screen.getByRole("button", { name: "规则管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: /内置规则/ }));
+    await userEvent.click(screen.getByRole("button", { name: "展开色情内容分类" }));
+    await userEvent.click(screen.getByRole("button", { name: "更新OISD · NSFW" }));
+
+    expect(await screen.findByText("订阅规则已是最新")).toBeTruthy();
+    expect(refresh).toHaveBeenCalledWith("browser-preview", "default:oisd:nsfw");
+    expect(reload).not.toHaveBeenCalled();
+    refresh.mockRestore();
+    reload.mockRestore();
+  });
+
   it("enables the ads category gate when an ads builtin source is enabled", async () => {
     window.localStorage.setItem("cleanweb.preview.settings", JSON.stringify({ categories:{ ads:false } }));
     window.localStorage.setItem("cleanweb.preview.subscriptions", JSON.stringify([

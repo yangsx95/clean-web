@@ -295,7 +295,7 @@ export function App() {
     }
   })(); return()=>{cancelled=true;}; }, []);
   useEffect(()=>{const timer=window.setInterval(()=>void backend.getCoreStatus().then(status=>{setCoreStatus(status);setRuntimeError(previous=>previous?.message==="CleanWeb 状态刷新失败"?null:previous);}).catch(reason=>setRuntimeError(toErrorNotice(reason,"CleanWeb 状态刷新失败"))),5000);return()=>window.clearInterval(timer);},[]);
-  useEffect(()=>{if(!sessionToken)return;const refresh=()=>{if(anyBusy)return;void backend.refreshDueSubscriptions().then(count=>count>0?reloadRuntime(sessionToken,{silent:true}):undefined).then(()=>backend.listSubscriptions(sessionToken)).then(setSubscriptions);};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>window.clearInterval(timer);},[sessionToken,anyBusy]);
+  useEffect(()=>{if(!sessionToken)return;let cancelled=false;let refreshing=false;const refresh=()=>{if(anyBusy||refreshing)return;refreshing=true;void backend.refreshDueSubscriptions().then(async count=>{if(cancelled)return;if(count>0){await reloadRuntime(sessionToken,{applyingMessage:`后台更新了 ${count} 个规则来源，正在应用到保护内核…`});}}).then(()=>cancelled?undefined:backend.listSubscriptions(sessionToken).then(setSubscriptions)).catch(reason=>{if(!cancelled)setRuntimeError(toErrorNotice(reason,"后台规则更新失败，继续使用最后一次有效规则"));}).finally(()=>{refreshing=false;});};refresh();const timer=window.setInterval(refresh,15*60*1000);return()=>{cancelled=true;window.clearInterval(timer);};},[sessionToken,anyBusy]);
   const handleUnlock = async (password: string) => { const result = await backend.unlock(password); setSessionToken(result.sessionToken);const[logs,stats,dailyStats,saved,rules]=await Promise.all([backend.listAccessLogs(result.sessionToken,undefined,undefined,ACCESS_LOG_OVERVIEW_LIMIT),backend.getAccessLogStats(result.sessionToken),backend.getAccessLogDailyStats(result.sessionToken),backend.listSubscriptions(result.sessionToken),backend.listParentRules(result.sessionToken)]);setAccessLogs(logs);setAccessLogStats(stats);setAccessLogDailyStats(dailyStats);setSubscriptions(saved);setParentRules(rules); setLocked(false); setDialog(null); };
   const handleLock = useCallback(async () => { if (sessionToken) await backend.lock(sessionToken); setSessionToken(null);setSubscriptions([]);setParentRules([]);setAccessLogs([]);setAccessLogStats(emptyAccessLogStats);setAccessLogDailyStats(emptyAccessLogDailyStats);setProxyInfoCache({}); setLocked(true); }, [sessionToken]);
   const reloadRuntime=async(token:string,options:{silent?:boolean;applyingMessage?:string;idleMessage?:string}={})=>{
@@ -352,11 +352,16 @@ export function App() {
       showPolicyStatus({state:"applying",message:"正在更新订阅并应用配置…"});
       try{
         setProgress({phase:"downloading",percent:12,message:"正在下载规则",indeterminate:true});
-        await backend.refreshSubscription(sessionToken,id);
+        const report=await backend.refreshSubscription(sessionToken,id);
         setSubscriptions(await backend.listSubscriptions(sessionToken));
-        setProgress({phase:"applying",percent:88,message:"正在应用到保护内核"});
-        await reloadRuntime(sessionToken);
-        setProgress({phase:"complete",percent:100,message:"下载并应用完成"});
+        if(report.updated){
+          setProgress({phase:"applying",percent:88,message:"正在应用到保护内核"});
+          await reloadRuntime(sessionToken);
+          setProgress({phase:"complete",percent:100,message:"下载并应用完成"});
+        }else{
+          showPolicyStatus({state:"applied",message:"订阅规则已是最新"});
+          setProgress({phase:"complete",percent:100,message:"规则已是最新"});
+        }
         window.setTimeout(()=>setSubscriptionProgress(previous=>{const next={...previous};if(next[id]?.phase==="complete")delete next[id];return next;}),2600);
       }catch(reason){
         const notice=toErrorNotice(reason,"订阅更新失败，继续使用最后一次有效规则");
@@ -549,7 +554,7 @@ function AppMainContent({ contentPage, titles, settings, coreStatus, runtimeErro
     {contentPage === "rules" && <Rules parentRules={parentRules} subscriptions={ruleSubscriptions} settings={settings} refreshingId={refreshingId} refreshProgress={refreshProgress} isBusy={isBusy} sessionToken={sessionToken} onRefresh={onRefreshSubscription} onRefreshDue={onRefreshDueSubscriptions} onToggleParentRule={onToggleParentRule} onDeleteParentRule={onDeleteParentRule} onAddParentRule={onAddParentRule} onToggleSubscription={onToggleSubscription} onDelete={onDeleteSubscription} onEdit={onEditSubscription} onAdd={onAddRuleSubscription} />}
     {contentPage === "logs" && <LogsPage locked={locked} logs={accessLogs} logStats={accessLogStats} dailyStats={accessLogDailyStats} decisionFilter={accessLogDecisionFilter} search={accessLogSearch} isBusy={isBusy} onDecisionFilterChange={onDecisionFilterChange} onSearchChange={onSearchChange} onClear={onClearLogs} onExport={onExportLogs} />}
     {contentPage === "proxy" && <Proxy subscriptions={proxySubscriptions} refreshingId={refreshingId} proxyInfoCache={proxyInfoCache} setProxyInfoCache={setProxyInfoCache} isBusy={isBusy} onRefresh={onRefreshSubscription} onToggleSubscription={onToggleSubscription} onDelete={onDeleteSubscription} onAdd={onAddProxy} coreStatus={coreStatus} automatic={settings.automaticNodeSelection} onAutomatic={onAutomaticProxy} onSelectNode={onSelectProxyNode} sessionToken={sessionToken} />}
-    {contentPage === "settings" && <SettingsPage settings={settings} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={onToggle} onRetention={onRetention} onApplyBrowserPolicies={onApplyBrowserPolicies} />}
+    {contentPage === "settings" && <SettingsPage settings={settings} coreStatus={coreStatus} isBusy={isBusy} browserPolicyStatus={browserPolicyStatus} onToggle={onToggle} onRetention={onRetention} onApplyBrowserPolicies={onApplyBrowserPolicies} />}
   </main>;
 }
 
@@ -643,6 +648,7 @@ function QuitConfirmDialog({ running, onClose, onHideToBackground, onQuitApp }: 
 
 function Overview({ settings, coreStatus, componentStatusPending, isBusy, logs, logStats, onToggle, onOpenLogs, onOpenRules, onAddRule }: { settings: backend.Settings; coreStatus:backend.CoreStatus|null;componentStatusPending:boolean;isBusy:(scope:string)=>boolean;logs:backend.AccessLog[];logStats:backend.AccessLogStats; onToggle: (key: string, enabled: boolean) => Promise<void>; onOpenLogs:()=>void; onOpenRules:()=>void; onAddRule:()=>void }) {
   const running=coreStatus?.running===true;
+  const mobileDnsOnly = isMobileDnsOnly(coreStatus);
   const recentLogs = logs.slice(0,8);
   const enabledControls = [
     settings.safeSearchEnabled,
@@ -681,7 +687,7 @@ function Overview({ settings, coreStatus, componentStatusPending, isBusy, logs, 
           <SettingLine title="安全搜索" note="搜索引擎安全模式和 DNS 补强" active={settings.safeSearchEnabled}><Switch checked={settings.safeSearchEnabled} label="安全搜索" disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value) => onToggle("safe_search_enabled", value)} /></SettingLine>
           <SettingLine title="严格模式" note="启用高风险域名、平台和关键词规则，误杀风险更高" active={settings.strictModeEnabled}><Switch checked={settings.strictModeEnabled} label="严格模式" disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value) => onToggle("strict_mode_enabled", value)} /></SettingLine>
           <SettingLine title="娱乐内容总闸" note="短视频、社交社区和游戏规则的分类总开关" active={Boolean(settings.categories.entertainment)}><Switch checked={Boolean(settings.categories.entertainment)} label="娱乐内容总闸" disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value) => onToggle("category.entertainment", value)} /></SettingLine>
-          <SettingLine title="网络代理" note="允许流量走当前代理节点策略" active={settings.proxyEnabled}><Switch checked={settings.proxyEnabled} label="网络代理" disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value) => onToggle("proxy_enabled", value)} /></SettingLine>
+          <SettingLine title="网络代理" note={mobileDnsOnly?"开启后会重启 Android VPN 并接入全流量代理通道":"允许流量走当前代理节点策略"} active={settings.proxyEnabled}><Switch checked={settings.proxyEnabled} label="网络代理" disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value) => onToggle("proxy_enabled", value)} /></SettingLine>
           <SettingLine title="访问日志" note="记录本机最终网络决策" active={settings.accessLoggingEnabled}><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value) => onToggle("access_logging_enabled", value)} /></SettingLine>
           <div className="quick-policy-footer"><span>具体内置策略在规则管理中按分类和条目控制。</span><button type="button" className="row-link" onClick={onOpenRules}>管理内置规则</button></div>
         </article>
@@ -698,6 +704,10 @@ function Overview({ settings, coreStatus, componentStatusPending, isBusy, logs, 
 
 function SettingLine({ title, note, active, children }: { title:string; note?:string; active:boolean; children?:React.ReactNode }) {
   return <div className="setting-line"><div className="setting-line-main"><b>{title}</b>{note&&<small>{note}</small>}</div>{children ?? <span className="fixed-state">{active ? "开启" : "关闭"}</span>}</div>;
+}
+
+function isMobileDnsOnly(coreStatus: backend.CoreStatus|null) {
+  return coreStatus?.components?.some(component => component.id === "mobile-data-plane" && component.detail.includes("DNS-only")) === true;
 }
 
 function MiniLogList({ logs }: { logs: backend.AccessLog[] }) {
@@ -805,8 +815,9 @@ function AccessLogRow({ log }: { log:backend.AccessLog }) {
   </div>;
 }
 
-function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onRetention, onApplyBrowserPolicies }: { settings:backend.Settings; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
+function SettingsPage({ settings, coreStatus, isBusy, browserPolicyStatus, onToggle, onRetention, onApplyBrowserPolicies }: { settings:backend.Settings; coreStatus:backend.CoreStatus|null; isBusy:(scope:string)=>boolean; browserPolicyStatus:backend.BrowserPolicyStatus|null; onToggle:(key:string,enabled:boolean)=>Promise<void>; onRetention:(value:string)=>Promise<void>; onApplyBrowserPolicies:()=>Promise<void> }) {
   const [tab,setTab]=useState<"protection"|"browser"|"privacy">("protection");
+  const mobileDnsOnly = isMobileDnsOnly(coreStatus);
   const retentionOptions = [{ value:"7d", label:"7 天" }, { value:"30d", label:"30 天" }, { value:"90d", label:"90 天" }, { value:"forever", label:"永久" }];
   return <>
     <section className="cw-page-intro"><p>控制保护生命周期、安全搜索、浏览器增强保护和日志保留。</p></section>
@@ -816,7 +827,7 @@ function SettingsPage({ settings, isBusy, browserPolicyStatus, onToggle, onReten
       <button role="tab" aria-selected={tab==="privacy"} className={tab==="privacy"?"active":""} onClick={()=>setTab("privacy")}>日志隐私</button>
     </section>
     <section className="cw-settings-layout">
-      {tab==="protection"&&<article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note="允许的流量使用当前代理策略" checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="启用高风险域名、平台和关键词规则，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>}
+      {tab==="protection"&&<article className="cw-panel settings-switches"><h3>保护开关</h3><SettingToggle title="总保护" note="网络接管、DNS 和 TUN/VPN 生命周期" checked={settings.protectionEnabled} disabled={isBusy(busyScope.protection)} onChange={(value)=>onToggle("protection_enabled",value)}/><SettingToggle title="网络代理" note={mobileDnsOnly?"开启后会重启 Android VPN 并接入全流量代理通道":"允许的流量使用当前代理策略"} checked={settings.proxyEnabled} disabled={isBusy(busyScope.setting("proxy_enabled"))} onChange={(value)=>onToggle("proxy_enabled",value)}/><SettingToggle title="安全搜索" note="搜索服务安全别名" checked={settings.safeSearchEnabled} disabled={isBusy(busyScope.setting("safe_search_enabled"))} onChange={(value)=>onToggle("safe_search_enabled",value)}/><SettingToggle title="严格模式" note="启用高风险域名、平台和关键词规则，误杀风险更高" checked={settings.strictModeEnabled} disabled={isBusy(busyScope.setting("strict_mode_enabled"))} onChange={(value)=>onToggle("strict_mode_enabled",value)}/><SettingToggle title="短视频与游戏" note="拦截常见短视频、直播和游戏平台域名" checked={Boolean(settings.categories.entertainment)} disabled={isBusy(busyScope.setting("category.entertainment"))} onChange={(value)=>onToggle("category.entertainment",value)}/><SettingToggle title="广告与跟踪保护" note="仅可选类别" checked={Boolean(settings.categories.ads || settings.categories.tracking)} disabled={isBusy(busyScope.setting("category.ads"))} onChange={(value)=>onToggle("category.ads",value)}/></article>}
       {tab==="browser"&&<BrowserPolicyPanel settings={settings} status={browserPolicyStatus} busy={isBusy(busyScope.setting("browser_policies"))} isBusy={isBusy} onToggle={onToggle} onApply={onApplyBrowserPolicies}/>}
       {tab==="privacy"&&<article className="cw-panel privacy-panel settings-privacy-panel"><h3>日志隐私</h3><div className="setting-line"><b>访问日志</b><Switch checked={settings.accessLoggingEnabled} label="访问日志" disabled={isBusy(busyScope.setting("access_logging_enabled"))} onChange={(value)=>onToggle("access_logging_enabled",value)}/></div><div className="retention-tabs" role="group" aria-label="日志保留时间">{retentionOptions.map((option)=><button key={option.value} className={settings.logRetention===option.value?"active":""} disabled={isBusy(busyScope.setting("log_retention"))} onClick={()=>void onRetention(option.value)}>{option.label}</button>)}</div><p>访问日志页也可以管理日志开关、保留期、导出和清空；诊断包导出仍会默认脱敏。</p></article>}
     </section>
@@ -1152,6 +1163,8 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
   const runtimeSelectionRef=useRef<string|undefined>(undefined);
   const onSelectNodeRef=useRef<(name:string)=>Promise<void>>(onSelectNode);
   const [importMenuOpen,setImportMenuOpen]=useState(false);
+  const mobileDnsOnly = coreStatus?.components?.some(component => component.id === "mobile-data-plane" && component.detail.includes("DNS-only")) === true;
+  const proxyActionsDisabled = mobileDnsOnly;
   useEffect(()=>{runtimeSelectionRef.current=runtimeSelection;},[runtimeSelection]);
   useEffect(()=>{onSelectNodeRef.current=onSelectNode;},[onSelectNode]);
   useEffect(()=>{if(!sessionToken)return;void backend.getSavedProxySelection(sessionToken).then(setSavedSelection);if(running)void backend.getProxies(sessionToken).then(groups=>setRuntimeSelection(groups.find(group=>group.name==="CleanWeb")?.now)).catch(()=>setRuntimeSelection(undefined));else setRuntimeSelection(undefined);},[sessionToken,running,subscriptions]);
@@ -1164,6 +1177,7 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
     }
   };
   const handleSpeedTest = async () => {
+    if (proxyActionsDisabled) { setDelayError("Android 当前是 DNS-only 模式，代理出口尚未接入 VPN 数据通道"); return; }
     if (!running || testingSpeed || !sessionToken) return;
     const nodes = selectableNodes;
     if (nodes.length === 0) { setDelayError("没有可检测的启用节点"); return; }
@@ -1204,6 +1218,7 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
   };
   const handleConnectivityTest = async (event?: FormEvent) => {
     event?.preventDefault();
+    if (proxyActionsDisabled) { setConnectivityError("Android 当前是 DNS-only 模式，暂不能检测代理出口连通性"); return; }
     if (!running || testingConnectivity || !sessionToken) return;
     setTestingConnectivity(true);
     setConnectivityError("");
@@ -1228,6 +1243,7 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
   const selectableNodes=useMemo(()=>Array.from(new Map(subscriptions.filter(item=>item.enabled).flatMap(item=>proxyInfoCache[item.id]?.proxies??[]).map(node=>[node.name,node])).values()),[subscriptions,proxyInfoCache]);
   const currentExitLabel = automatic ? "自动选择节点" : runtimeSelection ?? savedSelection ?? "尚未选择节点";
   const chooseNode=useCallback(async(name:string)=>{
+    if (proxyActionsDisabled) { setDelayError("Android 当前是 DNS-only 模式，节点已解析但暂不能作为真实代理出口"); return; }
     if(selectingRef.current)return;
     selectingRef.current=true;
     const previousRuntime=runtimeSelectionRef.current;
@@ -1243,23 +1259,24 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
       selectingRef.current=false;
       setSelecting(undefined);
     }
-  },[]);
+  },[proxyActionsDisabled]);
   const openImport=(mode:ProxyImportMode)=>{setImportMenuOpen(false);onAdd(mode);};
   return <>
-    <section className="toolbar"><div><h2>代理订阅</h2><p>{subscriptions.length>0?`当前出口：${currentExitLabel}`:"导入代理后，展开来源并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={automatic||Boolean(selecting)||subscriptions.length===0||isBusy(busyScope.setting("automatic_node_selection"))} onClick={()=>void onAutomatic()}>自动选择</button><div className="import-dropdown"><button className="primary import-main" disabled={isBusy(busyScope.importProxy)} onClick={()=>openImport("subscription")}><Plus size={16}/>导入代理</button><button className="primary import-menu-trigger" disabled={isBusy(busyScope.importProxy)} aria-label="选择代理导入方式" aria-expanded={importMenuOpen} onClick={()=>setImportMenuOpen(value=>!value)}><ChevronDown size={16}/></button>{importMenuOpen&&<div className="import-menu" role="menu"><button role="menuitem" onClick={()=>openImport("subscription")}>订阅链接</button><button role="menuitem" onClick={()=>openImport("node")}>单节点链接</button><button role="menuitem" onClick={()=>openImport("file")}>配置文件</button><button role="menuitem" onClick={()=>openImport("qr")}>二维码导入</button><button role="menuitem" onClick={()=>openImport("clipboard")}>从剪贴板导入</button></div>}</div></div></section>
+    <section className="toolbar"><div><h2>代理订阅</h2><p>{mobileDnsOnly?"Android 当前仅接管 DNS，可解析和管理节点，代理出口待数据通道接入。":subscriptions.length>0?`当前出口：${currentExitLabel}`:"导入代理后，展开来源并选择节点作为当前出口。"}</p></div><div className="proxy-toolbar-actions">{subscriptions.length>0&&<button className="secondary" disabled={proxyActionsDisabled||!running||testingSpeed||selectableNodes.length===0} onClick={()=>void handleSpeedTest()}><Gauge size={15}/>{testingSpeed?"检测中…":"节点延迟检测"}</button>}<button className={`secondary${automatic?" selected":""}`} disabled={proxyActionsDisabled||automatic||Boolean(selecting)||subscriptions.length===0||isBusy(busyScope.setting("automatic_node_selection"))} onClick={()=>void onAutomatic()}>自动选择</button><div className="import-dropdown"><button className="primary import-main" disabled={isBusy(busyScope.importProxy)} onClick={()=>openImport("subscription")}><Plus size={16}/>导入代理</button><button className="primary import-menu-trigger" disabled={isBusy(busyScope.importProxy)} aria-label="选择代理导入方式" aria-expanded={importMenuOpen} onClick={()=>setImportMenuOpen(value=>!value)}><ChevronDown size={16}/></button>{importMenuOpen&&<div className="import-menu" role="menu"><button role="menuitem" onClick={()=>openImport("subscription")}>订阅链接</button><button role="menuitem" onClick={()=>openImport("node")}>单节点链接</button><button role="menuitem" onClick={()=>openImport("file")}>配置文件</button><button role="menuitem" onClick={()=>openImport("qr")}>二维码导入</button><button role="menuitem" onClick={()=>openImport("clipboard")}>从剪贴板导入</button></div>}</div></div></section>
     <section className="proxy-connectivity-card">
       <div className="proxy-connectivity-head">
         <div className="proxy-connectivity-title"><span><Gauge size={17}/></span><div><h3>出口连通性检测</h3><p>{running ? `当前出口：${currentExitLabel}` : "保护未运行"}</p></div></div>
-        <strong className={running ? "ready" : "muted"}>{running ? "可检测" : "未运行"}</strong>
+        <strong className={running && !mobileDnsOnly ? "ready" : "muted"}>{mobileDnsOnly ? "DNS-only" : running ? "可检测" : "未运行"}</strong>
       </div>
       <div className="proxy-connectivity-body">
         <form className="proxy-connectivity-form" onSubmit={(event)=>void handleConnectivityTest(event)}>
           <div className="log-search-wrap proxy-connectivity-input"><Search size={16}/><input className="log-search" aria-label="代理连通性检测地址" value={connectivityTarget} onChange={event=>setConnectivityTarget(event.target.value)} placeholder="google.com 或 https://www.gstatic.com/generate_204" {...plainTextInputProps} /></div>
-          <button className="primary" type="submit" disabled={!running||testingConnectivity||!connectivityTarget.trim()}>{testingConnectivity?"检测中…":"检测连通性"}</button>
+          <button className="primary" type="submit" disabled={proxyActionsDisabled||!running||testingConnectivity||!connectivityTarget.trim()}>{testingConnectivity?"检测中…":"检测连通性"}</button>
         </form>
         {connectivityResult&&<div className="proxy-connectivity-result success"><div><b>连通</b><span>{connectivityResult.url} · {connectivityResult.group}</span></div><strong>{connectivityResult.delay} ms</strong></div>}
         {connectivityError&&<div className="proxy-connectivity-result failed"><div><b>失败</b><span>{connectivityError}</span></div></div>}
-        {!running&&<div className="proxy-connectivity-result muted"><div><b>未运行</b><span>启动保护后可通过当前代理出口检测目标地址。</span></div></div>}
+        {mobileDnsOnly&&<div className="proxy-connectivity-result muted"><div><b>DNS-only</b><span>Android 目前只接管 DNS，节点列表可查看但暂不能作为真实代理出口。</span></div></div>}
+        {!running&&!mobileDnsOnly&&<div className="proxy-connectivity-result muted"><div><b>未运行</b><span>启动保护后可通过当前代理出口检测目标地址。</span></div></div>}
       </div>
     </section>
     {delayError&&<div className="proxy-delay-error">{delayError}</div>}
@@ -1267,6 +1284,7 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
       const expanded = expandedId === item.id;
       const manualSource = item.url.startsWith("manual://");
       const info = proxyInfoCache[item.id];
+      const payloadMissing = manualSource ? info?.payloadReady !== true : info?.payloadReady === false;
       const itemBusy = isBusy(busyScope.subscription(item.id));
       const currentGroup = selectedGroup != null ? info?.groups.find(g => g.name === selectedGroup) : null;
       const memberSet = currentGroup ? new Set(currentGroup.members) : null;
@@ -1291,8 +1309,9 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
           <button type="button" className="expand-chevron" aria-expanded={expanded} aria-label={`${expanded ? "收起" : "展开"}${item.name}节点来源`} onClick={()=>void toggleExpand(item.id)}>{expanded ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}</button>
         </div>
         {expanded && info && <div className="proxy-card-body">
+          {payloadMissing && <div className="sub-proxy-empty warning">旧版手动导入只保留了节点摘要，缺少 Android 启动代理所需配置；请删除后重新导入该节点来源。</div>}
           {info.proxies.length === 0 && info.groups.length === 0
-            ? <div className="sub-proxy-empty">该订阅未解析到代理节点</div>
+            ? <div className="sub-proxy-empty">{manualSource ? "旧版手动导入未保存代理内容，请重新导入该节点来源" : "该订阅未解析到代理节点"}</div>
             : <div className={`sub-proxy-layout${info.groups.length === 0 ? " no-groups" : ""}`}>
                 {info.groups.length > 0 && <div className="sub-proxy-sidebar">
                   <div className="sub-proxy-sidebar-title">代理组</div>
@@ -1314,7 +1333,7 @@ function Proxy({ subscriptions, refreshingId, proxyInfoCache, setProxyInfoCache,
                       const isTesting = testingNodeName === p.name;
                       const isCurrent = p.name === runtimeSelection || (!running && !automatic && p.name === savedSelection);
                       const isChoosing = selecting === p.name;
-                      return <SubProxyNodeButton key={p.name} name={p.name} nodeType={p.nodeType} isMember={isMember} isCurrent={isCurrent} isChoosing={isChoosing} isTesting={isTesting} delay={findDelay(p.name)} disabled={!isMember||itemBusy} onChoose={chooseNode} />;
+                      return <SubProxyNodeButton key={p.name} name={p.name} nodeType={p.nodeType} isMember={isMember} isCurrent={isCurrent} isChoosing={isChoosing} isTesting={isTesting} delay={findDelay(p.name)} disabled={payloadMissing||proxyActionsDisabled||!isMember||itemBusy} onChoose={chooseNode} />;
                     })}
                   </div>
                 </div>

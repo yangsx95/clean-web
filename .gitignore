@@ -16,3 +16,4 @@ apps/android/app/build/
 output
 build/local-cache/
 .codex-local-cache/
+.codex-target
