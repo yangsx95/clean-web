@@ -1,4 +1,5 @@
 mod mobile_dns;
+mod mobile_mihomo_launcher;
 mod mobile_subscription_store;
 mod mobile_vpn;
 

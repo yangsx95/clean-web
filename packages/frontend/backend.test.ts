@@ -28,6 +28,7 @@ describe("browser preview persistence", () => {
     window.sessionStorage.clear();
     delete (window as typeof window & { __CLEANWEB_TARGET__?: string }).__CLEANWEB_TARGET__;
     clearMocks();
+    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
@@ -153,6 +154,44 @@ describe("browser preview persistence", () => {
     });
     expect(subscription.importedRuleCount).toBe(1);
     expect(calls).toEqual(["mobile_import_proxy_payload", "mobile_get_subscription_proxies"]);
+  });
+
+  it("tests mobile proxy connectivity through the Mihomo controller in full tunnel mode", async () => {
+    (window as typeof window & { __CLEANWEB_TARGET__?: string }).__CLEANWEB_TARGET__ = "mobile";
+    mockIPC((command) => {
+      if (command === "mobile_vpn_status") {
+        return {
+          supported: true,
+          prepared: true,
+          running: true,
+          stage: "running",
+          dataPlaneReady: true,
+          dataPlaneMode: "full_tunnel",
+          lastError: null,
+          lastPolicyUpdatedAt: Date.now(),
+          lastStartedAt: Date.now(),
+          lastDnsActivityAt: null,
+          dnsQueryCount: 0,
+          blockedDnsQueryCount: 0,
+          upstreamFailureCount: 0,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toContain("http://127.0.0.1:19090/proxies/CleanWeb/delay?");
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer cleanweb-mobile" });
+      return new Response(JSON.stringify({ delay: 123 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const backend = await import("./backend");
+
+    await expect(backend.testProxyConnectivity("browser-preview", "www.gstatic.com/generate_204")).resolves.toEqual({
+      url: "https://www.gstatic.com/generate_204",
+      group: "CleanWeb",
+      delay: 123,
+    });
   });
 
   it("keeps the unlocked backend session across a page reload", async () => {

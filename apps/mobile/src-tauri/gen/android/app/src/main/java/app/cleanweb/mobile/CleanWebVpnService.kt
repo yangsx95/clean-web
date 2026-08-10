@@ -9,8 +9,6 @@ import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.system.Os
-import android.system.OsConstants
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.File
@@ -19,7 +17,8 @@ import java.net.InetAddress
 
 class CleanWebVpnService : VpnService() {
   private var vpnInterface: ParcelFileDescriptor? = null
-  private var mihomoProcess: Process? = null
+  @Volatile
+  private var mihomoPid: Int = 0
   @Volatile
   private var packetLoopRunning = false
   @Volatile
@@ -103,8 +102,11 @@ class CleanWebVpnService : VpnService() {
     packetThread = null
     mihomoLogThread?.interrupt()
     mihomoLogThread = null
-    mihomoProcess?.destroy()
-    mihomoProcess = null
+    val runningPid = mihomoPid
+    if (runningPid > 0) {
+      CleanWebMihomoLauncher.terminateMihomo(runningPid)
+      mihomoPid = 0
+    }
     vpnInterface?.close()
     vpnInterface = null
     if (markStopped) CleanWebVpnState.markStopped()
@@ -166,29 +168,31 @@ class CleanWebVpnService : VpnService() {
     val runtimeDir = File(filesDir, "mihomo")
     runtimeDir.mkdirs()
     val activeConfig = File(runtimeDir, "active-config.yaml")
-    activeConfig.writeText(sourceConfig.readText().replace("file-descriptor: 3", "file-descriptor: ${descriptor.fd}"))
-    clearCloseOnExec(descriptor)
-    val processBuilder = ProcessBuilder(executable.absolutePath, "-d", runtimeDir.absolutePath, "-f", activeConfig.absolutePath)
-      .redirectErrorStream(true)
-      .directory(runtimeDir)
-    processBuilder.environment()["HOME"] = filesDir.absolutePath
-    processBuilder.environment()["XDG_CONFIG_HOME"] = runtimeDir.absolutePath
-    val process = processBuilder.start()
-    mihomoProcess = process
+    activeConfig.writeText(sourceConfig.readText())
+    val pid = CleanWebMihomoLauncher.spawnMihomo(
+      executable.absolutePath,
+      runtimeDir.absolutePath,
+      activeConfig.absolutePath,
+      descriptor.fd,
+    )
+    if (pid <= 0) throw IllegalStateException("Android Mihomo process was not started")
+    mihomoPid = pid
     mihomoLogThread = Thread({
-      var lastLine: String? = null
-      process.inputStream.bufferedReader().useLines { lines ->
-        lines.forEach { line ->
-          lastLine = line.take(300)
-          if (line.contains("error", ignoreCase = true) || line.contains("fail", ignoreCase = true)) {
-            CleanWebVpnState.lastError = lastLine
-          }
+      val exitCode = try {
+        CleanWebMihomoLauncher.waitMihomo(pid)
+      } catch (error: Exception) {
+        if (!stopping) {
+          CleanWebVpnState.markFailed("Android Mihomo monitor failed: ${error.message ?: error.javaClass.simpleName}")
+          vpnInterface?.close()
+          vpnInterface = null
+          stopForeground(STOP_FOREGROUND_REMOVE)
+          stopSelf()
         }
+        return@Thread
       }
-      val exitCode = process.waitFor()
-      if (!stopping && mihomoProcess == process) {
-        mihomoProcess = null
-        CleanWebVpnState.markFailed("Android Mihomo exited with code $exitCode${lastLine?.let { ": $it" } ?: ""}")
+      if (!stopping && mihomoPid == pid) {
+        mihomoPid = 0
+        CleanWebVpnState.markFailed("Android Mihomo exited with code $exitCode")
         vpnInterface?.close()
         vpnInterface = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -208,15 +212,6 @@ class CleanWebVpnService : VpnService() {
     val executable = File(applicationInfo.nativeLibraryDir, libraryName)
     if (!executable.exists()) throw IllegalStateException("Android Mihomo 核心不存在：${executable.absolutePath}")
     return executable
-  }
-
-  private fun clearCloseOnExec(descriptor: ParcelFileDescriptor) {
-    try {
-      val flags = Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_GETFD, 0)
-      Os.fcntlInt(descriptor.fileDescriptor, OsConstants.F_SETFD, flags and OsConstants.FD_CLOEXEC.inv())
-    } catch (error: Exception) {
-      throw IllegalStateException("Android VPN fd could not be inherited by Mihomo: ${error.message}")
-    }
   }
 
   private fun captureUpstreamDnsServers(): List<InetAddress> {

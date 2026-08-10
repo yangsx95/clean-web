@@ -651,7 +651,7 @@ fn helper_start_mihomo(
         .map_err(|value| format!("无法安装 Mihomo 配置：{value}"))?;
     fs::set_permissions(&installed_config, fs::Permissions::from_mode(0o600))
         .map_err(|value| format!("无法设置 Mihomo 配置权限：{value}"))?;
-    append_existing_vpn_route_excludes_to_config(&installed_config)?;
+    preserve_existing_vpn_routes_in_config(&installed_config)?;
     File::create(&log).map_err(|value| format!("无法创建 Mihomo 日志：{value}"))?;
     fs::set_permissions(&log, fs::Permissions::from_mode(0o644))
         .map_err(|value| format!("无法设置 Mihomo 日志权限：{value}"))?;
@@ -755,14 +755,14 @@ fn installed_mihomo_binary_matches(source: &Path, destination: &Path) -> Result<
 }
 
 #[cfg(target_os = "macos")]
-fn append_existing_vpn_route_excludes_to_config(config: &Path) -> Result<(), String> {
+fn preserve_existing_vpn_routes_in_config(config: &Path) -> Result<(), String> {
     let routes = existing_vpn_route_excludes();
     if routes.is_empty() {
         return Ok(());
     }
     let body = fs::read_to_string(config)
         .map_err(|value| format!("无法读取 Mihomo 配置以保留 VPN 路由：{value}"))?;
-    let updated = append_route_excludes_to_mihomo_config(&body, &routes)?;
+    let updated = preserve_vpn_routes_in_mihomo_config(&body, &routes)?;
     if updated != body {
         fs::write(config, updated)
             .map_err(|value| format!("无法写入 Mihomo 配置以保留 VPN 路由：{value}"))?;
@@ -777,7 +777,7 @@ fn append_existing_vpn_route_excludes_to_config(config: &Path) -> Result<(), Str
 }
 
 #[cfg(target_os = "macos")]
-fn append_route_excludes_to_mihomo_config(
+fn preserve_vpn_routes_in_mihomo_config(
     body: &str,
     route_excludes: &[String],
 ) -> Result<String, String> {
@@ -809,6 +809,10 @@ fn append_route_excludes_to_mihomo_config(
             existing.push(serde_yaml::Value::String(route.clone()));
         }
     }
+    tun.insert(
+        serde_yaml::Value::String("auto-detect-interface".into()),
+        serde_yaml::Value::Bool(false),
+    );
     serde_yaml::to_string(&root)
         .map_err(|value| format!("无法序列化 Mihomo 配置以保留 VPN 路由：{value}"))
 }
@@ -1600,7 +1604,7 @@ mod tests {
     fn appends_existing_vpn_routes_to_mihomo_tun_excludes() {
         let config =
             "tun:\n  enable: true\n  route-exclude-address:\n    - 127.0.0.0/8\n    - 10.0.0.0/8\n";
-        let updated = append_route_excludes_to_mihomo_config(
+        let updated = preserve_vpn_routes_in_mihomo_config(
             config,
             &[
                 "10.0.0.0/8".into(),
@@ -1624,6 +1628,12 @@ mod tests {
                 serde_yaml::Value::String("172.16.0.0/14".into()),
                 serde_yaml::Value::String("192.168.0.0/16".into()),
             ]
+        );
+        assert_eq!(
+            yaml.get("tun")
+                .and_then(|tun| tun.get("auto-detect-interface"))
+                .and_then(serde_yaml::Value::as_bool),
+            Some(false)
         );
     }
 

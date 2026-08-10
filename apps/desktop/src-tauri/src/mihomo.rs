@@ -13,6 +13,7 @@ use std::process::Stdio;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use flate2::read::GzDecoder;
+use ipnet::IpNet;
 use reqwest::Url;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
@@ -1223,16 +1224,19 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "stack", Value::String("mixed".into()));
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
-    insert(&mut tun, "auto-detect-interface", Value::Bool(true));
+    let existing_vpn_route_excludes = platform::existing_vpn_route_excludes();
+    insert(
+        &mut tun,
+        "auto-detect-interface",
+        Value::Bool(should_auto_detect_tun_interface(
+            &existing_vpn_route_excludes,
+        )),
+    );
     let mut route_exclude_addresses = vec![
         Value::String("127.0.0.0/8".into()),
         Value::String("::1/128".into()),
     ];
-    route_exclude_addresses.extend(
-        platform::existing_vpn_route_excludes()
-            .into_iter()
-            .map(Value::String),
-    );
+    route_exclude_addresses.extend(existing_vpn_route_excludes.into_iter().map(Value::String));
     route_exclude_addresses.extend(dns_upstream_route_excludes(&dns_upstreams));
     insert(
         &mut tun,
@@ -1890,8 +1894,55 @@ fn tun_startup_failed(log: &str) -> bool {
 }
 
 pub(crate) fn mihomo_data_plane_failed(log: &str) -> bool {
-    log.to_ascii_lowercase()
-        .contains("batch read packet: bad file descriptor")
+    let log = log.to_ascii_lowercase();
+    log.contains("batch read packet: bad file descriptor") || macos_vpn_direct_route_drift(&log)
+}
+
+fn macos_vpn_direct_route_drift(log: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        direct_route_timeout_matches_vpn_routes(log, &platform::existing_vpn_route_excludes())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = log;
+        false
+    }
+}
+
+fn direct_route_timeout_matches_vpn_routes(log: &str, vpn_routes: &[String]) -> bool {
+    if !log.contains("dial direct") || !log.contains("i/o timeout") {
+        return false;
+    }
+    let vpn_routes = vpn_routes
+        .iter()
+        .filter_map(|route| route.parse::<IpNet>().ok())
+        .collect::<Vec<_>>();
+    if vpn_routes.is_empty() {
+        return false;
+    }
+    log_ipcidr_matches(log).into_iter().any(|matched_route| {
+        vpn_routes
+            .iter()
+            .any(|vpn_route| ipnets_overlap(&matched_route, vpn_route))
+    })
+}
+
+fn log_ipcidr_matches(log: &str) -> Vec<IpNet> {
+    log.split("match ipcidr/")
+        .skip(1)
+        .filter_map(|tail| {
+            let value = tail
+                .chars()
+                .take_while(|value| value.is_ascii_hexdigit() || matches!(value, '.' | ':' | '/'))
+                .collect::<String>();
+            value.parse::<IpNet>().ok()
+        })
+        .collect()
+}
+
+fn ipnets_overlap(left: &IpNet, right: &IpNet) -> bool {
+    left.contains(&right.network()) || right.contains(&left.network())
 }
 
 pub(crate) fn recover_data_plane_failure(app: AppHandle) {
@@ -1922,6 +1973,10 @@ pub(crate) fn recover_data_plane_failure(app: AppHandle) {
 
 fn error(value: impl std::fmt::Display) -> String {
     value.to_string()
+}
+
+fn should_auto_detect_tun_interface(existing_vpn_route_excludes: &[String]) -> bool {
+    existing_vpn_route_excludes.is_empty()
 }
 
 #[cfg(test)]
@@ -2453,6 +2508,38 @@ mod tests {
         assert!(!tun_startup_ready(log));
         assert!(tun_startup_failed(log));
         assert!(mihomo_data_plane_failed(log));
+    }
+
+    #[test]
+    fn recognizes_private_direct_route_timeouts_as_vpn_route_drift_candidates() {
+        let log = r#"time="2026-08-10T17:27:36.206011000+08:00" level=warning msg="[TCP] dial DIRECT (match IPCIDR/10.0.0.0/8) 198.18.0.1:57409 --> 10.6.6.73:6379 error: dial tcp 10.6.6.73:6379: i/o timeout""#;
+
+        assert!(direct_route_timeout_matches_vpn_routes(
+            &log.to_ascii_lowercase(),
+            &["10.6.0.0/16".into()]
+        ));
+        assert!(direct_route_timeout_matches_vpn_routes(
+            r#"dial direct (match ipcidr/100.64.0.0/10) error: i/o timeout"#,
+            &["100.64.12.0/24".into()]
+        ));
+        assert!(!direct_route_timeout_matches_vpn_routes(
+            "dial direct match ipcidr/10.0.0.0/8 succeeded",
+            &["10.0.0.0/8".into()]
+        ));
+        assert!(!direct_route_timeout_matches_vpn_routes(
+            "dial proxy match match using cleanweb i/o timeout",
+            &["10.0.0.0/8".into()]
+        ));
+        assert!(!direct_route_timeout_matches_vpn_routes(
+            &log.to_ascii_lowercase(),
+            &["172.31.0.0/16".into()]
+        ));
+    }
+
+    #[test]
+    fn keeps_tun_auto_detect_only_without_existing_vpn_routes() {
+        assert!(should_auto_detect_tun_interface(&[]));
+        assert!(!should_auto_detect_tun_interface(&["10.0.0.0/8".into()]));
     }
 
     #[test]

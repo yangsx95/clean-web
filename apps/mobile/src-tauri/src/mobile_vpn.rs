@@ -526,7 +526,7 @@ fn build_mobile_mihomo_config(
 
     let mut tun = Mapping::new();
     insert_yaml(&mut tun, "enable", Value::Bool(true));
-    insert_yaml(&mut tun, "stack", Value::String("mixed".into()));
+    insert_yaml(&mut tun, "stack", Value::String("gvisor".into()));
     insert_yaml(&mut tun, "auto-route", Value::Bool(false));
     insert_yaml(&mut tun, "auto-detect-interface", Value::Bool(false));
     insert_yaml(&mut tun, "file-descriptor", Value::Number(3.into()));

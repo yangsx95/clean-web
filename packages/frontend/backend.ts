@@ -112,6 +112,8 @@ const mobileRefreshSubscription = async (payload: { id:string; url:string; forma
 const mobileRefreshProxySubscription = async (payload: { id:string; url:string; format?:string; category?:string }) => invoke<RefreshReport>("mobile_refresh_proxy_subscription", { payload });
 const mobileImportProxyPayload = async (payload: { id:string; content:string }) => invoke<RefreshReport>("mobile_import_proxy_payload", { payload });
 const mobileGetSubscriptionProxies = async (subscriptionId: string) => invoke<SubscriptionProxyInfo>("mobile_get_subscription_proxies", { subscriptionId });
+const mobileMihomoController = "http://127.0.0.1:19090";
+const mobileMihomoSecret = "cleanweb-mobile";
 const waitForMobileVpn = async (accept:(status:MobileVpnStatus)=>boolean, timeoutMs=10_000) => {
   const deadline=Date.now()+timeoutMs;
   let status=await mobileVpnStatus();
@@ -123,6 +125,25 @@ const waitForMobileVpn = async (accept:(status:MobileVpnStatus)=>boolean, timeou
   }
   return status;
 };
+async function requireMobileFullTunnel() {
+  const status = await mobileVpnStatus();
+  if (!status.running || !status.dataPlaneReady) throw new Error(status.lastError ?? "Android VPN 尚未运行");
+  if (status.dataPlaneMode !== "full_tunnel") throw new Error("Android 当前未启用全流量代理通道");
+  return status;
+}
+async function mobileMihomoFetch<T>(path: string): Promise<T> {
+  const response = await fetch(`${mobileMihomoController}${path}`, {
+    headers: { Authorization: `Bearer ${mobileMihomoSecret}` },
+  });
+  if (!response.ok) throw new Error(`Mihomo 控制器请求失败：HTTP ${response.status}`);
+  return response.json() as Promise<T>;
+}
+async function mobileMihomoDelay(name: string, url: string, timeout = 5000): Promise<number> {
+  const params = new URLSearchParams({ timeout: String(timeout), url });
+  const result = await mobileMihomoFetch<{ delay?: number }>(`/proxies/${encodeURIComponent(name)}/delay?${params}`);
+  if (typeof result.delay !== "number") throw new Error(`${name} 延迟检测无结果`);
+  return result.delay;
+}
 async function mobilePolicyPayload(){
   defaults=loadPreviewSettings();
   previewParentRules=loadPreviewParentRules();
@@ -441,10 +462,28 @@ export async function selectProxy(sessionToken:string,group:string,name:string):
   const result=await invoke<ProxySelectionResult|null>("select_proxy",{sessionToken,group,name});
   return result??{requiresReload:false};
 }
-export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{if(usesDesktopBackend())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});if(isMobileTauri())throw new Error("Android 当前是 DNS-only 模式，暂不能检测代理出口延迟");return{delays:{}};}
+export async function testAllProxyDelays(sessionToken:string,group="CleanWeb"):Promise<ProxyDelayResult>{
+  if(usesDesktopBackend())return invoke<ProxyDelayResult>("test_all_proxy_delays",{sessionToken,group});
+  if(isMobileTauri()){
+    await requireMobileFullTunnel();
+    const proxies = await mobileMihomoFetch<{ proxies:Record<string,{ all?:string[] }> }>("/proxies");
+    const names = proxies.proxies[group]?.all ?? [];
+    const entries = await Promise.all(names.map(async name => {
+      try { return [name, await mobileMihomoDelay(name, "https://www.gstatic.com/generate_204")] as const; }
+      catch { return [name, 0] as const; }
+    }));
+    return { delays:Object.fromEntries(entries) };
+  }
+  return{delays:{}};
+}
 export async function testProxyConnectivity(sessionToken:string,target:string,group="CleanWeb"):Promise<ProxyConnectivityResult>{
   if(usesDesktopBackend())return invoke<ProxyConnectivityResult>("test_proxy_connectivity",{sessionToken,target,group});
-  if(isMobileTauri())throw new Error("Android 当前是 DNS-only 模式，暂不能检测代理出口连通性");
+  if(isMobileTauri()){
+    await requireMobileFullTunnel();
+    const url=target.includes("://")?target:`https://${target}`;
+    const delay = await mobileMihomoDelay(group, url);
+    return{url,group,delay};
+  }
   const url=target.includes("://")?target:`https://${target}`;
   return{url,group,delay:128};
 }
