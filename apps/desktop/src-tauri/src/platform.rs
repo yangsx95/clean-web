@@ -17,7 +17,7 @@ use std::{
     collections::HashSet,
     fs::{self, File},
     io::{BufRead, BufReader, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     os::fd::AsRawFd,
     os::unix::fs::{MetadataExt, PermissionsExt},
     os::unix::net::{UnixListener, UnixStream},
@@ -836,6 +836,7 @@ fn install_dns_upstream_bypass_routes(config: &Path) -> Result<(), String> {
         return Ok(());
     };
     let mut addresses = dns_upstream_ipv4_addresses_from_config(config)?;
+    addresses.extend(proxy_server_ipv4_addresses_from_config(config)?);
     addresses.extend(active_vpn_control_ipv4_addresses());
     addresses = deduplicate_ipv4_addresses(addresses);
     let installed = addresses
@@ -996,6 +997,57 @@ fn dns_upstream_ipv4_address(value: &str) -> Option<Ipv4Addr> {
             IpAddr::V4(address) => Some(address),
             IpAddr::V6(_) => None,
         })
+}
+
+#[cfg(target_os = "macos")]
+fn proxy_server_ipv4_addresses_from_config(config: &Path) -> Result<Vec<Ipv4Addr>, String> {
+    let body = fs::read_to_string(config)
+        .map_err(|value| format!("无法读取 Mihomo 配置中的代理服务器：{value}"))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&body)
+        .map_err(|value| format!("无法解析 Mihomo 配置中的代理服务器：{value}"))?;
+    Ok(proxy_server_ipv4_addresses(&value))
+}
+
+#[cfg(target_os = "macos")]
+fn proxy_server_ipv4_addresses(value: &serde_yaml::Value) -> Vec<Ipv4Addr> {
+    let mut seen = HashSet::new();
+    value
+        .get("proxies")
+        .and_then(serde_yaml::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|proxy| proxy.get("server").and_then(serde_yaml::Value::as_str))
+        .flat_map(resolve_proxy_server_ipv4_addresses)
+        .filter(|address| routable_bypass_ipv4_address(*address) && seen.insert(*address))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_proxy_server_ipv4_addresses(host: &str) -> Vec<Ipv4Addr> {
+    if let Ok(address) = host.parse::<Ipv4Addr>() {
+        return vec![address];
+    }
+    (host, 0)
+        .to_socket_addrs()
+        .map(|addresses| {
+            addresses
+                .filter_map(|address| match address {
+                    SocketAddr::V4(address) => Some(*address.ip()),
+                    SocketAddr::V6(_) => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn routable_bypass_ipv4_address(address: Ipv4Addr) -> bool {
+    !(address.is_loopback()
+        || address.is_private()
+        || address.is_link_local()
+        || address.is_multicast()
+        || address.is_broadcast()
+        || address.is_unspecified())
 }
 
 #[cfg(target_os = "macos")]
@@ -1578,6 +1630,20 @@ mod tests {
                 "114.114.114.114".parse::<Ipv4Addr>().unwrap(),
                 "223.5.5.5".parse::<Ipv4Addr>().unwrap(),
             ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extracts_proxy_server_addresses_for_tun_bypass_routes() {
+        let config: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - name: node-a\n    server: 203.0.113.8\n    port: 8388\n  - name: local\n    server: 127.0.0.1\n    port: 1080\n  - name: private\n    server: 10.0.0.8\n    port: 443\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            proxy_server_ipv4_addresses(&config),
+            vec!["203.0.113.8".parse::<Ipv4Addr>().unwrap()]
         );
     }
 
