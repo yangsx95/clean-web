@@ -651,6 +651,7 @@ fn helper_start_mihomo(
         .map_err(|value| format!("无法安装 Mihomo 配置：{value}"))?;
     fs::set_permissions(&installed_config, fs::Permissions::from_mode(0o600))
         .map_err(|value| format!("无法设置 Mihomo 配置权限：{value}"))?;
+    append_existing_vpn_route_excludes_to_config(&installed_config)?;
     File::create(&log).map_err(|value| format!("无法创建 Mihomo 日志：{value}"))?;
     fs::set_permissions(&log, fs::Permissions::from_mode(0o644))
         .map_err(|value| format!("无法设置 Mihomo 日志权限：{value}"))?;
@@ -751,6 +752,65 @@ fn installed_mihomo_binary_matches(source: &Path, destination: &Path) -> Result<
     let bytes =
         fs::read(destination).map_err(|value| format!("无法读取已安装 Mihomo 内核：{value}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)) == EXPECTED_MIHOMO_SHA256)
+}
+
+#[cfg(target_os = "macos")]
+fn append_existing_vpn_route_excludes_to_config(config: &Path) -> Result<(), String> {
+    let routes = existing_vpn_route_excludes();
+    if routes.is_empty() {
+        return Ok(());
+    }
+    let body = fs::read_to_string(config)
+        .map_err(|value| format!("无法读取 Mihomo 配置以保留 VPN 路由：{value}"))?;
+    let updated = append_route_excludes_to_mihomo_config(&body, &routes)?;
+    if updated != body {
+        fs::write(config, updated)
+            .map_err(|value| format!("无法写入 Mihomo 配置以保留 VPN 路由：{value}"))?;
+        fs::set_permissions(config, fs::Permissions::from_mode(0o600))
+            .map_err(|value| format!("无法设置 Mihomo 配置权限：{value}"))?;
+        write_helper_log(&format!(
+            "preserving existing VPN routes in TUN exclude list: {}",
+            routes.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn append_route_excludes_to_mihomo_config(
+    body: &str,
+    route_excludes: &[String],
+) -> Result<String, String> {
+    let mut root: serde_yaml::Value = serde_yaml::from_str(body)
+        .map_err(|value| format!("无法解析 Mihomo 配置以保留 VPN 路由：{value}"))?;
+    let Some(tun) = root
+        .get_mut("tun")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return Ok(body.to_owned());
+    };
+    let key = serde_yaml::Value::String("route-exclude-address".into());
+    if !tun.contains_key(&key) {
+        tun.insert(key.clone(), serde_yaml::Value::Sequence(Vec::new()));
+    }
+    let Some(existing) = tun
+        .get_mut(&key)
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    else {
+        return Ok(body.to_owned());
+    };
+    let mut seen = existing
+        .iter()
+        .filter_map(serde_yaml::Value::as_str)
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    for route in route_excludes {
+        if seen.insert(route.clone()) {
+            existing.push(serde_yaml::Value::String(route.clone()));
+        }
+    }
+    serde_yaml::to_string(&root)
+        .map_err(|value| format!("无法序列化 Mihomo 配置以保留 VPN 路由：{value}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -1532,6 +1592,38 @@ mod tests {
         assert_eq!(
             parse_active_vpn_control_ipv4_addresses(output),
             vec!["116.236.254.75".parse::<Ipv4Addr>().unwrap()]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn appends_existing_vpn_routes_to_mihomo_tun_excludes() {
+        let config =
+            "tun:\n  enable: true\n  route-exclude-address:\n    - 127.0.0.0/8\n    - 10.0.0.0/8\n";
+        let updated = append_route_excludes_to_mihomo_config(
+            config,
+            &[
+                "10.0.0.0/8".into(),
+                "172.16.0.0/14".into(),
+                "192.168.0.0/16".into(),
+            ],
+        )
+        .unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&updated).unwrap();
+        let excludes = yaml
+            .get("tun")
+            .and_then(|tun| tun.get("route-exclude-address"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .unwrap();
+
+        assert_eq!(
+            excludes,
+            &vec![
+                serde_yaml::Value::String("127.0.0.0/8".into()),
+                serde_yaml::Value::String("10.0.0.0/8".into()),
+                serde_yaml::Value::String("172.16.0.0/14".into()),
+                serde_yaml::Value::String("192.168.0.0/16".into()),
+            ]
         );
     }
 
