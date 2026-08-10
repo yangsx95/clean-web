@@ -13,6 +13,7 @@ use std::process::Stdio;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use flate2::read::GzDecoder;
+#[cfg(any(target_os = "macos", test))]
 use ipnet::IpNet;
 use reqwest::Url;
 use rusqlite::{params, OptionalExtension};
@@ -1895,21 +1896,25 @@ fn tun_startup_failed(log: &str) -> bool {
 
 pub(crate) fn mihomo_data_plane_failed(log: &str) -> bool {
     let log = log.to_ascii_lowercase();
-    log.contains("batch read packet: bad file descriptor") || macos_vpn_direct_route_drift(&log)
-}
-
-fn macos_vpn_direct_route_drift(log: &str) -> bool {
+    if log.contains("batch read packet: bad file descriptor") {
+        return true;
+    }
     #[cfg(target_os = "macos")]
     {
-        direct_route_timeout_matches_vpn_routes(log, &platform::existing_vpn_route_excludes())
+        macos_vpn_direct_route_drift(&log)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = log;
         false
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_vpn_direct_route_drift(log: &str) -> bool {
+    direct_route_timeout_matches_vpn_routes(log, &platform::existing_vpn_route_excludes())
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn direct_route_timeout_matches_vpn_routes(log: &str, vpn_routes: &[String]) -> bool {
     if !log.contains("dial direct") || !log.contains("i/o timeout") {
         return false;
@@ -1928,6 +1933,7 @@ fn direct_route_timeout_matches_vpn_routes(log: &str, vpn_routes: &[String]) -> 
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn log_ipcidr_matches(log: &str) -> Vec<IpNet> {
     log.split("match ipcidr/")
         .skip(1)
@@ -1941,6 +1947,7 @@ fn log_ipcidr_matches(log: &str) -> Vec<IpNet> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn ipnets_overlap(left: &IpNet, right: &IpNet) -> bool {
     left.contains(&right.network()) || right.contains(&left.network())
 }
