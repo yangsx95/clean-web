@@ -42,7 +42,7 @@ const DNS_BYPASS_ROUTES_FILE: &str = "/Library/Application Support/CleanWeb/dns-
 #[cfg(target_os = "macos")]
 const CLEANWEB_DNS_SERVER: &str = "127.0.0.1";
 #[cfg(target_os = "macos")]
-const HELPER_PROTOCOL_VERSION: &str = "2026-08-08-vpn-control-bypass-helper";
+const HELPER_PROTOCOL_VERSION: &str = "2026-08-10-direct-interface-vpn-helper";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const EXPECTED_MIHOMO_SHA256: &str =
     "55b7286331cb30a54b2564013b02b84a0c280e8b690bd1e5da4b9d4f4ca007ac";
@@ -762,7 +762,8 @@ fn preserve_existing_vpn_routes_in_config(config: &Path) -> Result<(), String> {
     }
     let body = fs::read_to_string(config)
         .map_err(|value| format!("无法读取 Mihomo 配置以保留 VPN 路由：{value}"))?;
-    let updated = preserve_vpn_routes_in_mihomo_config(&body, &routes)?;
+    let updated =
+        preserve_vpn_routes_in_mihomo_config(&body, &routes, direct_interface_name_for_vpn())?;
     if updated != body {
         fs::write(config, updated)
             .map_err(|value| format!("无法写入 Mihomo 配置以保留 VPN 路由：{value}"))?;
@@ -780,9 +781,18 @@ fn preserve_existing_vpn_routes_in_config(config: &Path) -> Result<(), String> {
 fn preserve_vpn_routes_in_mihomo_config(
     body: &str,
     route_excludes: &[String],
+    direct_interface_name: Option<String>,
 ) -> Result<String, String> {
     let mut root: serde_yaml::Value = serde_yaml::from_str(body)
         .map_err(|value| format!("无法解析 Mihomo 配置以保留 VPN 路由：{value}"))?;
+    if let Some(interface_name) = direct_interface_name {
+        if let Some(root_mapping) = root.as_mapping_mut() {
+            root_mapping.insert(
+                serde_yaml::Value::String("interface-name".into()),
+                serde_yaml::Value::String(interface_name),
+            );
+        }
+    }
     let Some(tun) = root
         .get_mut("tun")
         .and_then(serde_yaml::Value::as_mapping_mut)
@@ -815,6 +825,11 @@ fn preserve_vpn_routes_in_mihomo_config(
     );
     serde_yaml::to_string(&root)
         .map_err(|value| format!("无法序列化 Mihomo 配置以保留 VPN 路由：{value}"))
+}
+
+#[cfg(target_os = "macos")]
+fn direct_interface_name_for_vpn() -> Option<String> {
+    default_route_interface().filter(|interface| !interface.starts_with("utun"))
 }
 
 #[cfg(target_os = "macos")]
@@ -1677,6 +1692,7 @@ mod tests {
                 "172.16.0.0/14".into(),
                 "192.168.0.0/16".into(),
             ],
+            Some("en0".into()),
         )
         .unwrap();
         let yaml: serde_yaml::Value = serde_yaml::from_str(&updated).unwrap();
@@ -1700,6 +1716,11 @@ mod tests {
                 .and_then(|tun| tun.get("auto-detect-interface"))
                 .and_then(serde_yaml::Value::as_bool),
             Some(false)
+        );
+        assert_eq!(
+            yaml.get("interface-name")
+                .and_then(serde_yaml::Value::as_str),
+            Some("en0")
         );
     }
 

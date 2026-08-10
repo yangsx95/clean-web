@@ -1226,13 +1226,17 @@ fn build_config(state: &AppState, secret: &str, tun_enabled: bool) -> Result<Str
     insert(&mut tun, "device", Value::String("CleanWeb".into()));
     insert(&mut tun, "auto-route", Value::Bool(true));
     let existing_vpn_route_excludes = platform::existing_vpn_route_excludes();
+    let auto_detect_interface = should_auto_detect_tun_interface(&existing_vpn_route_excludes);
     insert(
         &mut tun,
         "auto-detect-interface",
-        Value::Bool(should_auto_detect_tun_interface(
-            &existing_vpn_route_excludes,
-        )),
+        Value::Bool(auto_detect_interface),
     );
+    if !auto_detect_interface {
+        if let Some(interface_name) = direct_interface_name_for_vpn_coexistence() {
+            insert(&mut root, "interface-name", Value::String(interface_name));
+        }
+    }
     let mut route_exclude_addresses = vec![
         Value::String("127.0.0.0/8".into()),
         Value::String("::1/128".into()),
@@ -1984,6 +1988,17 @@ fn error(value: impl std::fmt::Display) -> String {
 
 fn should_auto_detect_tun_interface(existing_vpn_route_excludes: &[String]) -> bool {
     existing_vpn_route_excludes.is_empty()
+}
+
+fn direct_interface_name_for_vpn_coexistence() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        platform::default_route_interface().filter(|interface| !interface.starts_with("utun"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 #[cfg(test)]
